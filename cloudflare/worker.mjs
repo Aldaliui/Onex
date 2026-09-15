@@ -1120,6 +1120,41 @@ async function listInventoryMovements(request, env, auth) {
   return inventoryResponse({ rows: result.results ?? [], limit }, request, env);
 }
 
+async function inventoryListCounts(request, env, auth) {
+  const url = new URL(request.url); const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 50), 1), 200);
+  const result = await env.ONEX_DB.prepare(`SELECT id, countNo, warehouseId, countMode, status, countedAt, postedAt, actor, notes FROM inventory_counts WHERE warehouseId IN (SELECT id FROM warehouses WHERE companyId = ?) ORDER BY countedAt DESC, id DESC LIMIT ?`).bind(auth.companyId, limit).all();
+  return inventoryResponse({ rows: result.results ?? [], limit }, request, env);
+}
+
+async function inventoryGetCount(request, env, auth, id) {
+  const count = await env.ONEX_DB.prepare(`SELECT c.* FROM inventory_counts c JOIN warehouses w ON w.id = c.warehouseId WHERE c.id = ? AND w.companyId = ? LIMIT 1`).bind(id, auth.companyId).first();
+  if (!count) return inventoryErrorResponse("INVENTORY_COUNT_NOT_FOUND", request, env, 404);
+  const lines = await env.ONEX_DB.prepare(`SELECT l.*, i.code, COALESCE(NULLIF(i.description, ''), i.name) AS itemName FROM inventory_count_lines l JOIN items i ON i.id = l.itemId WHERE l.countId = ? ORDER BY l.id`).bind(id).all();
+  return inventoryResponse({ ...count, lines: lines.results ?? [] }, request, env);
+}
+
+async function inventoryCreateCount(request, env, auth) {
+  const body = await inventoryBodyJson(request); const countNo = inventoryRequiredText(body?.countNo, 80); const warehouseId = inventoryParseId(body?.warehouseId); const mode = body?.countMode === "CYCLE" ? "CYCLE" : body?.countMode === "PERIODIC" ? "PERIODIC" : null; const lines = Array.isArray(body?.lines) ? body.lines : [];
+  if (!countNo || !warehouseId || !mode || !lines.length || lines.length > 500) return inventoryErrorResponse("INVALID_INVENTORY_COUNT_INPUT", request, env, 400);
+  const warehouse = await env.ONEX_DB.prepare("SELECT id FROM warehouses WHERE id = ? AND companyId = ? AND active = 1 LIMIT 1").bind(warehouseId, auth.companyId).first(); if (!warehouse) return inventoryErrorResponse("WAREHOUSE_NOT_ACTIVE", request, env, 400);
+  const normalized = lines.map((line) => ({ itemId: inventoryParseId(line?.itemId), countedQuantity: inventoryDecimalText(line?.countedQuantity, { min: 0 }) })).filter((line) => line.itemId && line.countedQuantity);
+  if (normalized.length !== lines.length || new Set(normalized.map((line) => line.itemId)).size !== normalized.length) return inventoryErrorResponse("INVALID_INVENTORY_COUNT_LINE", request, env, 400);
+  const duplicate = await env.ONEX_DB.prepare("SELECT id FROM inventory_counts WHERE countNo = ? LIMIT 1").bind(countNo).first(); if (duplicate) return inventoryErrorResponse("DUPLICATE_COUNT_NUMBER", request, env, 409);
+  const created = await env.ONEX_DB.prepare("INSERT INTO inventory_counts(countNo,warehouseId,countMode,actor,notes) VALUES(?,?,?,?,?) RETURNING id,countNo,warehouseId,countMode,status,countedAt").bind(countNo, warehouseId, mode, auth.actor, typeof body.notes === "string" ? body.notes.slice(0, 500) : null).first(); if (!created) return inventoryErrorResponse("INVENTORY_COUNT_CREATE_FAILED", request, env, 500);
+  const statements = [];
+  for (const line of normalized) { const item = await env.ONEX_DB.prepare("SELECT id, unitCost, inventoryAccount FROM items WHERE id = ? AND companyId = ? LIMIT 1").bind(line.itemId, auth.companyId).first(); if (!item) return inventoryErrorResponse("ITEM_NOT_FOUND", request, env, 400); const balance = await env.ONEX_DB.prepare("SELECT quantity, unitCost FROM stock_balances WHERE itemId = ? AND warehouseId = ? LIMIT 1").bind(line.itemId, warehouseId).first(); const systemQuantity = Number(balance?.quantity || 0); const unitCost = Number(balance?.unitCost || item.unitCost || 0); const countedQuantity = Number(line.countedQuantity); statements.push(env.ONEX_DB.prepare("INSERT INTO inventory_count_lines(countId,itemId,systemQuantity,countedQuantity,unitCost,varianceQuantity,varianceValue) VALUES(?,?,?,?,?,?,?)").bind(created.id, line.itemId, systemQuantity.toFixed(6), countedQuantity.toFixed(6), unitCost.toFixed(6), (countedQuantity - systemQuantity).toFixed(6), ((countedQuantity - systemQuantity) * unitCost).toFixed(6))); }
+  statements.push(env.ONEX_DB.prepare("INSERT INTO audit_events(actor,actionCode,entityType,entityId,requestId) VALUES(?,?,?,?,?)").bind(auth.actor, "CREATE", "INVENTORY_COUNT", String(created.id), `COUNT:${countNo}`)); await env.ONEX_DB.batch(statements); return inventoryResponse({ ...created, lineCount: normalized.length }, request, env, 201);
+}
+
+async function inventoryPostCount(request, env, auth, id) {
+  const count = await env.ONEX_DB.prepare("SELECT c.* FROM inventory_counts c JOIN warehouses w ON w.id = c.warehouseId WHERE c.id = ? AND w.companyId = ? LIMIT 1").bind(id, auth.companyId).first(); if (!count) return inventoryErrorResponse("INVENTORY_COUNT_NOT_FOUND", request, env, 404); if (count.status !== "DRAFT") return inventoryErrorResponse("INVENTORY_COUNT_NOT_POSTABLE", request, env, 409);
+  const lines = await env.ONEX_DB.prepare("SELECT l.*, i.code, i.inventoryAccount FROM inventory_count_lines l JOIN items i ON i.id = l.itemId WHERE l.countId = ? ORDER BY l.id").bind(id).all(); const statements = []; const journalLines = []; let totalVariance = 0;
+  for (const line of lines.results || []) { const counted = Number(line.countedQuantity); const system = Number(line.systemQuantity); const unitCost = Number(line.unitCost); const variance = counted - system; const value = variance * unitCost; totalVariance += value; if (!variance) continue; const current = await env.ONEX_DB.prepare("SELECT quantity,totalCost,unitCost,versionNo FROM stock_balances WHERE itemId = ? AND warehouseId = ? LIMIT 1").bind(line.itemId, count.warehouseId).first(); const totalCost = counted * unitCost; if (current) statements.push(env.ONEX_DB.prepare("UPDATE stock_balances SET quantity=?,totalCost=?,unitCost=?,versionNo=versionNo+1 WHERE itemId=? AND warehouseId=?").bind(counted.toFixed(6), totalCost.toFixed(6), unitCost.toFixed(6), line.itemId, count.warehouseId)); else statements.push(env.ONEX_DB.prepare("INSERT INTO stock_balances(itemId,warehouseId,quantity,totalCost,unitCost,versionNo) VALUES(?,?,?,?,?,1)").bind(line.itemId, count.warehouseId, counted.toFixed(6), totalCost.toFixed(6), unitCost.toFixed(6))); statements.push(env.ONEX_DB.prepare("INSERT INTO stock_movements(itemId,warehouseId,movementType,quantityIn,quantityOut,unitCost,totalCost,balanceAfter,createdBy) VALUES(?,?,?,?,?,?,?,?,?)").bind(line.itemId, count.warehouseId, variance > 0 ? "INVENTORY_GAIN" : "INVENTORY_LOSS", variance > 0 ? variance.toFixed(6) : "0", variance < 0 ? Math.abs(variance).toFixed(6) : "0", unitCost.toFixed(6), Math.abs(value).toFixed(6), counted.toFixed(6), auth.actor)); if (variance > 0) journalLines.push({ accountCode: line.inventoryAccount || "1300", debit: value, credit: 0, description: `زيادة جرد ${line.code}` }, { accountCode: "4300", debit: 0, credit: value, description: "أرباح فروقات الجرد" }); else journalLines.push({ accountCode: "5300", debit: Math.abs(value), credit: 0, description: "خسائر فروقات الجرد" }, { accountCode: line.inventoryAccount || "1300", debit: 0, credit: Math.abs(value), description: `نقص جرد ${line.code}` }); }
+  if (journalLines.length) { const debit = journalLines.reduce((sum, line) => sum + line.debit, 0).toFixed(6); const credit = journalLines.reduce((sum, line) => sum + line.credit, 0).toFixed(6); const journalNo = `COUNT-${count.countNo}`; statements.push(env.ONEX_DB.prepare("INSERT INTO journal_entries(journalNo,entryType,totalDebit,totalCredit,status,sourceInventoryDocumentId,createdBy) VALUES(?,?,?,?,?,?,?)").bind(journalNo, "INVENTORY_COUNT", debit, credit, "POSTED", id, auth.actor)); for (const line of journalLines) statements.push(env.ONEX_DB.prepare("INSERT INTO journal_entry_lines(journalEntryId,accountCode,accountName,description,debit,credit) VALUES((SELECT id FROM journal_entries WHERE journalNo=?),?,?,?,?,?)").bind(journalNo, line.accountCode, null, line.description, line.debit.toFixed(6), line.credit.toFixed(6))); }
+  statements.push(env.ONEX_DB.prepare("UPDATE inventory_counts SET status='POSTED',postedAt=CURRENT_TIMESTAMP WHERE id=? AND status='DRAFT'").bind(id)); statements.push(env.ONEX_DB.prepare("INSERT INTO audit_events(actor,actionCode,entityType,entityId,requestId) VALUES(?,?,?,?,?)").bind(auth.actor, "POST", "INVENTORY_COUNT", String(id), `POST-COUNT:${count.countNo}`)); await env.ONEX_DB.batch(statements); return inventoryResponse({ id, countNo: count.countNo, status: "POSTED", totalVariance: totalVariance.toFixed(6) }, request, env);
+}
+
+
 async function inventoryDispatch(request, env, path, auth) {
   const itemMatch = path.match(/^\/api\/inventory\/items(?:\/(\d+))?$/);
   if (itemMatch) {
@@ -1141,6 +1176,16 @@ async function inventoryDispatch(request, env, path, auth) {
   }
 
   if (path === '/api/inventory/movements' && request.method === 'GET') return listInventoryMovements(request, env, auth);
+
+  const countMatch = path.match(/^\/api\/inventory\/counts(?:\/(\d+))?(\/post)?$/);
+  if (countMatch) {
+    const id = countMatch[1] ? inventoryParseId(countMatch[1]) : null;
+    if (countMatch[2] === '/post' && request.method === 'POST' && id) return inventoryPostCount(request, env, auth, id);
+    if (request.method === 'GET' && id) return inventoryGetCount(request, env, auth, id);
+    if (request.method === 'GET' && !id) return inventoryListCounts(request, env, auth);
+    if (request.method === 'POST' && !id) return inventoryCreateCount(request, env, auth);
+    return inventoryErrorResponse("METHOD_NOT_ALLOWED", request, env, 405);
+  }
 
   const warehouseMatch = path.match(/^\/api\/inventory\/warehouses(?:\/(\d+))?$/);
   if (warehouseMatch) {
