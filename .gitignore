@@ -18,6 +18,8 @@ build/
 .env.development.local
 .env.test.local
 .env.production.local
+api.env
+*.env
 
 # IDE and editor files
 .vscode/
@@ -51,18 +53,14 @@ pids
 *.pid.lock
 *.bak
 
-# Coverage directory used by tools like istanbul
+# Coverage
 coverage/
 *.lcov
 .nyc_output
 
-# Dependency directories
+# Caches and package artifacts
 jspm_packages/
-
-# TypeScript cache
 *.tsbuildinfo
-
-# Optional caches and package artifacts
 .npm
 .eslintcache
 .rpt2_cache/
@@ -80,7 +78,6 @@ jspm_packages/
 .out
 .storybook-out
 
-# Temporary folders
 tmp/
 temp/
 
