@@ -1231,7 +1231,37 @@ async function api(request, env, url) {
   if (url.pathname === "/api/cloud/windows") return cloudJson([]);
   if (url.pathname === "/api/cloud/windows/tree") return cloudJson([]);
   if (url.pathname.startsWith("/api/cloud/windows/contract/")) return cloudJson({ legacyForm: decodeURIComponent(url.pathname.split("/").pop() || ""), fields: [], triggers: [], procedures: [], notes: "Cloud D1 runtime contract" });
-  if (url.pathname === "/api/cloud/windows/records") return cloudJson([]);
+  if (url.pathname === "/api/cloud/windows/records") {
+    const form = (url.searchParams.get("legacyForm") || "").replace(/\.fmx$/i, "").toUpperCase();
+    const search = (url.searchParams.get("search") || "").trim();
+    const limit = limitOf(url);
+    const like = `%${search}%`;
+    let sql;
+    let binds;
+    if (form === "ADMT027" || form === "ERP_JOURNAL") {
+      sql = "SELECT id, actor, actionCode, entityType, entityId, requestId, createdAt FROM audit_events WHERE (? = '' OR actionCode LIKE ? OR entityType LIKE ?) ORDER BY createdAt DESC, id DESC LIMIT ?";
+      binds = [search, like, like, limit];
+    } else if (form === "ARST004" || form.startsWith("POST")) {
+      sql = "SELECT id, docNo, customerId, warehouseId, subtotal, taxTotal, grandTotal, status, sourceForm, createdAt FROM invoices WHERE (? = '' OR docNo LIKE ? OR sourceForm LIKE ?) ORDER BY createdAt DESC, id DESC LIMIT ?";
+      binds = [search, like, like, limit];
+    } else if (form.startsWith("ARST") || form.startsWith("ARSR")) {
+      sql = "SELECT id, companyId, code, legalName, currencyCode, status FROM customers WHERE (? = '' OR code LIKE ? OR legalName LIKE ?) ORDER BY code LIMIT ?";
+      binds = [search, like, like, limit];
+    } else if (form.startsWith("APST") || form.startsWith("APSR")) {
+      sql = "SELECT id, companyId, code, legalName, currencyCode, status FROM suppliers WHERE (? = '' OR code LIKE ? OR legalName LIKE ?) ORDER BY code LIMIT ?";
+      binds = [search, like, like, limit];
+    } else if (form.startsWith("INVT") || form.startsWith("INVI")) {
+      sql = "SELECT id, companyId, code, name, itemType, unitCode, active FROM items WHERE (? = '' OR code LIKE ? OR name LIKE ?) ORDER BY code LIMIT ?";
+      binds = [search, like, like, limit];
+    } else if (form.startsWith("GLST") || form.startsWith("GLSI") || form.startsWith("GLSR")) {
+      sql = "SELECT id, journalNo, entryType, totalDebit, totalCredit, status, createdAt, createdBy FROM journal_entries WHERE (? = '' OR journalNo LIKE ? OR entryType LIKE ?) ORDER BY createdAt DESC, id DESC LIMIT ?";
+      binds = [search, like, like, limit];
+    } else {
+      return cloudJson([]);
+    }
+    const rows = await env.ONEX_DB.prepare(sql).bind(...binds).all();
+    return cloudJson(rows.results ?? []);
+  }
   if (url.pathname === "/api/cloud/windows/action" && request.method === "POST") return cloudJson({ ok: true, status: "SIMULATED", source: "cloud-d1" });
   if (url.pathname === "/api/cloud/ai/assist" && request.method === "POST") return cloudJson({ answer: "تم تحويل الطلب إلى طبقة Cloudflare D1. هذه إجابة تشغيلية أولية من Worker، ويمكن ربط نموذج الذكاء الاصطناعي لاحقًا." });
   if (url.pathname === "/api/cloud/accounts" && request.method === "GET") {
