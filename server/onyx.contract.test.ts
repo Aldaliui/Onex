@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 
@@ -63,6 +65,14 @@ describe("Onyx rebuild contracts", () => {
     expect(sources.midoIntegration.repository).toBe("aldalistor/mido");
     expect(sources.midoIntegration.formsInventoryCount).toBe(1490);
     expect(sources.midoIntegration.oracleTablesImported).toBe(936);
+  });
+
+  it("builds a compatibility clone contract for all 1,490 catalog windows", async () => {
+    const manifest = JSON.parse(readFileSync(resolve(process.cwd(), "rebuild/window-clones/clone_manifest.json"), "utf8"));
+    expect(manifest.windowCount).toBe(1490);
+    expect(manifest.contracts).toHaveLength(1490);
+    expect(new Set(manifest.contracts.map((item: { legacyForm: string }) => item.legacyForm)).size).toBe(1490);
+    expect(manifest.contracts.every((item: { rebuild: { mode: string; verificationStatus: string } }) => item.rebuild.mode === "COMPATIBILITY_CLONE" && item.rebuild.verificationStatus === "CATALOG_ONLY")).toBe(true);
   });
 
   it("builds a runtime contract for every selected legacy form", async () => {

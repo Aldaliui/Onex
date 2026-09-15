@@ -38,6 +38,16 @@ type FallbackWindow = {
 
 let fallbackWindows: FallbackWindow[] | null = null;
 let hierarchyByFile: Map<string, { parentNo: string; sysNo: string; formNo: string; nameAr: string; nameEn: string; orderNo: number; inactive: number }> | null = null;
+let cloneManifestByForm: Map<string, any> | null = null;
+function loadCloneManifest() {
+  if (cloneManifestByForm) return cloneManifestByForm;
+  cloneManifestByForm = new Map();
+  try {
+    const payload = JSON.parse(readFileSync(resolve(process.cwd(), "rebuild/window-clones/clone_manifest.json"), "utf8"));
+    for (const contract of payload.contracts || []) cloneManifestByForm.set(String(contract.legacyForm).replace(/\.fmx$/i, "").toUpperCase(), contract);
+  } catch { /* generated manifest is optional in packaged fallback mode */ }
+  return cloneManifestByForm;
+}
 function loadHierarchy() {
   if (hierarchyByFile) return hierarchyByFile;
   hierarchyByFile = new Map();
@@ -204,6 +214,7 @@ export async function getWindowDomains() {
 }
 
 export async function getCatalogSources() {
+  const cloneManifest = loadCloneManifest();
   return {
     windowCount: loadFallbackWindows().length || 1490,
     hierarchyCount: loadHierarchy().size,
@@ -211,6 +222,8 @@ export async function getCatalogSources() {
     catalogCount: 1490,
     runtimeContractCount: 1490,
     fieldEvidenceCatalogCount: 1490,
+    cloneManifestCount: cloneManifest.size,
+    cloneManifestMode: "COMPATIBILITY_CLONE",
     midoIntegration: {
       repository: "aldalistor/mido",
       repositoryCommit: "873bcda",
@@ -227,6 +240,7 @@ export async function getCatalogSources() {
       "legacy-source/window_runtime_contracts.csv",
       "legacy-source/form_field_trigger_catalog.csv",
       "legacy-source/unified_window_contracts.csv",
+      "rebuild/window-clones/clone_manifest.json",
       "legacy-source/recovery_manifest.csv",
       "legacy-source/generated_code_manifest.csv",
       "database-source/nodes_enriched.csv",
@@ -242,6 +256,7 @@ export async function getCatalogSources() {
 export async function getWindowContract(legacyForm: string) {
   const form = legacyForm.replace(/\.fmx$/i, "");
   const legacyContract = getLegacyWindowContract(form);
+  const clone = loadCloneManifest().get(form.toUpperCase());
   const runtime = catalogRow("legacy-source/window_runtime_contracts.csv", form);
   const fields = catalogRow("legacy-source/form_field_trigger_catalog.csv", form);
   const unified = catalogRow("legacy-source/unified_window_contracts.csv", form, 1);
@@ -255,7 +270,7 @@ export async function getWindowContract(legacyForm: string) {
     ARST006: ["initialize", "query", "validate", "reverse", "print", "refresh", "exit"],
     ARST023: ["initialize", "query", "validate", "print", "refresh", "exit"],
   };
-  const actions = priorityActions[form.toUpperCase()] || unified?.actions?.split("|").filter(Boolean) || defaultActions;
+  const actions = priorityActions[form.toUpperCase()] || clone?.actions || unified?.actions?.split("|").filter(Boolean) || defaultActions;
   const evidence = (value?: string) => (value || "").split(/[;|]/).map((item) => item.trim()).filter(Boolean).slice(0, 40);
   const count = (...values: unknown[]) => { for (const value of values) { const parsed = Number(value); if (Number.isFinite(parsed)) return parsed; } return 0; };
   return {
@@ -267,7 +282,7 @@ export async function getWindowContract(legacyForm: string) {
     midoModules: moduleByDomain[domain.split("/")[0].toUpperCase()] || ["business-operations-core.js", "document-cycle-core.js"],
     legacyContract,
     status: legacyContract?.implementationStatus === "IMPLEMENTED" ? "IMPLEMENTED_WITH_CLOUD_CORE" : unified?.production_status || "NOT_READY_FOR_PRODUCTION", specificationPath: `legacy-source/all_window_specs/${form}.rebuild.md`,
-    clone: priorityActions[form.toUpperCase()] ? { mode: "COMPATIBILITY_CLONE", sourceForm: `${form}.fmx`, sourceAvailable: false, updateTrack: "AR_CORE_PHASE1" } : undefined,
+    clone: clone?.rebuild || (priorityActions[form.toUpperCase()] ? { mode: "COMPATIBILITY_CLONE", sourceForm: `${form}.fmx`, sourceAvailable: false, updateTrack: "AR_CORE_PHASE1" } : undefined),
   };
 }
 

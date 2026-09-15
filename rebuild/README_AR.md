@@ -30,3 +30,7 @@
 - `accounting_core/forms_compat/window_compatibility.csv`: ربط جميع النوافذ الأصلية وعددها 1,490 بالنواة والمجال.
 - `oracle_forms/deep_catalog/form_field_trigger_catalog.jsonl`: الأدلة المستخلصة للحقول والـTriggers والجداول وSQL.
 - `oracle_forms/deep_catalog/window_runtime_contracts.jsonl`: عقد تشغيل لكل نافذة يحافظ على الاسم الأصلي ويربطه بـAPI النواة.
+
+## بناء عقود النوافذ في ONEX Cloud
+
+يولّد السكربت `scripts/build_window_clone_manifest.py` ملف `window-clones/clone_manifest.json` لجميع النوافذ وعددها **1,490** اعتمادًا على كتالوج الحالة والعقود الموحدة وعقود التشغيل. هذه العقود هي `COMPATIBILITY_CLONE` قابلة للعرض والربط بالـAPI، وحالتها `CATALOG_ONLY` إلى أن تتوفر ملفات FMB/PLL/PKS/PKB وDDL واختبارات Oracle فعلية. لا يغيّر السكربت الحالة إلى `production_ready` تلقائيًا ولا ينقل SQL خطِرًا من الأدلة النصية.
