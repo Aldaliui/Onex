@@ -20,6 +20,7 @@ const demoBanks: Array<{ id: number; companyId: number; accountId?: number; code
 const demoItems = [{ id: 1, companyId: 1, code: "ITEM-001", description: "صنف تجريبي", stockFlag: 1, unitCost: "100", revenueAccount: "4100", inventoryAccount: "1300", cogsAccount: "5100", active: 1 }];
 const demoJournals: Array<{ id: number; journalNo: string; entryType: string; totalDebit: string; totalCredit: string; status: "POSTED" }> = [];
 const demoBranches = [{ id: 1, companyId: 1, code: "MAIN", name: "الفرع الرئيسي", active: 1 }];
+const demoWarehouses = [{ id: 1, companyId: 1, code: "MAIN", name: "المستودع الرئيسي", active: 1 }];
 const demoAccounts: Array<{ id: number; companyId: number; code: string; name: string; accountType: string; parentCode?: string; currencyCode: string; active: number }> = [{ id: 1, companyId: 1, code: "1100", name: "النقدية", accountType: "ASSET", currencyCode: "SAR", active: 1 }, { id: 2, companyId: 1, code: "4100", name: "إيرادات المبيعات", accountType: "REVENUE", currencyCode: "SAR", active: 1 }, { id: 3, companyId: 1, code: "5100", name: "تكلفة المبيعات", accountType: "EXPENSE", currencyCode: "SAR", active: 1 }, { id: 4, companyId: 1, code: "2100-0001", name: "مورد تجريبي", accountType: "LIABILITY", parentCode: "2100", currencyCode: "SAR", active: 1 }, { id: 5, companyId: 1, code: "1200-0001", name: "عميل تجريبي", accountType: "ASSET", parentCode: "1200", currencyCode: "SAR", active: 1 }];
 const demoPeriods = [{ id: 1, companyId: 1, code: "2026-01", startsOn: new Date("2026-01-01"), endsOn: new Date("2026-01-31"), status: "OPEN" as const }];
 
@@ -337,6 +338,46 @@ export async function searchSystemUsers(search?: string, limit = 20) {
   const query = (search || "").trim();
   const filters = query ? or(like(users.openId, `%${query}%`), like(users.email, `%${query}%`), like(users.name, `%${query}%`)) : undefined;
   return db.select({ id: users.id, openId: users.openId, name: users.name, email: users.email, role: users.role, lastSignedIn: users.lastSignedIn }).from(users).where(filters).orderBy(users.id).limit(limit);
+}
+
+export async function saveSystemUser(input: { id?: number; openId: string; name?: string; email?: string; role?: "user" | "admin"; loginMethod?: string }) {
+  const db = await getDb();
+  const values = { openId: input.openId, name: input.name || null, email: input.email || null, loginMethod: input.loginMethod || "workbench", role: input.role || "user" as const };
+  if (!db) return { id: input.id || 1, ...values, lastSignedIn: new Date() };
+  if (input.id) {
+    await db.update(users).set(values).where(eq(users.id, input.id));
+    return (await db.select({ id: users.id, openId: users.openId, name: users.name, email: users.email, role: users.role, loginMethod: users.loginMethod, lastSignedIn: users.lastSignedIn }).from(users).where(eq(users.id, input.id)).limit(1))[0];
+  }
+  const inserted = await db.insert(users).values(values).$returningId();
+  return (await db.select({ id: users.id, openId: users.openId, name: users.name, email: users.email, role: users.role, loginMethod: users.loginMethod, lastSignedIn: users.lastSignedIn }).from(users).where(eq(users.id, Number(inserted[0]?.id))).limit(1))[0];
+}
+
+export async function searchBranches(search?: string, limit = 20) {
+  const db = await getDb(); const query = (search || "").trim();
+  if (!db) return demoBranches.filter((row) => !query || `${row.code} ${row.name}`.toLowerCase().includes(query.toLowerCase())).slice(0, limit);
+  const filters = query ? or(like(branches.code, `%${query}%`), like(branches.name, `%${query}%`)) : undefined;
+  return db.select().from(branches).where(filters).orderBy(branches.code).limit(limit);
+}
+
+export async function saveBranch(input: { id?: number; companyId: number; code: string; name: string; active?: number }) {
+  const db = await getDb(); const values = { companyId: input.companyId, code: input.code, name: input.name, active: input.active ?? 1 };
+  if (!db) { const existing = demoBranches.find((row) => row.id === input.id || row.code === input.code); if (existing) Object.assign(existing, values); else demoBranches.push({ id: Math.max(...demoBranches.map((row) => row.id), 0) + 1, ...values }); return demoBranches.at(-1); }
+  if (input.id) { await db.update(branches).set(values).where(eq(branches.id, input.id)); return (await db.select().from(branches).where(eq(branches.id, input.id)).limit(1))[0]; }
+  const inserted = await db.insert(branches).values(values).$returningId(); return (await db.select().from(branches).where(eq(branches.id, Number(inserted[0]?.id))).limit(1))[0];
+}
+
+export async function searchWarehouses(search?: string, limit = 20) {
+  const db = await getDb(); const query = (search || "").trim();
+  if (!db) return demoWarehouses.filter((row) => !query || `${row.code} ${row.name}`.toLowerCase().includes(query.toLowerCase())).slice(0, limit);
+  const filters = query ? or(like(warehouses.code, `%${query}%`), like(warehouses.name, `%${query}%`)) : undefined;
+  return db.select().from(warehouses).where(filters).orderBy(warehouses.code).limit(limit);
+}
+
+export async function saveWarehouse(input: { id?: number; companyId: number; code: string; name: string; active?: number }) {
+  const db = await getDb(); const values = { companyId: input.companyId, code: input.code, name: input.name, active: input.active ?? 1 };
+  if (!db) { const existing = demoWarehouses.find((row) => row.id === input.id || row.code === input.code); if (existing) Object.assign(existing, values); else demoWarehouses.push({ id: Math.max(...demoWarehouses.map((row) => row.id), 0) + 1, ...values }); return demoWarehouses.at(-1); }
+  if (input.id) { await db.update(warehouses).set(values).where(eq(warehouses.id, input.id)); return (await db.select().from(warehouses).where(eq(warehouses.id, input.id)).limit(1))[0]; }
+  const inserted = await db.insert(warehouses).values(values).$returningId(); return (await db.select().from(warehouses).where(eq(warehouses.id, Number(inserted[0]?.id))).limit(1))[0];
 }
 
 async function createLinkedAccount(tx: any, input: { companyId: number; entityId: number; name: string; accountType: string; parentCode: string; currencyCode: string }) {

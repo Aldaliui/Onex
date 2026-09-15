@@ -37,4 +37,19 @@ describe("ERP control and inventory flows", () => {
     expect(control.accounts.find((account) => account.id === cash?.accountId)?.code).toMatch(/^1100-/);
     expect(control.accounts.find((account) => account.id === bank?.accountId)?.code).toMatch(/^1110-/);
   });
+
+  it("supports real window CRUD for users, branches, and warehouses", async () => {
+    const api = appRouter.createCaller(ctx);
+    const suffix = Date.now();
+    const user = await api.windows.saveSystemUser({ openId: `window-user-${suffix}`, name: "مستخدم نافذة", email: `window-${suffix}@example.com`, role: "user" });
+    const branch = await api.windows.saveBranch({ code: `BR-${suffix}`, name: "فرع النافذة" });
+    const warehouse = await api.windows.saveWarehouse({ code: `WH-${suffix}`, name: "مستودع النافذة" });
+    expect(user?.openId).toContain("window-user-");
+    expect(branch?.code).toBe(`BR-${suffix}`);
+    expect(warehouse?.code).toBe(`WH-${suffix}`);
+    const branchRows = await api.windows.records({ legacyForm: "ERP_DBA_DFLT_DATA", search: `BR-${suffix}`, limit: 10 });
+    const warehouseRows = await api.windows.records({ legacyForm: "MRPACS004", search: `WH-${suffix}`, limit: 10 });
+    expect(branchRows.some((row: any) => row.code === `BR-${suffix}`)).toBe(true);
+    expect(warehouseRows.some((row: any) => row.code === `WH-${suffix}`)).toBe(true);
+  });
 });
