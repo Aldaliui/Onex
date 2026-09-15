@@ -304,6 +304,8 @@ async function createPurchase(env, request) {
 
 async function postPurchaseInvoice(env, request, purchaseId) {
   requireWriteAuth(request, env);
+  const periodResult = await glRequireOpenPeriod(env, null);
+  if (periodResult.error) return errorResponse(periodResult.error, periodResult.status, request);
   const purchase = await env.ONEX_DB.prepare(`
     SELECT id, docNo, supplierId, warehouseId, currencyCode, exchangeRate, subtotal, taxTotal,
            grandTotal, status, inventoryJournalNo
@@ -380,9 +382,9 @@ async function postPurchaseInvoice(env, request, purchaseId) {
     `).bind(plan.line.itemId, purchase.warehouseId, purchase.id, plan.quantity.toFixed(6), plan.inputUnitCost.toFixed(6), plan.receivedValue.toFixed(6), plan.balance.quantity.toFixed(6), "cloudflare-worker", purchase.docNo));
   }
   statements.push(env.ONEX_DB.prepare(`
-    INSERT INTO journal_entries (journalNo, entryType, sourceRef, sourcePurchaseInvoiceId, totalDebit, totalCredit, status, createdBy)
-    VALUES (?, 'AP_PURCHASE', ?, ?, ?, ?, 'POSTED', ?)
-  `).bind(journalNo, purchase.docNo, purchase.id, total, total, "cloudflare-worker"));
+    INSERT INTO journal_entries (journalNo, entryType, sourceRef, sourcePurchaseInvoiceId, periodId, totalDebit, totalCredit, status, createdBy)
+    VALUES (?, 'AP_PURCHASE', ?, ?, ?, ?, ?, 'POSTED', ?)
+  `).bind(journalNo, purchase.docNo, purchase.id, periodResult.period.id, total, total, "cloudflare-worker"));
   statements.push(env.ONEX_DB.prepare(`
     INSERT INTO journal_entry_lines (journalNo, accountCode, debit, credit, description)
     VALUES (?, '1300', ?, '0', ?), (?, '2100', '0', ?, ?)
@@ -418,6 +420,8 @@ async function createVoucher(env, request) {
 
 async function postSalesInvoice(env, request, invoiceId) {
   requireWriteAuth(request, env);
+  const periodResult = await glRequireOpenPeriod(env, null);
+  if (periodResult.error) return errorResponse(periodResult.error, periodResult.status, request);
   const invoice = await env.ONEX_DB.prepare(`
     SELECT id, docNo, customerId, warehouseId, currencyCode, exchangeRate, subtotal, taxTotal,
            grandTotal, status, paymentMethod, paidAmount, remainingAmount, paymentReference
@@ -488,9 +492,9 @@ async function postSalesInvoice(env, request, invoiceId) {
     `).bind(plan.line.itemId, invoice.warehouseId, invoice.id, plan.quantity.toFixed(6), plan.appliedUnitCost.toFixed(6), plan.appliedTotalCost.toFixed(6), plan.balance.quantity.toFixed(6), "cloudflare-worker", invoice.docNo));
   }
   statements.push(env.ONEX_DB.prepare(`
-    INSERT INTO journal_entries (journalNo, entryType, sourceRef, sourceInvoiceId, totalDebit, totalCredit, status, createdBy)
-    VALUES (?, 'AR_COGS', ?, ?, ?, ?, 'POSTED', ?)
-  `).bind(cogsJournalNo, invoice.docNo, invoice.id, cogsValue, cogsValue, "cloudflare-worker"));
+    INSERT INTO journal_entries (journalNo, entryType, sourceRef, sourceInvoiceId, periodId, totalDebit, totalCredit, status, createdBy)
+    VALUES (?, 'AR_COGS', ?, ?, ?, ?, ?, 'POSTED', ?)
+  `).bind(cogsJournalNo, invoice.docNo, invoice.id, periodResult.period.id, cogsValue, cogsValue, "cloudflare-worker"));
   statements.push(env.ONEX_DB.prepare(`
     INSERT INTO journal_entry_lines (journalNo, accountCode, debit, credit, description)
     VALUES (?, '5100', ?, '0', ?), (?, '1300', '0', ?, ?)
@@ -500,9 +504,9 @@ async function postSalesInvoice(env, request, invoiceId) {
   const taxTotal = Number(invoice.taxTotal);
   const totalText = grandTotal.toFixed(6);
   statements.push(env.ONEX_DB.prepare(`
-    INSERT INTO journal_entries (journalNo, entryType, sourceRef, sourceInvoiceId, totalDebit, totalCredit, status, createdBy)
-    VALUES (?, 'AR_SALE', ?, ?, ?, ?, 'POSTED', ?)
-  `).bind(salesJournalNo, invoice.docNo, invoice.id, totalText, totalText, "cloudflare-worker"));
+    INSERT INTO journal_entries (journalNo, entryType, sourceRef, sourceInvoiceId, periodId, totalDebit, totalCredit, status, createdBy)
+    VALUES (?, 'AR_SALE', ?, ?, ?, ?, ?, 'POSTED', ?)
+  `).bind(salesJournalNo, invoice.docNo, invoice.id, periodResult.period.id, totalText, totalText, "cloudflare-worker"));
   statements.push(env.ONEX_DB.prepare(`
     INSERT INTO journal_entry_lines (journalNo, accountCode, debit, credit, description)
     VALUES (?, '1100', ?, '0', ?), (?, '4100', '0', ?, ?), (?, '2200', '0', ?, ?)
@@ -960,6 +964,8 @@ async function createInventoryDocument(request, env, auth) {
 }
 
 async function postInventoryDocument(request, env, auth, id) {
+  const periodResult = await glRequireOpenPeriod(env, null);
+  if (periodResult.error) return inventoryErrorResponse(periodResult.error, request, env, periodResult.status);
   const document = await env.ONEX_DB.prepare(`
     SELECT id, companyId, docNo, docType, status, fromWarehouseId, toWarehouseId
     FROM inventory_documents WHERE id = ? AND companyId = ? LIMIT 1
@@ -1022,9 +1028,9 @@ async function postInventoryDocument(request, env, auth, id) {
   const journalNo = `INV-${document.docType}-${document.docNo}`;
   const statements = [env.ONEX_DB.prepare(`
     INSERT OR IGNORE INTO journal_entries
-      (journalNo, sourceInventoryDocumentId, entryType, sourceRef, totalDebit, totalCredit, status, createdBy)
-    VALUES (?, ?, ?, ?, ?, ?, 'POSTED', ?)
-  `).bind(journalNo, id, `INVENTORY_${document.docType}`, document.docNo, journalTotal, journalTotal, auth.actor)];
+      (journalNo, sourceInventoryDocumentId, periodId, entryType, sourceRef, totalDebit, totalCredit, status, createdBy)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'POSTED', ?)
+  `).bind(journalNo, id, periodResult.period.id, `INVENTORY_${document.docType}`, document.docNo, journalTotal, journalTotal, auth.actor)];
   statements.push(env.ONEX_DB.prepare(`
     INSERT OR IGNORE INTO journal_entry_lines
       (journalNo, accountCode, debit, credit, description)
@@ -1155,6 +1161,135 @@ async function inventoryDispatch(request, env, path, auth) {
 }
 
 
+
+function glActor(request) {
+  return request.headers.get("x-onex-actor")?.trim().slice(0, 120) || "cloudflare-worker";
+}
+
+async function glRequireOpenPeriod(env, periodId) {
+  const period = periodId
+    ? await env.ONEX_DB.prepare("SELECT id, companyId, code, startsOn, endsOn, status FROM fiscal_periods WHERE id = ? LIMIT 1").bind(periodId).first()
+    : await env.ONEX_DB.prepare("SELECT id, companyId, code, startsOn, endsOn, status FROM fiscal_periods WHERE status = 'OPEN' ORDER BY startsOn DESC LIMIT 1").first();
+  if (!period) return { error: "FISCAL_PERIOD_NOT_FOUND", status: 400 };
+  if (period.status !== "OPEN") return { error: "FISCAL_PERIOD_CLOSED", status: 409, period };
+  return { period };
+}
+
+async function glListPeriods(env, request) {
+  const result = await env.ONEX_DB.prepare(`
+    SELECT p.id, p.companyId, p.code, p.startsOn, p.endsOn, p.status,
+           p.id AS periodId, c.closedBy, c.closedAt, c.journalCount, c.debitTotal, c.creditTotal
+    FROM fiscal_periods p LEFT JOIN fiscal_period_closures c ON c.periodId = p.id
+    ORDER BY p.startsOn DESC
+  `).all();
+  return json({ rows: result.results ?? [] }, 200, request);
+}
+
+async function glCreateJournal(env, request) {
+  requireWriteAuth(request, env);
+  const body = await readJson(request);
+  const journalNo = typeof body.journalNo === "string" && body.journalNo.trim() ? body.journalNo.trim().slice(0, 80) : `GL-${Date.now()}`;
+  const entryType = typeof body.entryType === "string" && body.entryType.trim() ? body.entryType.trim().toUpperCase().slice(0, 40) : "GENERAL";
+  const description = typeof body.description === "string" ? body.description.slice(0, 500) : null;
+  const periodId = positiveInteger(Number(body.periodId)) ? Number(body.periodId) : null;
+  const lines = Array.isArray(body.lines) ? body.lines : [];
+  if (!lines.length || lines.length > 200) return errorResponse("INVALID_JOURNAL_LINES", 400, request);
+  const periodResult = await glRequireOpenPeriod(env, periodId);
+  if (periodResult.error) return errorResponse(periodResult.error, periodResult.status, request, periodResult.period ? { periodId: periodResult.period.id } : undefined);
+  let debitTotal = 0;
+  let creditTotal = 0;
+  const normalized = [];
+  for (const line of lines) {
+    const accountCode = typeof line?.accountCode === "string" ? line.accountCode.trim().slice(0, 40) : "";
+    const debit = decimal(line?.debit ?? 0, { min: 0, allowZero: true });
+    const credit = decimal(line?.credit ?? 0, { min: 0, allowZero: true });
+    const lineDescription = typeof line?.description === "string" ? line.description.slice(0, 300) : description;
+    if (!accountCode || debit === null || credit === null || (debit === 0 && credit === 0) || (debit > 0 && credit > 0)) return errorResponse("INVALID_JOURNAL_LINE", 400, request);
+    normalized.push({ accountCode, debit, credit, description: lineDescription });
+    debitTotal += debit;
+    creditTotal += credit;
+  }
+  if (Math.abs(debitTotal - creditTotal) > 0.000001 || debitTotal <= 0) return errorResponse("JOURNAL_NOT_BALANCED", 400, request, { debit: debitTotal.toFixed(6), credit: creditTotal.toFixed(6) });
+  const codes = [...new Set(normalized.map((line) => line.accountCode))];
+  const accounts = await env.ONEX_DB.prepare(`SELECT code FROM accounts WHERE code IN (${codes.map(() => "?").join(",")}) AND active = 1`).bind(...codes).all();
+  if ((accounts.results ?? []).length !== codes.length) return errorResponse("ACCOUNT_NOT_FOUND", 400, request);
+  const statements = [env.ONEX_DB.prepare(`
+    INSERT INTO journal_entries (journalNo, entryType, periodId, totalDebit, totalCredit, status, createdBy, postedAt, description)
+    VALUES (?, ?, ?, ?, ?, 'POSTED', ?, CURRENT_TIMESTAMP, ?)
+  `).bind(journalNo, entryType, periodResult.period.id, debitTotal.toFixed(6), creditTotal.toFixed(6), glActor(request), description)];
+  for (const line of normalized) {
+    statements.push(env.ONEX_DB.prepare(`INSERT INTO journal_entry_lines (journalNo, accountCode, debit, credit, description) VALUES (?, ?, ?, ?, ?)`)
+      .bind(journalNo, line.accountCode, line.debit.toFixed(6), line.credit.toFixed(6), line.description));
+  }
+  statements.push(env.ONEX_DB.prepare(`INSERT INTO audit_events (actor, actionCode, entityType, entityId, requestId) VALUES (?, 'POST', 'GL_JOURNAL', ?, ?)`)
+    .bind(glActor(request), journalNo, `GL_POST:${journalNo}`));
+  await env.ONEX_DB.batch(statements);
+  return json({ journalNo, entryType, periodId: periodResult.period.id, status: "POSTED", totalDebit: debitTotal.toFixed(6), totalCredit: creditTotal.toFixed(6) }, 201, request);
+}
+
+async function glTrialBalance(env, request) {
+  const url = new URL(request.url);
+  const periodId = positiveInteger(Number(url.searchParams.get("periodId"))) ? Number(url.searchParams.get("periodId")) : null;
+  const where = periodId ? "AND j.periodId = ?" : "";
+  const query = env.ONEX_DB.prepare(`
+    SELECT a.code AS accountCode, a.name AS accountName, a.accountType,
+           COALESCE(SUM(CAST(l.debit AS REAL)), 0) AS debit,
+           COALESCE(SUM(CAST(l.credit AS REAL)), 0) AS credit,
+           COALESCE(SUM(CAST(l.debit AS REAL) - CAST(l.credit AS REAL)), 0) AS balance
+    FROM accounts a LEFT JOIN journal_entry_lines l ON l.accountCode = a.code
+    LEFT JOIN journal_entries j ON j.journalNo = l.journalNo AND j.status = 'POSTED' ${where}
+    WHERE a.active = 1
+    GROUP BY a.code, a.name, a.accountType ORDER BY a.code
+  `);
+  const result = periodId ? await query.bind(periodId).all() : await query.all();
+  return json({ periodId, rows: result.results ?? [] }, 200, request);
+}
+
+async function glClosePeriod(env, request, periodId) {
+  requireWriteAuth(request, env);
+  if (!positiveInteger(periodId)) return errorResponse("INVALID_PERIOD_ID", 400, request);
+  const period = await env.ONEX_DB.prepare("SELECT id, companyId, code, status FROM fiscal_periods WHERE id = ? LIMIT 1").bind(periodId).first();
+  if (!period) return errorResponse("FISCAL_PERIOD_NOT_FOUND", 404, request);
+  if (period.status !== "OPEN") return json({ periodId, status: period.status, idempotent: true }, 200, request);
+  const check = await env.ONEX_DB.prepare(`
+    SELECT COUNT(*) AS journalCount, COALESCE(SUM(CAST(totalDebit AS REAL)), 0) AS debitTotal,
+           COALESCE(SUM(CAST(totalCredit AS REAL)), 0) AS creditTotal,
+           COALESCE(SUM(CASE WHEN ABS(CAST(totalDebit AS REAL) - CAST(totalCredit AS REAL)) > 0.000001 THEN 1 ELSE 0 END), 0) AS unbalanced
+    FROM journal_entries WHERE periodId = ? AND status = 'POSTED'
+  `).bind(periodId).first();
+  if (Number(check.unbalanced) > 0) return errorResponse("PERIOD_HAS_UNBALANCED_JOURNALS", 409, request);
+  const actor = glActor(request);
+  await env.ONEX_DB.batch([
+    env.ONEX_DB.prepare("UPDATE fiscal_periods SET status = 'CLOSED' WHERE id = ? AND status = 'OPEN'").bind(periodId),
+    env.ONEX_DB.prepare(`INSERT INTO fiscal_period_closures (periodId, companyId, closedBy, journalCount, debitTotal, creditTotal, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .bind(periodId, period.companyId, actor, Number(check.journalCount), Number(check.debitTotal).toFixed(6), Number(check.creditTotal).toFixed(6), "GL period close"),
+    env.ONEX_DB.prepare("INSERT INTO audit_events (actor, actionCode, entityType, entityId, requestId) VALUES (?, 'CLOSE', 'FISCAL_PERIOD', ?, ?)")
+      .bind(actor, String(periodId), `GL_CLOSE:${period.code}`),
+  ]);
+  return json({ periodId, code: period.code, status: "CLOSED", journalCount: Number(check.journalCount), debitTotal: Number(check.debitTotal).toFixed(6), creditTotal: Number(check.creditTotal).toFixed(6) }, 200, request);
+}
+
+async function glReverseJournal(env, request, journalId) {
+  requireWriteAuth(request, env);
+  if (!positiveInteger(journalId)) return errorResponse("INVALID_JOURNAL_ID", 400, request);
+  const journal = await env.ONEX_DB.prepare("SELECT id, journalNo, entryType, periodId, status, totalDebit, totalCredit FROM journal_entries WHERE id = ? LIMIT 1").bind(journalId).first();
+  if (!journal) return errorResponse("JOURNAL_NOT_FOUND", 404, request);
+  if (journal.reversedJournalId) return json({ journalId, status: "REVERSED", idempotent: true }, 200, request);
+  if (journal.status !== "POSTED") return errorResponse("INVALID_JOURNAL_STATE", 409, request);
+  const periodResult = await glRequireOpenPeriod(env, journal.periodId);
+  if (periodResult.error) return errorResponse(periodResult.error, periodResult.status, request);
+  const lines = await env.ONEX_DB.prepare("SELECT accountCode, debit, credit, description FROM journal_entry_lines WHERE journalNo = ? ORDER BY id").bind(journal.journalNo).all();
+  const reversalNo = `REV-${journal.journalNo}`;
+  const statements = [env.ONEX_DB.prepare(`
+    INSERT INTO journal_entries (journalNo, entryType, sourceRef, periodId, totalDebit, totalCredit, status, createdBy, postedAt, description)
+    VALUES (?, 'REVERSAL', ?, ?, ?, ?, 'POSTED', ?, CURRENT_TIMESTAMP, ?)
+  `).bind(reversalNo, journal.journalNo, journal.periodId, journal.totalDebit, journal.totalCredit, glActor(request), `Reversal of ${journal.journalNo}`)];
+  for (const line of lines.results ?? []) statements.push(env.ONEX_DB.prepare("INSERT INTO journal_entry_lines (journalNo, accountCode, debit, credit, description) VALUES (?, ?, ?, ?, ?)").bind(reversalNo, line.accountCode, line.credit, line.debit, `عكس ${line.description || journal.journalNo}`));
+  statements.push(env.ONEX_DB.prepare("UPDATE journal_entries SET status = 'REVERSED', reversedJournalId = (SELECT id FROM journal_entries WHERE journalNo = ?) WHERE id = ?").bind(reversalNo, journalId));
+  await env.ONEX_DB.batch(statements);
+  return json({ journalId, journalNo: journal.journalNo, reversalJournalNo: reversalNo, status: "REVERSED" }, 200, request);
+}
+
 export default {
   async fetch(request, env) {
     const headers = responseHeaders(request);
@@ -1162,6 +1297,13 @@ export default {
     try {
       const url = new URL(request.url);
       if (url.pathname === "/__health" && request.method === "GET") return health(env, request);
+      if (url.pathname === "/api/gl/periods" && request.method === "GET") return glListPeriods(env, request);
+      if (url.pathname === "/api/gl/journals" && request.method === "POST") return glCreateJournal(env, request);
+      if (url.pathname === "/api/gl/trial-balance" && request.method === "GET") return glTrialBalance(env, request);
+      const glCloseMatch = url.pathname.match(/^\/api\/gl\/periods\/(\d+)\/close$/);
+      if (glCloseMatch && request.method === "POST") return glClosePeriod(env, request, Number(glCloseMatch[1]));
+      const glReverseMatch = url.pathname.match(/^\/api\/gl\/journals\/(\d+)\/reverse$/);
+      if (glReverseMatch && request.method === "POST") return glReverseJournal(env, request, Number(glReverseMatch[1]));
       if (url.pathname.startsWith("/api/inventory/")) {
         const auth = inventoryAuthorize(request, env, `${request.method} ${url.pathname}`);
         if (auth.error) return inventoryErrorResponse(auth.error, request, env, auth.status);
