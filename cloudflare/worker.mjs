@@ -175,9 +175,9 @@ async function createInvoice(env, request) {
 
   const created = await env.ONEX_DB.prepare(`
     INSERT INTO invoices (docNo, customerId, warehouseId, currencyCode, exchangeRate, subtotal, taxTotal, grandTotal, status, idempotencyKey, sourceForm, notes, paymentMethod, paidAmount, remainingAmount, paymentReference, createdBy)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ARST004', ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, 'ARST004', ?, ?, ?, ?, ?, ?)
     RETURNING id, docNo, currencyCode, exchangeRate, subtotal, taxTotal, grandTotal, status, notes, paymentMethod, paidAmount, remainingAmount, paymentReference
-  `).bind(docNo, customerId, warehouseId, currencyCode, exchangeRate.toFixed(8), subtotal.toFixed(6), taxTotal.toFixed(6), grandTotal.toFixed(6), postNow ? "POSTED" : "DRAFT", idempotencyKey, notes, paymentMethod, paidAmountInput.toFixed(6), remainingAmount.toFixed(6), paymentReference, "cloudflare-worker").first();
+  `).bind(docNo, customerId, warehouseId, currencyCode, exchangeRate.toFixed(8), subtotal.toFixed(6), taxTotal.toFixed(6), grandTotal.toFixed(6), idempotencyKey, notes, paymentMethod, paidAmountInput.toFixed(6), remainingAmount.toFixed(6), paymentReference, "cloudflare-worker").first();
   if (!created) return errorResponse("INVOICE_CREATE_FAILED", 500, request);
 
   const statements = normalizedLines.map((line) => env.ONEX_DB.prepare(`
@@ -188,19 +188,8 @@ async function createInvoice(env, request) {
     INSERT INTO audit_events (actor, actionCode, entityType, entityId, requestId)
     VALUES (?, 'CREATE', 'AR_DOC', ?, ?)
   `).bind("cloudflare-worker", String(created.id), idempotencyKey));
-  if (postNow) {
-    const salesJournalNo = `AR-SALE-${created.docNo}`;
-    statements.push(env.ONEX_DB.prepare("INSERT INTO journal_entries (journalNo, entryType, totalDebit, totalCredit) VALUES (?, 'AR_SALE', ?, ?)").bind(salesJournalNo, grandTotal.toFixed(6), grandTotal.toFixed(6)));
-    statements.push(env.ONEX_DB.prepare("INSERT INTO journal_entry_lines (journalEntryId, accountCode, debit, credit, description) VALUES ((SELECT id FROM journal_entries WHERE journalNo = ?), '1100', ?, '0', ?), ((SELECT id FROM journal_entries WHERE journalNo = ?), '4100', '0', ?, ?), ((SELECT id FROM journal_entries WHERE journalNo = ?), '2200', '0', ?, ?)").bind(salesJournalNo, grandTotal.toFixed(6), `فاتورة ${created.docNo}`, salesJournalNo, subtotal.toFixed(6), `مبيعات ${created.docNo}`, salesJournalNo, taxTotal.toFixed(6), `ضريبة ${created.docNo}`));
-    if (paidAmountInput > 0) {
-      const voucherNo = `REC-${created.docNo}`;
-      statements.push(env.ONEX_DB.prepare("INSERT INTO payment_vouchers (voucherNo, direction, partyType, partyId, currencyCode, exchangeRate, amount, localAmount, accountCode, reference, notes, status, createdBy) VALUES (?, 'INCOMING', 'CUSTOMER', ?, ?, ?, ?, ?, ?, ?, ?, 'POSTED', ?)").bind(voucherNo, customerId, currencyCode, exchangeRate.toFixed(8), paidAmountInput.toFixed(6), (paidAmountInput * exchangeRate).toFixed(6), paymentMethod === "WALLET" ? "1200" : "1100", paymentReference, `سداد من الفاتورة ${created.docNo}`, "cloudflare-worker"));
-      const receiptJournalNo = `AR-RECEIPT-${created.docNo}`;
-      statements.push(env.ONEX_DB.prepare("INSERT INTO journal_entries (journalNo, entryType, totalDebit, totalCredit) VALUES (?, 'AR_RECEIPT', ?, ?)").bind(receiptJournalNo, paidAmountInput.toFixed(6), paidAmountInput.toFixed(6)));
-      statements.push(env.ONEX_DB.prepare("INSERT INTO journal_entry_lines (journalEntryId, accountCode, debit, credit, description) VALUES ((SELECT id FROM journal_entries WHERE journalNo = ?), ?, ?, '0', ?), ((SELECT id FROM journal_entries WHERE journalNo = ?), '1201', '0', ?, ?)").bind(receiptJournalNo, paymentMethod === "WALLET" ? "1200" : "1100", paidAmountInput.toFixed(6), `قبض ${created.docNo}`, receiptJournalNo, paidAmountInput.toFixed(6), `تسديد العميل ${created.docNo}`));
-    }
-  }
   await env.ONEX_DB.batch(statements);
+  if (postNow) return postSalesInvoice(env, request, created.id);
   return json({ invoiceId: created.id, docNo: created.docNo, currencyCode: created.currencyCode, exchangeRate: Number(created.exchangeRate), subtotal: Number(created.subtotal), taxTotal: Number(created.taxTotal), grandTotal: Number(created.grandTotal), localGrandTotal: Number(created.grandTotal) * Number(created.exchangeRate), paidAmount: Number(created.paidAmount), remainingAmount: Number(created.remainingAmount), paymentMethod: created.paymentMethod, paymentReference: created.paymentReference, notes: created.notes, status: created.status }, 201, request);
 }
 
@@ -209,7 +198,7 @@ async function listInvoices(env, request) {
   const search = (url.searchParams.get("search") || "").trim();
   const limit = boundedLimit(url);
   const result = await env.ONEX_DB.prepare(`
-    SELECT id, docNo, customerId, warehouseId, currencyCode, exchangeRate, subtotal, taxTotal, grandTotal, status, paymentMethod, paidAmount, remainingAmount, paymentReference, notes, createdBy, createdAt, updatedAt, postedAt
+    SELECT id, docNo, customerId, warehouseId, currencyCode, exchangeRate, subtotal, taxTotal, grandTotal, status, paymentMethod, paidAmount, remainingAmount, paymentReference, notes, cogsJournalNo, inventoryPostedAt, createdBy, createdAt, updatedAt, postedAt
     FROM invoices
     WHERE ? = '' OR docNo LIKE '%' || ? || '%' OR status LIKE '%' || ? || '%'
     ORDER BY createdAt DESC
@@ -235,7 +224,7 @@ async function listItems(env, request) {
 
 async function getInvoice(env, request, invoiceId) {
   if (!positiveInteger(invoiceId)) return errorResponse("INVALID_INVOICE_ID", 400, request);
-  const invoice = await env.ONEX_DB.prepare(`SELECT id, docNo, customerId, warehouseId, currencyCode, exchangeRate, subtotal, taxTotal, grandTotal, status, paymentMethod, paidAmount, remainingAmount, paymentReference, notes, createdBy, createdAt, updatedAt, postedAt FROM invoices WHERE id = ? LIMIT 1`).bind(invoiceId).first();
+  const invoice = await env.ONEX_DB.prepare(`SELECT id, docNo, customerId, warehouseId, currencyCode, exchangeRate, subtotal, taxTotal, grandTotal, status, paymentMethod, paidAmount, remainingAmount, paymentReference, notes, cogsJournalNo, inventoryPostedAt, createdBy, createdAt, updatedAt, postedAt FROM invoices WHERE id = ? LIMIT 1`).bind(invoiceId).first();
   if (!invoice) return errorResponse("INVOICE_NOT_FOUND", 404, request);
   const lines = await env.ONEX_DB.prepare(`SELECT l.id, l.itemId, i.code, COALESCE(NULLIF(i.description, ''), i.name) AS description, l.quantity, l.unitPrice, l.taxAmount, l.lineTotal FROM invoice_lines l JOIN items i ON i.id = l.itemId WHERE l.invoiceId = ? ORDER BY l.id`).bind(invoiceId).all();
   return json({ ...invoice, exchangeRate: Number(invoice.exchangeRate), subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), grandTotal: Number(invoice.grandTotal), paidAmount: Number(invoice.paidAmount), remainingAmount: Number(invoice.remainingAmount), localGrandTotal: Number(invoice.grandTotal) * Number(invoice.exchangeRate), lines: lines.results ?? [] }, 200, request);
@@ -327,12 +316,117 @@ async function createVoucher(env, request) {
   return json({ ...created, exchangeRate: Number(created.exchangeRate), amount: Number(created.amount), localAmount: Number(created.localAmount) }, 201, request);
 }
 
+
+async function postSalesInvoice(env, request, invoiceId) {
+  requireWriteAuth(request, env);
+  const invoice = await env.ONEX_DB.prepare(`
+    SELECT id, docNo, customerId, warehouseId, currencyCode, exchangeRate, subtotal, taxTotal,
+           grandTotal, status, paymentMethod, paidAmount, remainingAmount, paymentReference
+    FROM invoices WHERE id = ? LIMIT 1
+  `).bind(invoiceId).first();
+  if (!invoice) return errorResponse("INVOICE_NOT_FOUND", 404, request);
+  if (invoice.status === "POSTED") return json({ invoiceId, status: "POSTED", idempotent: true }, 200, request);
+  if (invoice.status !== "DRAFT") return errorResponse("INVALID_INVOICE_STATE", 409, request);
+
+  const linesResult = await env.ONEX_DB.prepare(`
+    SELECT id, itemId, quantity, unitPrice, taxAmount FROM invoice_lines
+    WHERE invoiceId = ? ORDER BY id
+  `).bind(invoiceId).all();
+  const lines = linesResult.results ?? [];
+  if (!lines.length) return errorResponse("INVOICE_HAS_NO_LINES", 400, request);
+
+  const balances = new Map();
+  const plans = [];
+  let cogsTotal = 0;
+  for (const line of lines) {
+    let balance = balances.get(line.itemId);
+    if (!balance) {
+      balance = await env.ONEX_DB.prepare(`
+        SELECT id, quantity, totalCost, unitCost, versionNo
+        FROM stock_balances WHERE itemId = ? AND warehouseId = ? LIMIT 1
+      `).bind(line.itemId, invoice.warehouseId).first();
+      if (!balance) return errorResponse("INSUFFICIENT_STOCK", 409, request, { itemId: line.itemId, available: "0", required: line.quantity });
+      balance = { ...balance, quantity: Number(balance.quantity), totalCost: Number(balance.totalCost), unitCost: Number(balance.unitCost) };
+      balances.set(line.itemId, balance);
+    }
+    const quantity = Number(line.quantity);
+    if (!Number.isFinite(quantity) || quantity <= 0) return errorResponse("INVALID_INVOICE_LINE", 400, request);
+    if (balance.quantity < quantity) return errorResponse("INSUFFICIENT_STOCK", 409, request, { itemId: line.itemId, available: balance.quantity.toFixed(6), required: quantity.toFixed(6) });
+    const appliedUnitCost = balance.quantity > 0 ? balance.totalCost / balance.quantity : balance.unitCost;
+    const appliedTotalCost = quantity * appliedUnitCost;
+    balance.quantity -= quantity;
+    balance.totalCost = Math.max(0, balance.totalCost - appliedTotalCost);
+    balance.unitCost = balance.quantity > 0 ? balance.totalCost / balance.quantity : appliedUnitCost;
+    cogsTotal += appliedTotalCost;
+    plans.push({ line, quantity, appliedUnitCost, appliedTotalCost, balance });
+  }
+
+  const cogsValue = cogsTotal.toFixed(6);
+  const cogsJournalNo = `AR-COGS-${invoice.docNo}`;
+  const salesJournalNo = `AR-SALE-${invoice.docNo}`;
+  const statements = [];
+  const firstByItem = new Map();
+  for (const plan of plans) {
+    if (!firstByItem.has(plan.line.itemId)) firstByItem.set(plan.line.itemId, plan);
+  }
+  for (const plan of firstByItem.values()) {
+    const b = plan.balance;
+    statements.push(env.ONEX_DB.prepare(`
+      UPDATE stock_balances
+      SET quantity = ?, totalCost = ?, unitCost = ?, versionNo = versionNo + 1
+      WHERE id = ? AND versionNo = ? AND CAST(quantity AS REAL) >= CAST(? AS REAL)
+    `).bind(b.quantity.toFixed(6), b.totalCost.toFixed(6), b.unitCost.toFixed(6), b.id, b.versionNo, plans.filter((x) => x.line.itemId === plan.line.itemId).reduce((sum, x) => sum + x.quantity, 0).toFixed(6)));
+  }
+  for (const plan of plans) {
+    statements.push(env.ONEX_DB.prepare(`
+      UPDATE invoice_lines SET appliedUnitCost = ?, appliedCostTotal = ? WHERE id = ?
+    `).bind(plan.appliedUnitCost.toFixed(6), plan.appliedTotalCost.toFixed(6), plan.line.id));
+    statements.push(env.ONEX_DB.prepare(`
+      INSERT INTO stock_movements
+        (itemId, warehouseId, sourceInvoiceId, inventoryDocumentId, movementType,
+         quantityIn, quantityOut, unitCost, totalCost, balanceAfter, createdBy, reference)
+      VALUES (?, ?, ?, NULL, 'SALE_ISSUE', '0', ?, ?, ?, ?, ?, ?)
+    `).bind(plan.line.itemId, invoice.warehouseId, invoice.id, plan.quantity.toFixed(6), plan.appliedUnitCost.toFixed(6), plan.appliedTotalCost.toFixed(6), plan.balance.quantity.toFixed(6), "cloudflare-worker", invoice.docNo));
+  }
+  statements.push(env.ONEX_DB.prepare(`
+    INSERT INTO journal_entries (journalNo, entryType, sourceRef, sourceInvoiceId, totalDebit, totalCredit, status, createdBy)
+    VALUES (?, 'AR_COGS', ?, ?, ?, ?, 'POSTED', ?)
+  `).bind(cogsJournalNo, invoice.docNo, invoice.id, cogsValue, cogsValue, "cloudflare-worker"));
+  statements.push(env.ONEX_DB.prepare(`
+    INSERT INTO journal_entry_lines (journalNo, accountCode, debit, credit, description)
+    VALUES (?, '5100', ?, '0', ?), (?, '1300', '0', ?, ?)
+  `).bind(cogsJournalNo, cogsValue, `تكلفة مبيعات ${invoice.docNo}`, cogsJournalNo, cogsValue, `خفض مخزون ${invoice.docNo}`));
+  const grandTotal = Number(invoice.grandTotal);
+  const subtotal = Number(invoice.subtotal);
+  const taxTotal = Number(invoice.taxTotal);
+  const totalText = grandTotal.toFixed(6);
+  statements.push(env.ONEX_DB.prepare(`
+    INSERT INTO journal_entries (journalNo, entryType, sourceRef, sourceInvoiceId, totalDebit, totalCredit, status, createdBy)
+    VALUES (?, 'AR_SALE', ?, ?, ?, ?, 'POSTED', ?)
+  `).bind(salesJournalNo, invoice.docNo, invoice.id, totalText, totalText, "cloudflare-worker"));
+  statements.push(env.ONEX_DB.prepare(`
+    INSERT INTO journal_entry_lines (journalNo, accountCode, debit, credit, description)
+    VALUES (?, '1100', ?, '0', ?), (?, '4100', '0', ?, ?), (?, '2200', '0', ?, ?)
+  `).bind(salesJournalNo, totalText, `فاتورة ${invoice.docNo}`, salesJournalNo, subtotal.toFixed(6), `مبيعات ${invoice.docNo}`, salesJournalNo, taxTotal.toFixed(6), `ضريبة ${invoice.docNo}`));
+  statements.push(env.ONEX_DB.prepare(`
+    UPDATE invoices SET status = 'POSTED', postedAt = CURRENT_TIMESTAMP, cogsJournalNo = ?, inventoryPostedAt = CURRENT_TIMESTAMP
+    WHERE id = ? AND status = 'DRAFT'
+  `).bind(cogsJournalNo, invoice.id));
+  statements.push(env.ONEX_DB.prepare(`
+    INSERT INTO audit_events (actor, actionCode, entityType, entityId, requestId)
+    VALUES ('cloudflare-worker', 'POST', 'AR_DOC', ?, ?)
+  `).bind(String(invoice.id), `AR_POST:${invoice.docNo}`));
+  await env.ONEX_DB.batch(statements);
+  return json({ invoiceId: invoice.id, docNo: invoice.docNo, status: "POSTED", cogsJournalNo, cogsTotal: cogsValue }, 200, request);
+}
+
 async function updateInvoiceStatus(env, request, invoiceId, targetStatus) {
   requireWriteAuth(request, env);
   if (!positiveInteger(invoiceId)) return errorResponse("INVALID_INVOICE_ID", 400, request);
   const current = await env.ONEX_DB.prepare("SELECT id, docNo, status, grandTotal FROM invoices WHERE id = ? LIMIT 1").bind(invoiceId).first();
   if (!current) return errorResponse("INVOICE_NOT_FOUND", 404, request);
   const expected = targetStatus === "POSTED" ? "DRAFT" : "POSTED";
+  if (targetStatus === "POSTED") return postSalesInvoice(env, request, invoiceId);
   if (current.status !== expected) return errorResponse("INVALID_INVOICE_STATE", 409, request);
   await env.ONEX_DB.prepare("UPDATE invoices SET status = ?, postedAt = CASE WHEN ? = 'POSTED' THEN CURRENT_TIMESTAMP ELSE postedAt END WHERE id = ? AND status = ?").bind(targetStatus, targetStatus, invoiceId, expected).run();
   await env.ONEX_DB.prepare("INSERT INTO audit_events (actor, actionCode, entityType, entityId, requestId) VALUES (?, ?, 'AR_DOC', ?, ?)").bind("cloudflare-worker", targetStatus === "POSTED" ? "POST" : "REVERSE", String(invoiceId), `${targetStatus}:${current.docNo}`).run();
