@@ -139,4 +139,14 @@ describe("Onyx rebuild contracts", () => {
     const posted = await caller.adjustments.post({ adjustmentId: adjustment.adjustmentId, actor: "test" });
     expect(posted.status).toBe("POSTED");
   });
+
+  it("supports periodic and cycle inventory counts", async () => {
+    const caller = appRouter.createCaller(ctx);
+    const warehouses = await caller.inventory.warehouses();
+    expect(warehouses.length).toBeGreaterThan(0);
+    const count = await caller.inventory.countCreate({ countNo: `COUNT-${Date.now()}`, warehouseId: 1, countMode: "CYCLE", actor: "test", lines: [{ itemId: 1, countedQuantity: "12" }] });
+    expect(count.status).toBe("DRAFT");
+    const posted = await caller.inventory.countPost({ countId: count.countId, actor: "test" });
+    expect(posted.status).toBe("POSTED");
+  });
 });

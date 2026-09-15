@@ -6,7 +6,7 @@ import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { invokeLLM } from "./_core/llm";
 import { LOCAL_COOKIE } from "./_core/localAuth";
 import { executeOracleAction, getOracleBridgeStatus } from "./_core/oracleBridge";
-import { createAdjustmentNote, createInvoice, createPurchaseInvoice, getCatalogSources, getDashboard, getErpControlData, getFinancialReportCatalog, getMasterData, getSystemTree, getWindowCatalog, getWindowContract, getWindowDomains, postAdjustmentNote, postInvoice, postPurchaseInvoice, receiveStock, reverseInvoice, reversePurchaseInvoice, runFinancialReport, saveAccount, saveBank, saveCashBox, saveCustomer, saveItem, saveJournal, saveSupplier, searchCustomers, searchInvoices, searchItems, searchJournals, searchSuppliers, searchSystemUsers } from "./db";
+import { createAdjustmentNote, createInventoryCount, createInvoice, createPurchaseInvoice, getCatalogSources, getDashboard, getErpControlData, getFinancialReportCatalog, getMasterData, getSystemTree, getWindowCatalog, getWindowContract, getWindowDomains, listWarehouses, postAdjustmentNote, postInventoryCount, postInvoice, postPurchaseInvoice, receiveStock, reverseInvoice, reversePurchaseInvoice, runFinancialReport, saveAccount, saveBank, saveCashBox, saveCustomer, saveItem, saveJournal, saveSupplier, searchCustomers, searchInvoices, searchItems, searchJournals, searchSuppliers, searchSystemUsers } from "./db";
 
 const invoiceLine = z.object({ itemId: z.number().int().positive(), quantity: z.string().min(1), unitPrice: z.string().min(1), taxAmount: z.string().default("0") });
 const partyInput = z.object({ id: z.number().int().positive().optional(), companyId: z.number().int().positive().default(1), code: z.string().min(1).max(50), legalName: z.string().min(1).max(250), currencyCode: z.string().length(3).default("SAR"), status: z.enum(["ACTIVE", "BLOCKED", "CLOSED"]).default("ACTIVE") });
@@ -91,7 +91,10 @@ export const appRouter = router({
     post: protectedProcedure.input(z.object({ adjustmentId: z.number().int().positive(), actor: z.string().default("workbench.user") })).mutation(({ input }) => postAdjustmentNote(input.adjustmentId, input.actor)),
   }),
   inventory: router({
+    warehouses: publicProcedure.query(() => listWarehouses()),
     receive: protectedProcedure.input(z.object({ itemId: z.number().int().positive(), warehouseId: z.number().int().positive(), quantity: z.string().min(1), unitCost: z.string().min(1), actor: z.string().default("workbench.user"), reference: z.string().min(1).max(80) })).mutation(({ input }) => receiveStock(input)),
+    countCreate: protectedProcedure.input(z.object({ countNo: z.string().min(1).max(80), warehouseId: z.number().int().positive(), countMode: z.enum(["PERIODIC", "CYCLE"]), actor: z.string().default("workbench.user"), notes: z.string().max(500).optional(), lines: z.array(z.object({ itemId: z.number().int().positive(), countedQuantity: z.string().min(1) })).min(1) })).mutation(({ input }) => createInventoryCount(input)),
+    countPost: protectedProcedure.input(z.object({ countId: z.number().int().positive(), actor: z.string().default("workbench.user") })).mutation(({ input }) => postInventoryCount(input.countId, input.actor)),
   }),
 });
 
