@@ -52,7 +52,7 @@ export default function Home() {
   const executeWindowAction = trpc.windows.executeAction.useMutation();
   const invoiceTotal = useMemo(() => (Number(quantity || 0) * Number(unitPrice || 0) + Number(tax || 0)).toFixed(2), [quantity, unitPrice, tax]);
   const dbReady = Boolean(master.data?.items?.length);
-  const stats = dashboard.data ?? { windows: 1490, domains: 12, invoices: 0, stockValue: "0.00", journals: 0 };
+  const stats = { windows: dashboard.data?.windows ?? 1490, domains: dashboard.data?.domains ?? 12, invoices: dashboard.data?.invoices ?? 0, stockValue: dashboard.data?.stockValue ?? "0.00", journals: dashboard.data?.journals ?? 0 };
   const visibleWindows = windows.data?.length ? windows.data : sampleWindows.filter(([name, d, cap]) => `${name} ${d} ${cap}`.toLowerCase().includes(windowSearch.toLowerCase()) && (domain === "ALL" || d === domain));
   const customers = master.data?.customers ?? [];
   const items = master.data?.items ?? [];
