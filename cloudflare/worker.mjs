@@ -1262,6 +1262,31 @@ async function api(request, env, url) {
     const rows = await env.ONEX_DB.prepare(sql).bind(...binds).all();
     return cloudJson(rows.results ?? []);
   }
+  if (url.pathname === "/api/cloud/windows/records/update" && request.method === "POST") {
+    const x = await readBody(request);
+    const form = String(x.legacyForm || "").replace(/\.fmx$/i, "").toUpperCase();
+    const id = Number(x.id);
+    const requested = x.fields && typeof x.fields === "object" ? x.fields : {};
+    if (!form || !Number.isInteger(id) || id < 1) return cloudJson({ error: "legacyForm and id are required" }, 400);
+    const configs = form === "ARST004" || form.startsWith("POST")
+      ? { table: "invoices", fields: ["status"] }
+      : form.startsWith("ARST") || form.startsWith("ARSR")
+        ? { table: "customers", fields: ["legalName", "currencyCode", "status"] }
+        : form.startsWith("APST") || form.startsWith("APSR")
+          ? { table: "suppliers", fields: ["legalName", "currencyCode", "status"] }
+          : form.startsWith("INVT") || form.startsWith("INVI")
+            ? { table: "items", fields: ["name", "itemType", "unitCode", "active"] }
+            : form.startsWith("GLST") || form.startsWith("GLSI") || form.startsWith("GLSR")
+              ? { table: "journal_entries", fields: ["entryType", "status"] }
+              : null;
+    if (!configs) return cloudJson({ error: "WINDOW_RECORD_NOT_EDITABLE" }, 400);
+    const updates = configs.fields.filter((field) => Object.prototype.hasOwnProperty.call(requested, field) && requested[field] !== null && requested[field] !== undefined).map((field) => `${field} = ?`);
+    const values = configs.fields.filter((field) => Object.prototype.hasOwnProperty.call(requested, field) && requested[field] !== null && requested[field] !== undefined).map((field) => requested[field]);
+    if (!updates.length) return cloudJson({ error: "NO_EDITABLE_FIELDS" }, 400);
+    values.push(id);
+    const result = await env.ONEX_DB.prepare(`UPDATE ${configs.table} SET ${updates.join(", ")} WHERE id = ?`).bind(...values).run();
+    return cloudJson({ ok: true, table: configs.table, id, result });
+  }
   if (url.pathname === "/api/cloud/windows/action" && request.method === "POST") return cloudJson({ ok: true, status: "SIMULATED", source: "cloud-d1" });
   if (url.pathname === "/api/cloud/ai/assist" && request.method === "POST") return cloudJson({ answer: "تم تحويل الطلب إلى طبقة Cloudflare D1. هذه إجابة تشغيلية أولية من Worker، ويمكن ربط نموذج الذكاء الاصطناعي لاحقًا." });
   if (url.pathname === "/api/cloud/accounts" && request.method === "GET") {

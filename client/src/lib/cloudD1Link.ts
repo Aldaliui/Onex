@@ -18,6 +18,9 @@ const request = async (path: string, method: "GET" | "POST", input?: unknown) =>
   return payload.data ?? payload;
 };
 
+export const updateCloudWindowRecord = (input: { legacyForm: string; id: number; fields: Record<string, unknown> }) =>
+  request("/windows/records/update", "POST", input);
+
 const mapOperation = (op: Operation) => {
   const input = op.input as Record<string, unknown> | undefined;
   switch (op.path) {
