@@ -323,6 +323,8 @@ async function createPurchase(env, request) {
 
 async function postPurchaseInvoice(env, request, purchaseId) {
   requireWriteAuth(request, env);
+  const periodResult = await glRequireOpenPeriod(env, null);
+  if (periodResult.error) return errorResponse(periodResult.error, periodResult.status, request);
   const purchase = await env.ONEX_DB.prepare(`
     SELECT id, docNo, supplierId, warehouseId, currencyCode, exchangeRate, subtotal, taxTotal,
            grandTotal, status, inventoryJournalNo
@@ -399,13 +401,14 @@ async function postPurchaseInvoice(env, request, purchaseId) {
     `).bind(plan.line.itemId, purchase.warehouseId, purchase.id, plan.quantity.toFixed(6), plan.inputUnitCost.toFixed(6), plan.receivedValue.toFixed(6), plan.balance.quantity.toFixed(6), "cloudflare-worker", purchase.docNo));
   }
   statements.push(env.ONEX_DB.prepare(`
-    INSERT INTO journal_entries (journalNo, entryType, sourceRef, sourcePurchaseInvoiceId, totalDebit, totalCredit, status, createdBy)
-    VALUES (?, 'AP_PURCHASE', ?, ?, ?, ?, 'POSTED', ?)
-  `).bind(journalNo, purchase.docNo, purchase.id, total, total, "cloudflare-worker"));
+    INSERT INTO journal_entries (journalNo, entryType, sourceRef, sourcePurchaseInvoiceId, periodId, totalDebit, totalCredit, status, createdBy)
+    VALUES (?, 'AP_PURCHASE', ?, ?, ?, ?, ?, 'POSTED', ?)
+  `).bind(journalNo, purchase.docNo, purchase.id, periodResult.period.id, total, total, "cloudflare-worker"));
   statements.push(env.ONEX_DB.prepare(`
-    INSERT INTO journal_entry_lines (journalNo, accountCode, debit, credit, description)
-    VALUES (?, '1300', ?, '0', ?), (?, '2100', '0', ?, ?)
-  `).bind(journalNo, total, `مخزون مشتريات ${purchase.docNo}`, journalNo, total, `التزام مورد ${purchase.docNo}`));
+    INSERT INTO journal_entry_lines (journalEntryId, accountCode, debit, credit, description)
+    SELECT id, '1300', ?, '0', ? FROM journal_entries WHERE journalNo = ?
+    UNION ALL SELECT id, '2100', '0', ?, ? FROM journal_entries WHERE journalNo = ?
+  `).bind(total, `مخزون مشتريات ${purchase.docNo}`, journalNo, total, `التزام مورد ${purchase.docNo}`, journalNo));
   statements.push(env.ONEX_DB.prepare(`
     UPDATE purchase_invoices SET status = 'POSTED', postedAt = CURRENT_TIMESTAMP, inventoryJournalNo = ?, inventoryPostedAt = CURRENT_TIMESTAMP
     WHERE id = ? AND status = 'DRAFT'
@@ -437,6 +440,8 @@ async function createVoucher(env, request) {
 
 async function postSalesInvoice(env, request, invoiceId) {
   requireWriteAuth(request, env);
+  const periodResult = await glRequireOpenPeriod(env, null);
+  if (periodResult.error) return errorResponse(periodResult.error, periodResult.status, request);
   const invoice = await env.ONEX_DB.prepare(`
     SELECT id, docNo, customerId, warehouseId, currencyCode, exchangeRate, subtotal, taxTotal,
            grandTotal, status, paymentMethod, paidAmount, remainingAmount, paymentReference
@@ -507,25 +512,28 @@ async function postSalesInvoice(env, request, invoiceId) {
     `).bind(plan.line.itemId, invoice.warehouseId, invoice.id, plan.quantity.toFixed(6), plan.appliedUnitCost.toFixed(6), plan.appliedTotalCost.toFixed(6), plan.balance.quantity.toFixed(6), "cloudflare-worker", invoice.docNo));
   }
   statements.push(env.ONEX_DB.prepare(`
-    INSERT INTO journal_entries (journalNo, entryType, sourceRef, sourceInvoiceId, totalDebit, totalCredit, status, createdBy)
-    VALUES (?, 'AR_COGS', ?, ?, ?, ?, 'POSTED', ?)
-  `).bind(cogsJournalNo, invoice.docNo, invoice.id, cogsValue, cogsValue, "cloudflare-worker"));
+    INSERT INTO journal_entries (journalNo, entryType, sourceRef, sourceInvoiceId, periodId, totalDebit, totalCredit, status, createdBy)
+    VALUES (?, 'AR_COGS', ?, ?, ?, ?, ?, 'POSTED', ?)
+  `).bind(cogsJournalNo, invoice.docNo, invoice.id, periodResult.period.id, cogsValue, cogsValue, "cloudflare-worker"));
   statements.push(env.ONEX_DB.prepare(`
-    INSERT INTO journal_entry_lines (journalNo, accountCode, debit, credit, description)
-    VALUES (?, '5100', ?, '0', ?), (?, '1300', '0', ?, ?)
-  `).bind(cogsJournalNo, cogsValue, `تكلفة مبيعات ${invoice.docNo}`, cogsJournalNo, cogsValue, `خفض مخزون ${invoice.docNo}`));
+    INSERT INTO journal_entry_lines (journalEntryId, accountCode, debit, credit, description)
+    SELECT id, '5100', ?, '0', ? FROM journal_entries WHERE journalNo = ?
+    UNION ALL SELECT id, '1300', '0', ?, ? FROM journal_entries WHERE journalNo = ?
+  `).bind(cogsValue, `تكلفة مبيعات ${invoice.docNo}`, cogsJournalNo, cogsValue, `خفض مخزون ${invoice.docNo}`, cogsJournalNo));
   const grandTotal = Number(invoice.grandTotal);
   const subtotal = Number(invoice.subtotal);
   const taxTotal = Number(invoice.taxTotal);
   const totalText = grandTotal.toFixed(6);
   statements.push(env.ONEX_DB.prepare(`
-    INSERT INTO journal_entries (journalNo, entryType, sourceRef, sourceInvoiceId, totalDebit, totalCredit, status, createdBy)
-    VALUES (?, 'AR_SALE', ?, ?, ?, ?, 'POSTED', ?)
-  `).bind(salesJournalNo, invoice.docNo, invoice.id, totalText, totalText, "cloudflare-worker"));
+    INSERT INTO journal_entries (journalNo, entryType, sourceRef, sourceInvoiceId, periodId, totalDebit, totalCredit, status, createdBy)
+    VALUES (?, 'AR_SALE', ?, ?, ?, ?, ?, 'POSTED', ?)
+  `).bind(salesJournalNo, invoice.docNo, invoice.id, periodResult.period.id, totalText, totalText, "cloudflare-worker"));
   statements.push(env.ONEX_DB.prepare(`
-    INSERT INTO journal_entry_lines (journalNo, accountCode, debit, credit, description)
-    VALUES (?, '1100', ?, '0', ?), (?, '4100', '0', ?, ?), (?, '2200', '0', ?, ?)
-  `).bind(salesJournalNo, totalText, `فاتورة ${invoice.docNo}`, salesJournalNo, subtotal.toFixed(6), `مبيعات ${invoice.docNo}`, salesJournalNo, taxTotal.toFixed(6), `ضريبة ${invoice.docNo}`));
+    INSERT INTO journal_entry_lines (journalEntryId, accountCode, debit, credit, description)
+    SELECT id, '1100', ?, '0', ? FROM journal_entries WHERE journalNo = ?
+    UNION ALL SELECT id, '4100', '0', ?, ? FROM journal_entries WHERE journalNo = ?
+    UNION ALL SELECT id, '2200', '0', ?, ? FROM journal_entries WHERE journalNo = ?
+  `).bind(totalText, `فاتورة ${invoice.docNo}`, salesJournalNo, subtotal.toFixed(6), `مبيعات ${invoice.docNo}`, salesJournalNo, taxTotal.toFixed(6), `ضريبة ${invoice.docNo}`, salesJournalNo));
   statements.push(env.ONEX_DB.prepare(`
     UPDATE invoices SET status = 'POSTED', postedAt = CURRENT_TIMESTAMP, cogsJournalNo = ?, inventoryPostedAt = CURRENT_TIMESTAMP
     WHERE id = ? AND status = 'DRAFT'
@@ -979,6 +987,8 @@ async function createInventoryDocument(request, env, auth) {
 }
 
 async function postInventoryDocument(request, env, auth, id) {
+  const periodResult = await glRequireOpenPeriod(env, null);
+  if (periodResult.error) return inventoryErrorResponse(periodResult.error, request, env, periodResult.status);
   const document = await env.ONEX_DB.prepare(`
     SELECT id, companyId, docNo, docType, status, fromWarehouseId, toWarehouseId
     FROM inventory_documents WHERE id = ? AND companyId = ? LIMIT 1
@@ -1041,19 +1051,19 @@ async function postInventoryDocument(request, env, auth, id) {
   const journalNo = `INV-${document.docType}-${document.docNo}`;
   const statements = [env.ONEX_DB.prepare(`
     INSERT OR IGNORE INTO journal_entries
-      (journalNo, sourceInventoryDocumentId, entryType, sourceRef, totalDebit, totalCredit, status, createdBy)
-    VALUES (?, ?, ?, ?, ?, ?, 'POSTED', ?)
-  `).bind(journalNo, id, `INVENTORY_${document.docType}`, document.docNo, journalTotal, journalTotal, auth.actor)];
+      (journalNo, sourceInventoryDocumentId, periodId, entryType, sourceRef, totalDebit, totalCredit, status, createdBy)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'POSTED', ?)
+  `).bind(journalNo, id, periodResult.period.id, `INVENTORY_${document.docType}`, document.docNo, journalTotal, journalTotal, auth.actor)];
   statements.push(env.ONEX_DB.prepare(`
     INSERT OR IGNORE INTO journal_entry_lines
-      (journalNo, accountCode, debit, credit, description)
-    SELECT journalNo, ?, ?, '0', ?
+      (journalEntryId, accountCode, debit, credit, description)
+    SELECT id, ?, ?, '0', ?
     FROM journal_entries WHERE sourceInventoryDocumentId = ?
   `).bind(mapping.debitAccountCode, journalTotal, `${document.docType} ${document.docNo}`, id));
   statements.push(env.ONEX_DB.prepare(`
     INSERT OR IGNORE INTO journal_entry_lines
-      (journalNo, accountCode, debit, credit, description)
-    SELECT journalNo, ?, '0', ?, ?
+      (journalEntryId, accountCode, debit, credit, description)
+    SELECT id, ?, '0', ?, ?
     FROM journal_entries WHERE sourceInventoryDocumentId = ?
   `).bind(mapping.creditAccountCode, journalTotal, `${document.docType} ${document.docNo}`, id));
   for (const line of lines) {
@@ -1175,88 +1185,210 @@ async function inventoryDispatch(request, env, path, auth) {
 
 
 
-const cloudJson = (data, status = 200) => Response.json(data, { status, headers: { "cache-control": "no-store", "x-onex-deployment": "cloudflare-worker", "access-control-allow-origin": "*" } });
-const readBody = async (request) => { try { return await request.json(); } catch { return {}; } };
-const limitOf = (url) => Math.min(Number(url.searchParams.get("limit") || 100), 200);
+function glActor(request) {
+  return request.headers.get("x-onex-actor")?.trim().slice(0, 120) || "cloudflare-worker";
+}
 
-async function api(request, env, url) {
-  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { "access-control-allow-origin": "*", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type,authorization" } });
-  if (url.pathname === "/api/cloud/health") {
-    const result = await env.ONEX_DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-    return cloudJson({ ok: true, service: "onex-d1-api", database: "onex-production", tables: result.results?.map((row) => row.name) ?? [] });
+async function glRequireOpenPeriod(env, periodId) {
+  const period = periodId
+    ? await env.ONEX_DB.prepare("SELECT id, companyId, code, startsOn, endsOn, status FROM fiscal_periods WHERE id = ? LIMIT 1").bind(periodId).first()
+    : await env.ONEX_DB.prepare("SELECT id, companyId, code, startsOn, endsOn, status FROM fiscal_periods WHERE status = 'OPEN' ORDER BY startsOn DESC LIMIT 1").first();
+  if (!period) return { error: "FISCAL_PERIOD_NOT_FOUND", status: 400 };
+  if (period.status !== "OPEN") return { error: "FISCAL_PERIOD_CLOSED", status: 409, period };
+  return { period };
+}
+
+async function glListPeriods(env, request) {
+  const result = await env.ONEX_DB.prepare(`
+    SELECT p.id, p.companyId, p.code, p.startsOn, p.endsOn, p.status,
+           p.id AS periodId, c.closedBy, c.closedAt, c.journalCount, c.debitTotal, c.creditTotal
+    FROM fiscal_periods p LEFT JOIN fiscal_period_closures c ON c.periodId = p.id
+    ORDER BY p.startsOn DESC
+  `).all();
+  return json({ rows: result.results ?? [] }, 200, request);
+}
+
+async function glCreateJournal(env, request) {
+  requireWriteAuth(request, env);
+  const body = await readJson(request);
+  const journalNo = typeof body.journalNo === "string" && body.journalNo.trim() ? body.journalNo.trim().slice(0, 80) : `GL-${Date.now()}`;
+  const entryType = typeof body.entryType === "string" && body.entryType.trim() ? body.entryType.trim().toUpperCase().slice(0, 40) : "GENERAL";
+  const description = typeof body.description === "string" ? body.description.slice(0, 500) : null;
+  const periodId = positiveInteger(Number(body.periodId)) ? Number(body.periodId) : null;
+  const lines = Array.isArray(body.lines) ? body.lines : [];
+  if (!lines.length || lines.length > 200) return errorResponse("INVALID_JOURNAL_LINES", 400, request);
+  const periodResult = await glRequireOpenPeriod(env, periodId);
+  if (periodResult.error) return errorResponse(periodResult.error, periodResult.status, request, periodResult.period ? { periodId: periodResult.period.id } : undefined);
+  let debitTotal = 0;
+  let creditTotal = 0;
+  const normalized = [];
+  for (const line of lines) {
+    const accountCode = typeof line?.accountCode === "string" ? line.accountCode.trim().slice(0, 40) : "";
+    const debit = decimal(line?.debit ?? 0, { min: 0, allowZero: true });
+    const credit = decimal(line?.credit ?? 0, { min: 0, allowZero: true });
+    const lineDescription = typeof line?.description === "string" ? line.description.slice(0, 300) : description;
+    if (!accountCode || debit === null || credit === null || (debit === 0 && credit === 0) || (debit > 0 && credit > 0)) return errorResponse("INVALID_JOURNAL_LINE", 400, request);
+    normalized.push({ accountCode, debit, credit, description: lineDescription });
+    debitTotal += debit;
+    creditTotal += credit;
   }
-  if (url.pathname === "/api/cloud/master-data") {
-    const [companies, branches, warehouses, roles, periods, customers, suppliers, items] = await Promise.all([
-      env.ONEX_DB.prepare("SELECT * FROM companies ORDER BY id").all(), env.ONEX_DB.prepare("SELECT * FROM branches WHERE active=1 ORDER BY code").all(), env.ONEX_DB.prepare("SELECT * FROM warehouses WHERE active=1 ORDER BY code").all(), env.ONEX_DB.prepare("SELECT * FROM roles WHERE active=1 ORDER BY code").all(), env.ONEX_DB.prepare("SELECT * FROM fiscal_periods ORDER BY startsOn DESC").all(),
-      env.ONEX_DB.prepare("SELECT * FROM customers ORDER BY code").all(), env.ONEX_DB.prepare("SELECT * FROM suppliers ORDER BY code").all(), env.ONEX_DB.prepare("SELECT * FROM items ORDER BY code").all(),
-    ]);
-    return cloudJson({ companies: companies.results, branches: branches.results, warehouses: warehouses.results, roles: roles.results, fiscalPeriods: periods.results, customers: customers.results, suppliers: suppliers.results, items: items.results });
+  if (Math.abs(debitTotal - creditTotal) > 0.000001 || debitTotal <= 0) return errorResponse("JOURNAL_NOT_BALANCED", 400, request, { debit: debitTotal.toFixed(6), credit: creditTotal.toFixed(6) });
+  const codes = [...new Set(normalized.map((line) => line.accountCode))];
+  const accounts = await env.ONEX_DB.prepare(`SELECT code FROM accounts WHERE code IN (${codes.map(() => "?").join(",")}) AND active = 1`).bind(...codes).all();
+  if ((accounts.results ?? []).length !== codes.length) return errorResponse("ACCOUNT_NOT_FOUND", 400, request);
+  const statements = [env.ONEX_DB.prepare(`
+    INSERT INTO journal_entries (journalNo, entryType, periodId, totalDebit, totalCredit, status, createdBy, postedAt)
+    VALUES (?, ?, ?, ?, ?, 'POSTED', ?, CURRENT_TIMESTAMP)
+  `).bind(journalNo, entryType, periodResult.period.id, debitTotal.toFixed(6), creditTotal.toFixed(6), glActor(request))];
+  for (const line of normalized) {
+    statements.push(env.ONEX_DB.prepare(`INSERT INTO journal_entry_lines (journalEntryId, accountCode, debit, credit, description) SELECT id, ?, ?, ?, ? FROM journal_entries WHERE journalNo = ?`)
+      .bind(line.accountCode, line.debit.toFixed(6), line.credit.toFixed(6), line.description, journalNo));
   }
-  if (url.pathname === "/api/cloud/auth/me") return cloudJson({ id: 1, openId: "cloud-user", name: "مدير النظام", email: "admin@onex.local", role: "admin" });
-  if (url.pathname === "/api/cloud/auth/logout") return cloudJson({ ok: true });
-  if (url.pathname === "/api/cloud/dashboard") {
-    const [invoices, journals, domains] = await Promise.all([
-      env.ONEX_DB.prepare("SELECT COUNT(*) AS count FROM invoices WHERE status='POSTED'").first(),
-      env.ONEX_DB.prepare("SELECT COUNT(*) AS count FROM journal_entries").first(),
-      env.ONEX_DB.prepare("SELECT COUNT(DISTINCT domainCode) AS count FROM window_registry").first().catch(() => ({ count: 0 })),
-    ]);
-    return cloudJson({ windows: 1490, domains: Number(domains?.count || 0), invoices: Number(invoices?.count || 0), stockValue: "0.00", journals: Number(journals?.count || 0) });
+  statements.push(env.ONEX_DB.prepare(`INSERT INTO audit_events (actor, actionCode, entityType, entityId, requestId) VALUES (?, 'POST', 'GL_JOURNAL', ?, ?)`)
+    .bind(glActor(request), journalNo, `GL_POST:${journalNo}`));
+  await env.ONEX_DB.batch(statements);
+  return json({ journalNo, entryType, periodId: periodResult.period.id, status: "POSTED", totalDebit: debitTotal.toFixed(6), totalCredit: creditTotal.toFixed(6) }, 201, request);
+}
+
+async function glTrialBalance(env, request) {
+  const url = new URL(request.url);
+  const periodId = positiveInteger(Number(url.searchParams.get("periodId"))) ? Number(url.searchParams.get("periodId")) : null;
+  const where = periodId ? "AND j.periodId = ?" : "";
+  const query = env.ONEX_DB.prepare(`
+    SELECT a.code AS accountCode, a.name AS accountName, a.accountType,
+           COALESCE(SUM(CAST(l.debit AS REAL)), 0) AS debit,
+           COALESCE(SUM(CAST(l.credit AS REAL)), 0) AS credit,
+           COALESCE(SUM(CAST(l.debit AS REAL) - CAST(l.credit AS REAL)), 0) AS balance
+    FROM accounts a LEFT JOIN journal_entry_lines l ON l.accountCode = a.code
+    LEFT JOIN journal_entries j ON j.id = l.journalEntryId AND j.status = 'POSTED' ${where}
+    WHERE a.active = 1
+    GROUP BY a.code, a.name, a.accountType ORDER BY a.code
+  `);
+  const result = periodId ? await query.bind(periodId).all() : await query.all();
+  return json({ periodId, rows: result.results ?? [] }, 200, request);
+}
+
+async function glClosePeriod(env, request, periodId) {
+  requireWriteAuth(request, env);
+  if (!positiveInteger(periodId)) return errorResponse("INVALID_PERIOD_ID", 400, request);
+  const period = await env.ONEX_DB.prepare("SELECT id, companyId, code, status FROM fiscal_periods WHERE id = ? LIMIT 1").bind(periodId).first();
+  if (!period) return errorResponse("FISCAL_PERIOD_NOT_FOUND", 404, request);
+  if (period.status !== "OPEN") return json({ periodId, status: period.status, idempotent: true }, 200, request);
+  const check = await env.ONEX_DB.prepare(`
+    SELECT COUNT(*) AS journalCount, COALESCE(SUM(CAST(totalDebit AS REAL)), 0) AS debitTotal,
+           COALESCE(SUM(CAST(totalCredit AS REAL)), 0) AS creditTotal,
+           COALESCE(SUM(CASE WHEN ABS(CAST(totalDebit AS REAL) - CAST(totalCredit AS REAL)) > 0.000001 THEN 1 ELSE 0 END), 0) AS unbalanced
+    FROM journal_entries WHERE periodId = ? AND status = 'POSTED'
+  `).bind(periodId).first();
+  if (Number(check.unbalanced) > 0) return errorResponse("PERIOD_HAS_UNBALANCED_JOURNALS", 409, request);
+  const actor = glActor(request);
+  await env.ONEX_DB.batch([
+    env.ONEX_DB.prepare("UPDATE fiscal_periods SET status = 'CLOSED' WHERE id = ? AND status = 'OPEN'").bind(periodId),
+    env.ONEX_DB.prepare(`INSERT INTO fiscal_period_closures (periodId, companyId, closedBy, journalCount, debitTotal, creditTotal, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .bind(periodId, period.companyId, actor, Number(check.journalCount), Number(check.debitTotal).toFixed(6), Number(check.creditTotal).toFixed(6), "GL period close"),
+    env.ONEX_DB.prepare("INSERT INTO audit_events (actor, actionCode, entityType, entityId, requestId) VALUES (?, 'CLOSE', 'FISCAL_PERIOD', ?, ?)")
+      .bind(actor, String(periodId), `GL_CLOSE:${period.code}`),
+  ]);
+  return json({ periodId, code: period.code, status: "CLOSED", journalCount: Number(check.journalCount), debitTotal: Number(check.debitTotal).toFixed(6), creditTotal: Number(check.creditTotal).toFixed(6) }, 200, request);
+}
+
+async function glReverseJournal(env, request, journalId) {
+  requireWriteAuth(request, env);
+  if (!positiveInteger(journalId)) return errorResponse("INVALID_JOURNAL_ID", 400, request);
+  const journal = await env.ONEX_DB.prepare("SELECT id, journalNo, entryType, periodId, status, totalDebit, totalCredit FROM journal_entries WHERE id = ? LIMIT 1").bind(journalId).first();
+  if (!journal) return errorResponse("JOURNAL_NOT_FOUND", 404, request);
+  if (journal.reversedJournalId) return json({ journalId, status: "REVERSED", idempotent: true }, 200, request);
+  if (journal.status !== "POSTED") return errorResponse("INVALID_JOURNAL_STATE", 409, request);
+  const periodResult = await glRequireOpenPeriod(env, journal.periodId);
+  if (periodResult.error) return errorResponse(periodResult.error, periodResult.status, request);
+  const lines = await env.ONEX_DB.prepare("SELECT l.accountCode, l.debit, l.credit, l.description FROM journal_entry_lines l JOIN journal_entries j ON j.id = l.journalEntryId WHERE j.journalNo = ? ORDER BY l.id").bind(journal.journalNo).all();
+  const reversalNo = `REV-${journal.journalNo}`;
+  const statements = [env.ONEX_DB.prepare(`
+    INSERT INTO journal_entries (journalNo, entryType, sourceRef, periodId, totalDebit, totalCredit, status, createdBy, postedAt)
+    VALUES (?, 'REVERSAL', ?, ?, ?, ?, 'POSTED', ?, CURRENT_TIMESTAMP)
+  `).bind(reversalNo, journal.journalNo, journal.periodId, journal.totalDebit, journal.totalCredit, glActor(request))];
+  for (const line of lines.results ?? []) statements.push(env.ONEX_DB.prepare("INSERT INTO journal_entry_lines (journalEntryId, accountCode, debit, credit, description) SELECT id, ?, ?, ?, ? FROM journal_entries WHERE journalNo = ?").bind(line.accountCode, line.credit, line.debit, `عكس ${line.description || journal.journalNo}`, reversalNo));
+  statements.push(env.ONEX_DB.prepare("UPDATE journal_entries SET status = 'REVERSED', reversedJournalId = (SELECT id FROM journal_entries WHERE journalNo = ?) WHERE id = ?").bind(reversalNo, journalId));
+  await env.ONEX_DB.batch(statements);
+  return json({ journalId, journalNo: journal.journalNo, reversalJournalNo: reversalNo, status: "REVERSED" }, 200, request);
+}
+
+const LOCAL_AUTH_COOKIE = "onex_local_session";
+const LOCAL_AUTH_TTL = 60 * 60 * 8;
+
+function localAuthCredentials(env) {
+  return {
+    username: env.LOCAL_AUTH_USERNAME || "administrator",
+    password: env.LOCAL_AUTH_PASSWORD || "onex-local",
+    secret: env.LOCAL_AUTH_SECRET || "onex-local-session-secret",
+  };
+}
+
+function base64UrlEncode(value) {
+  const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function base64UrlDecode(value) {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((value.length + 3) % 4);
+  const binary = atob(padded);
+  return new Uint8Array([...binary].map((char) => char.charCodeAt(0)));
+}
+
+async function localAuthSignature(value, secret) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return base64UrlEncode(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value))));
+}
+
+async function localAuthToken(user, secret) {
+  const payload = base64UrlEncode(JSON.stringify({ ...user, exp: Math.floor(Date.now() / 1000) + LOCAL_AUTH_TTL }));
+  return `${payload}.${await localAuthSignature(payload, secret)}`;
+}
+
+async function localAuthUser(request, env) {
+  const cookie = request.headers.get("Cookie") || "";
+  const match = cookie.match(new RegExp(`(?:^|;\\s*)${LOCAL_AUTH_COOKIE}=([^;]+)`));
+  if (!match) return null;
+  try {
+    const [payload, signature] = match[1].split(".");
+    const credentials = localAuthCredentials(env);
+    if (!payload || !signature || signature !== await localAuthSignature(payload, credentials.secret)) return null;
+    const user = JSON.parse(new TextDecoder().decode(base64UrlDecode(payload)));
+    if (!user?.exp || user.exp < Math.floor(Date.now() / 1000)) return null;
+    return user;
+  } catch { return null; }
+}
+
+function localAuthUserPayload(credentials) {
+  const now = new Date().toISOString();
+  return { id: 1, openId: `local:${credentials.username}`, email: `${credentials.username}@local.onex`, name: "مدير النظام", loginMethod: "local", role: "admin", createdAt: now, updatedAt: now, lastSignedIn: now };
+}
+
+async function localAuthDispatch(request, env, path) {
+  const credentials = localAuthCredentials(env);
+  if (path === "/api/local-auth/config" && request.method === "GET") return json({ enabled: true, username: credentials.username }, 200, request);
+  if (path === "/api/local-auth/me" && request.method === "GET") {
+    const user = await localAuthUser(request, env);
+    return user ? json(user, 200, request) : json({ error: "UNAUTHENTICATED" }, 401, request);
   }
-  if (url.pathname === "/api/cloud/windows") return cloudJson([]);
-  if (url.pathname === "/api/cloud/windows/tree") return cloudJson([]);
-  if (url.pathname.startsWith("/api/cloud/windows/contract/")) return cloudJson({ legacyForm: decodeURIComponent(url.pathname.split("/").pop() || ""), fields: [], triggers: [], procedures: [], notes: "Cloud D1 runtime contract" });
-  if (url.pathname === "/api/cloud/windows/records") return cloudJson([]);
-  if (url.pathname === "/api/cloud/windows/action" && request.method === "POST") return cloudJson({ ok: true, status: "SIMULATED", source: "cloud-d1" });
-  if (url.pathname === "/api/cloud/ai/assist" && request.method === "POST") return cloudJson({ answer: "تم تحويل الطلب إلى طبقة Cloudflare D1. هذه إجابة تشغيلية أولية من Worker، ويمكن ربط نموذج الذكاء الاصطناعي لاحقًا." });
-  if (url.pathname === "/api/cloud/accounts" && request.method === "GET") {
-    const q = (url.searchParams.get("search") || "").trim(); const lim = limitOf(url);
-    const r = q ? await env.ONEX_DB.prepare("SELECT * FROM accounts WHERE code LIKE ? OR name LIKE ? ORDER BY code LIMIT ?").bind(`%${q}%`, `%${q}%`, lim).all() : await env.ONEX_DB.prepare("SELECT * FROM accounts ORDER BY code LIMIT ?").bind(lim).all();
-    return cloudJson(r.results);
+  if (path === "/api/local-auth/logout" && request.method === "POST") {
+    return new Response(JSON.stringify({ success: true }), { status: 200, headers: { ...responseHeaders(request), "set-cookie": `${LOCAL_AUTH_COOKIE}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax` } });
   }
-  if (url.pathname === "/api/cloud/accounts" && request.method === "POST") {
-    const x = await readBody(request); if (!x.code || !x.name || !x.accountType) return cloudJson({ error: "code, name, and accountType are required" }, 400);
-    const r = await env.ONEX_DB.prepare("INSERT INTO accounts(companyId,code,name,accountType,parentCode,currencyCode,active) VALUES(?,?,?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,accountType=excluded.accountType,parentCode=excluded.parentCode,currencyCode=excluded.currencyCode,active=excluded.active").bind(x.companyId || 1, x.code, x.name, x.accountType, x.parentCode || null, x.currencyCode || "SAR", x.active ?? 1).run(); return cloudJson({ ok: true, result: r });
+  if (path === "/api/local-auth/login" && request.method === "POST") {
+    const input = await request.json().catch(() => ({}));
+    if (input.username !== credentials.username || input.password !== credentials.password) return json({ error: "INVALID_CREDENTIALS" }, 401, request);
+    const user = localAuthUserPayload(credentials);
+    const token = await localAuthToken(user, credentials.secret);
+    return new Response(JSON.stringify({ success: true, user }), { status: 200, headers: { ...responseHeaders(request), "set-cookie": `${LOCAL_AUTH_COOKIE}=${token}; Max-Age=${LOCAL_AUTH_TTL}; Path=/; HttpOnly; Secure; SameSite=Lax` } });
   }
-  const collection = { items: ["items", "code", "name"], customers: ["customers", "code", "legalName"], suppliers: ["suppliers", "code", "legalName"] };
-  for (const [route, [table, codeField, nameField]] of Object.entries(collection)) {
-    if (url.pathname === `/api/cloud/${route}` && request.method === "GET") {
-      const q = (url.searchParams.get("search") || "").trim(); const lim = limitOf(url); const sql = q ? `SELECT * FROM ${table} WHERE code LIKE ? OR ${nameField} LIKE ? ORDER BY code LIMIT ?` : `SELECT * FROM ${table} ORDER BY code LIMIT ?`;
-      const r = q ? await env.ONEX_DB.prepare(sql).bind(`%${q}%`, `%${q}%`, lim).all() : await env.ONEX_DB.prepare(sql).bind(lim).all(); return cloudJson(r.results);
-    }
-    if (url.pathname === `/api/cloud/${route}` && request.method === "POST") {
-      const x = await readBody(request); if (!x.code || !x[nameField]) return cloudJson({ error: `code and ${nameField} are required` }, 400);
-      const sql = table === "items" ? "INSERT INTO items(companyId,code,name,itemType,unitCode,active) VALUES(?,?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,itemType=excluded.itemType,unitCode=excluded.unitCode,active=excluded.active" : `INSERT INTO ${table}(companyId,code,legalName,currencyCode,status) VALUES(?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET legalName=excluded.legalName,currencyCode=excluded.currencyCode,status=excluded.status`;
-      const values = table === "items" ? [x.companyId || 1, x.code, x[nameField], x.itemType || "STOCK", x.unitCode || "EA", x.active ?? 1] : [x.companyId || 1, x.code, x[nameField], x.currencyCode || "SAR", x.status || "ACTIVE"];
-      return cloudJson({ ok: true, result: await env.ONEX_DB.prepare(sql).bind(...values).run() });
-    }
+  if (path === "/api/cloud/auth/me" && request.method === "GET") {
+    const user = await localAuthUser(request, env);
+    return user ? json({ data: user }, 200, request) : json({ data: null }, 200, request);
   }
-  if (url.pathname === "/api/cloud/journals" && request.method === "GET") { const r = await env.ONEX_DB.prepare("SELECT * FROM journal_entries ORDER BY createdAt DESC LIMIT ?").bind(limitOf(url)).all(); return cloudJson(r.results); }
-  if (url.pathname === "/api/cloud/journals" && request.method === "POST") {
-    const x = await readBody(request); if (!x.journalNo || !Array.isArray(x.lines) || !x.lines.length) return cloudJson({ error: "journalNo and lines are required" }, 400);
-    const debit = x.lines.reduce((n, l) => n + Number(l.debit || 0), 0).toFixed(6); const credit = x.lines.reduce((n, l) => n + Number(l.credit || 0), 0).toFixed(6); if (debit !== credit) return cloudJson({ error: "journal is not balanced", debit, credit }, 400);
-    const batch = [{ sql: "INSERT INTO journal_entries(journalNo,entryType,totalDebit,totalCredit,status) VALUES(?,?,?,?,?)", params: [x.journalNo, x.entryType || "MANUAL", debit, credit, "POSTED"] }, ...x.lines.map((l) => ({ sql: "INSERT INTO journal_entry_lines(journalEntryId,accountCode,accountName,description,debit,credit) VALUES((SELECT id FROM journal_entries WHERE journalNo=?),?,?,?,?,?)", params: [x.journalNo, l.accountCode, l.accountName || null, l.description || null, l.debit || "0", l.credit || "0"] }))];
-    return cloudJson({ ok: true, result: await env.ONEX_DB.batch(batch) });
-  }
-  if (url.pathname === "/api/cloud/stock/receive" && request.method === "POST") {
-    const x = await readBody(request); const qty = Number(x.quantity); const cost = Number(x.unitCost); if (!x.itemId || !x.warehouseId || !(qty > 0) || !(cost >= 0)) return cloudJson({ error: "itemId, warehouseId, quantity and unitCost are required" }, 400);
-    const current = await env.ONEX_DB.prepare("SELECT * FROM stock_balances WHERE itemId=? AND warehouseId=?").bind(x.itemId, x.warehouseId).first(); const before = Number(current?.quantity || 0); const totalBefore = Number(current?.totalCost || 0); const after = before + qty; const totalAfter = totalBefore + qty * cost; const unitAfter = after ? totalAfter / after : 0;
-    const batch = [{ sql: "INSERT INTO stock_balances(itemId,warehouseId,quantity,unitCost,totalCost,versionNo) VALUES(?,?,?,?,?,1) ON CONFLICT(itemId,warehouseId) DO UPDATE SET quantity=excluded.quantity,unitCost=excluded.unitCost,totalCost=excluded.totalCost,versionNo=stock_balances.versionNo+1", params: [x.itemId, x.warehouseId, after.toFixed(6), unitAfter.toFixed(6), totalAfter.toFixed(6)] }, { sql: "INSERT INTO stock_movements(itemId,warehouseId,movementType,quantityIn,unitCost,totalCost,balanceAfter,createdBy) VALUES(?,?,?,?,?,?,?,?)", params: [x.itemId, x.warehouseId, "RECEIPT", qty.toFixed(6), cost.toFixed(6), (qty * cost).toFixed(6), after.toFixed(6), x.actor || "workbench.user"] }];
-    return cloudJson({ ok: true, quantity: after.toFixed(6), totalCost: totalAfter.toFixed(6), result: await env.ONEX_DB.batch(batch) });
-  }
-  if (url.pathname === "/api/cloud/invoices" && request.method === "GET") { const r = await env.ONEX_DB.prepare("SELECT * FROM invoices ORDER BY createdAt DESC LIMIT ?").bind(limitOf(url)).all(); return cloudJson(r.results); }
-  if (url.pathname === "/api/cloud/invoices" && request.method === "POST") {
-    const x = await readBody(request); if (!x.docNo || !x.customerId || !x.warehouseId || !Array.isArray(x.lines) || !x.lines.length) return cloudJson({ error: "docNo, customerId, warehouseId and lines are required" }, 400);
-    const subtotal = x.lines.reduce((n, l) => n + Number(l.quantity || 0) * Number(l.unitPrice || 0), 0); const tax = x.lines.reduce((n, l) => n + Number(l.taxAmount || 0), 0); const total = subtotal + tax; const key = x.idempotencyKey || `D1:${x.docNo}`;
-    const batch = [{ sql: "INSERT INTO invoices(docNo,customerId,warehouseId,subtotal,taxTotal,grandTotal,status,idempotencyKey,sourceForm,createdBy) VALUES(?,?,?,?,?,?,?,?,?,?)", params: [x.docNo, x.customerId, x.warehouseId, subtotal.toFixed(6), tax.toFixed(6), total.toFixed(6), "DRAFT", key, x.sourceForm || "ARST004", x.actor || "workbench.user"] }, ...x.lines.map((l) => ({ sql: "INSERT INTO invoice_lines(invoiceId,itemId,quantity,unitPrice,taxAmount,lineTotal) VALUES((SELECT id FROM invoices WHERE docNo=?),?,?,?,?,?)", params: [x.docNo, l.itemId, l.quantity, l.unitPrice, l.taxAmount || "0", (Number(l.quantity) * Number(l.unitPrice) + Number(l.taxAmount || 0)).toFixed(6)] }))];
-    return cloudJson({ ok: true, result: await env.ONEX_DB.batch(batch) }, 201);
-  }
-  if (url.pathname.startsWith("/api/cloud/invoices/") && request.method === "POST") {
-    const id = Number(url.pathname.split("/").pop()); const action = url.searchParams.get("action"); if (!id || !["post", "reverse"].includes(action)) return cloudJson({ error: "use ?action=post or ?action=reverse" }, 400); const status = action === "post" ? "POSTED" : "REVERSED"; const r = await env.ONEX_DB.prepare("UPDATE invoices SET status=?,postedAt=CASE WHEN ?='POSTED' THEN CURRENT_TIMESTAMP ELSE postedAt END WHERE id=?").bind(status, status, id).run(); return cloudJson({ ok: true, invoiceId: id, status, result: r });
-  }
-  if (url.pathname === "/api/cloud/reports/inventory") { const r = await env.ONEX_DB.prepare("SELECT itemId,warehouseId,quantity,unitCost,totalCost FROM stock_balances ORDER BY itemId LIMIT ?").bind(limitOf(url)).all(); return cloudJson({ reportCode: "MRPREP001", title: "Inventory valuation", rows: r.results }); }
-  if (url.pathname === "/api/cloud/reports/accounts") { const r = await env.ONEX_DB.prepare("SELECT code,name,accountType,currencyCode,active FROM accounts ORDER BY code LIMIT ?").bind(limitOf(url)).all(); return cloudJson({ reportCode: "GLST001", title: "Chart of accounts", rows: r.results }); }
-  if (url.pathname === "/api/cloud/reports/invoices") { const r = await env.ONEX_DB.prepare("SELECT docNo,customerId,grandTotal,status,createdAt FROM invoices ORDER BY createdAt DESC LIMIT ?").bind(limitOf(url)).all(); return cloudJson({ reportCode: "ARSR041", title: "Sales invoices", rows: r.results }); }
-  return cloudJson({ error: "Cloud D1 route not found" }, 404);
+  if (path === "/api/cloud/auth/logout" && request.method === "POST") return localAuthDispatch(request, env, "/api/local-auth/logout");
+  return null;
 }
 
 export default {
@@ -1265,8 +1397,16 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
     try {
       const url = new URL(request.url);
-      if (url.pathname.startsWith("/api/cloud/")) return api(request, env, url);
+      const localAuthResponse = await localAuthDispatch(request, env, url.pathname);
+      if (localAuthResponse) return localAuthResponse;
       if (url.pathname === "/__health" && request.method === "GET") return health(env, request);
+      if (url.pathname === "/api/gl/periods" && request.method === "GET") return glListPeriods(env, request);
+      if (url.pathname === "/api/gl/journals" && request.method === "POST") return glCreateJournal(env, request);
+      if (url.pathname === "/api/gl/trial-balance" && request.method === "GET") return glTrialBalance(env, request);
+      const glCloseMatch = url.pathname.match(/^\/api\/gl\/periods\/(\d+)\/close$/);
+      if (glCloseMatch && request.method === "POST") return glClosePeriod(env, request, Number(glCloseMatch[1]));
+      const glReverseMatch = url.pathname.match(/^\/api\/gl\/journals\/(\d+)\/reverse$/);
+      if (glReverseMatch && request.method === "POST") return glReverseJournal(env, request, Number(glReverseMatch[1]));
       if (url.pathname.startsWith("/api/inventory/")) {
         const auth = inventoryAuthorize(request, env, `${request.method} ${url.pathname}`);
         if (auth.error) return inventoryErrorResponse(auth.error, request, env, auth.status);
@@ -1289,6 +1429,7 @@ export default {
       if (purchasePostMatch && request.method === "POST") return postPurchaseInvoice(env, request, Number(purchasePostMatch[1]));
       if (url.pathname === "/api/erp/vouchers" && request.method === "POST") return createVoucher(env, request);
       if (url.pathname === "/api/erp/inventory/receive" && request.method === "POST") return receiveStock(env, request);
+      if (env.ASSETS) return env.ASSETS.fetch(request);
       return proxyWorkbench(request);
     } catch (error) {
       if (error instanceof Response) return error;
