@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ENV } from "./_core/env";
-import { accounts, adjustmentNoteLines, adjustmentNotes, auditEvents, banks, branches, cashBoxes, companies, customers, fiscalPeriods, invoices, invoiceLines, items, journalEntries, journalEntryLines, suppliers, stockBalances, stockMovements, warehouses, windowRegistry, type InsertUser, users } from "../drizzle/schema";
+import { accounts, adjustmentNoteLines, adjustmentNotes, auditEvents, banks, branches, cashBoxes, companies, customers, fiscalPeriods, inventoryCountLines, inventoryCounts, invoices, invoiceLines, items, journalEntries, journalEntryLines, suppliers, stockBalances, stockMovements, warehouses, windowRegistry, type InsertUser, users } from "../drizzle/schema";
 import { buildPurchaseJournal, buildReversalJournal, buildSaleJournal, calculateInvoice, canPostToPeriod, validateJournal } from "./accountingCore";
 import { getLegacyWindowContract } from "./legacyWindowContracts";
 
@@ -12,6 +12,7 @@ let demoInvoiceSequence = 1000;
 const demoInvoices = new Map<number, { invoiceId: number; docNo: string; subtotal: number; taxTotal: number; grandTotal: number; status: "DRAFT" | "POSTED" | "REVERSED" }>();
 const demoPurchaseInvoices = new Map<number, { invoiceId: number; docNo: string; subtotal: number; taxTotal: number; grandTotal: number; status: "DRAFT" | "POSTED" | "REVERSED" }>();
 const demoAdjustments = new Map<number, { adjustmentId: number; docNo: string; documentKind: string; grandTotal: number; status: "DRAFT" | "POSTED" | "REVERSED" }>();
+const demoInventoryCounts = new Map<number, { countId: number; countNo: string; warehouseId: number; countMode: "PERIODIC" | "CYCLE"; status: "DRAFT" | "POSTED" | "CANCELLED"; lines: { itemId: number; systemQuantity: number; countedQuantity: number; unitCost: number }[] }>();
 const demoSuppliers: Array<{ id: number; companyId: number; accountId?: number; code: string; legalName: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, accountId: 4, code: "SUP-001", legalName: "مورد تجريبي", currencyCode: "SAR", status: "ACTIVE" }];
 const demoCustomers: Array<{ id: number; companyId: number; accountId?: number; code: string; legalName: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, accountId: 5, code: "CUST-001", legalName: "عميل تجريبي", currencyCode: "SAR", status: "ACTIVE" }];
 const demoCashBoxes: Array<{ id: number; companyId: number; accountId?: number; code: string; name: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, accountId: 1, code: "CASH-001", name: "الصندوق الرئيسي", currencyCode: "SAR", status: "ACTIVE" }];
@@ -561,6 +562,50 @@ export async function postAdjustmentNote(adjustmentId: number, actor: string) {
     const journal = validateJournal({ description: "ترحيل " + note.documentKind, source: "ADJUSTMENT_NOTE", lines: journalLines }); const insertedJournal = await tx.insert(journalEntries).values({ journalNo: "ADJ-" + note.docNo, sourceInvoiceId: note.originalInvoiceId, entryType: note.documentKind, totalDebit: journal.totalDebit.toFixed(6), totalCredit: journal.totalCredit.toFixed(6) }).$returningId(); const journalId = Number(insertedJournal[0]?.id); if (!journalId) throw new Error("ADJUSTMENT_JOURNAL_CREATE_FAILED"); await tx.insert(journalEntryLines).values(journal.lines.map((line) => ({ journalEntryId: journalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) }))); await tx.update(adjustmentNotes).set({ status: "POSTED", postedAt: new Date() }).where(eq(adjustmentNotes.id, adjustmentId)); await tx.insert(auditEvents).values({ actor, actionCode: "POST", entityType: "ADJUSTMENT_NOTE", entityId: String(adjustmentId), requestId: "POST:" + note.docNo }); return { adjustmentId, status: "POSTED" as const, journalId, totalCost };
   });
 }
+
+
+type InventoryCountMode = "PERIODIC" | "CYCLE";
+
+export async function createInventoryCount(input: { countNo: string; warehouseId: number; countMode: InventoryCountMode; actor: string; notes?: string; lines: { itemId: number; countedQuantity: string }[] }) {
+  const db = await getDb();
+  if (!db) {
+    if (Array.from(demoInventoryCounts.values()).some((count) => count.countNo === input.countNo)) throw new Error("DUPLICATE_COUNT_NUMBER");
+    const countId = ++demoInvoiceSequence;
+    const result = { countId, countNo: input.countNo, warehouseId: input.warehouseId, countMode: input.countMode, status: "DRAFT" as const, lines: input.lines.map((line) => { const item = demoItems.find((candidate) => candidate.id === line.itemId); return { itemId: line.itemId, systemQuantity: 0, countedQuantity: Number(line.countedQuantity), unitCost: Number(item?.unitCost || 0) }; }) };
+    demoInventoryCounts.set(countId, result);
+    return { countId, countNo: input.countNo, status: "DRAFT" as const, lineCount: result.lines.length };
+  }
+  return db.transaction(async (tx) => {
+    const warehouse = (await tx.select().from(warehouses).where(eq(warehouses.id, input.warehouseId)).limit(1))[0];
+    if (!warehouse || warehouse.active !== 1) throw new Error("WAREHOUSE_NOT_ACTIVE");
+    const inserted = await tx.insert(inventoryCounts).values({ countNo: input.countNo, warehouseId: input.warehouseId, countMode: input.countMode, actor: input.actor, notes: input.notes || null }).$returningId();
+    const countId = Number(inserted[0]?.id); if (!countId) throw new Error("INVENTORY_COUNT_CREATE_FAILED");
+    for (const line of input.lines) {
+      const item = (await tx.select().from(items).where(eq(items.id, line.itemId)).limit(1))[0]; if (!item) throw new Error("ITEM_NOT_FOUND:" + line.itemId);
+      const balance = (await tx.select().from(stockBalances).where(and(eq(stockBalances.itemId, line.itemId), eq(stockBalances.warehouseId, input.warehouseId))).limit(1))[0];
+      const systemQuantity = Number(balance?.quantity || 0); const unitCost = Number(balance?.unitCost || item.unitCost || 0); const countedQuantity = Number(line.countedQuantity); if (!Number.isFinite(countedQuantity) || countedQuantity < 0) throw new Error("INVALID_COUNTED_QUANTITY");
+      await tx.insert(inventoryCountLines).values({ countId, itemId: line.itemId, systemQuantity: systemQuantity.toFixed(6), countedQuantity: countedQuantity.toFixed(6), unitCost: unitCost.toFixed(6), varianceQuantity: (countedQuantity - systemQuantity).toFixed(6), varianceValue: ((countedQuantity - systemQuantity) * unitCost).toFixed(6) });
+    }
+    await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE", entityType: "INVENTORY_COUNT", entityId: String(countId), requestId: "COUNT:" + input.countNo });
+    return { countId, countNo: input.countNo, status: "DRAFT" as const, lineCount: input.lines.length };
+  });
+}
+
+export async function postInventoryCount(countId: number, actor: string) {
+  const db = await getDb();
+  if (!db) { const count = demoInventoryCounts.get(countId); if (!count || count.status !== "DRAFT") throw new Error("INVENTORY_COUNT_NOT_POSTABLE"); count.status = "POSTED"; return { countId, status: "POSTED" as const, totalVariance: count.lines.reduce((sum, line) => sum + (line.countedQuantity - line.systemQuantity) * line.unitCost, 0).toFixed(6) }; }
+  return db.transaction(async (tx) => {
+    const count = (await tx.select().from(inventoryCounts).where(eq(inventoryCounts.id, countId)).limit(1))[0]; if (!count || count.status !== "DRAFT") throw new Error("INVENTORY_COUNT_NOT_POSTABLE");
+    const lines = await tx.select({ line: inventoryCountLines, item: items, balance: stockBalances }).from(inventoryCountLines).innerJoin(items, eq(inventoryCountLines.itemId, items.id)).leftJoin(stockBalances, and(eq(stockBalances.itemId, inventoryCountLines.itemId), eq(stockBalances.warehouseId, count.warehouseId))).where(eq(inventoryCountLines.countId, countId));
+    const periods = await tx.select().from(fiscalPeriods).where(and(eq(fiscalPeriods.companyId, 1), eq(fiscalPeriods.status, "OPEN"))).orderBy(desc(fiscalPeriods.startsOn)); const period = periods.find((candidate) => canPostToPeriod(candidate, count.countedAt).allowed); const periodCheck = canPostToPeriod(period, count.countedAt); if (!periodCheck.allowed) throw new Error(periodCheck.reason || "PERIOD_NOT_POSTABLE");
+    const journalLines: { accountCode: string; debit: number; credit: number; description: string }[] = []; let totalVariance = 0;
+    for (const row of lines) { const counted = Number(row.line.countedQuantity); const system = Number(row.line.systemQuantity); const unitCost = Number(row.line.unitCost); const variance = counted - system; const value = variance * unitCost; totalVariance += value; if (!variance) continue; const balance = row.balance; const afterCost = counted * unitCost; if (balance) await tx.update(stockBalances).set({ quantity: counted.toFixed(6), totalCost: afterCost.toFixed(6), unitCost: unitCost.toFixed(6), versionNo: balance.versionNo + 1 }).where(eq(stockBalances.id, balance.id)); else await tx.insert(stockBalances).values({ itemId: row.line.itemId, warehouseId: count.warehouseId, quantity: counted.toFixed(6), totalCost: afterCost.toFixed(6), unitCost: unitCost.toFixed(6), versionNo: 1 }); await tx.insert(stockMovements).values({ itemId: row.line.itemId, warehouseId: count.warehouseId, movementType: variance > 0 ? "INVENTORY_GAIN" : "INVENTORY_LOSS", quantityIn: variance > 0 ? variance.toFixed(6) : "0", quantityOut: variance < 0 ? Math.abs(variance).toFixed(6) : "0", unitCost: unitCost.toFixed(6), totalCost: Math.abs(value).toFixed(6), balanceAfter: counted.toFixed(6), createdBy: actor }); if (variance > 0) journalLines.push({ accountCode: row.item.inventoryAccount || "1300", debit: value, credit: 0, description: "زيادة جرد " + row.item.code }, { accountCode: "4300", debit: 0, credit: value, description: "أرباح فروقات الجرد" }); else journalLines.push({ accountCode: "5300", debit: Math.abs(value), credit: 0, description: "خسائر فروقات الجرد" }, { accountCode: row.item.inventoryAccount || "1300", debit: 0, credit: Math.abs(value), description: "نقص جرد " + row.item.code }); }
+    if (journalLines.length) { const journal = validateJournal({ description: "ترحيل جرد " + count.countNo, source: "INVENTORY_COUNT", lines: journalLines }); const insertedJournal = await tx.insert(journalEntries).values({ journalNo: "COUNT-" + count.countNo, entryType: "INVENTORY_COUNT", totalDebit: journal.totalDebit.toFixed(6), totalCredit: journal.totalCredit.toFixed(6) }).$returningId(); const journalId = Number(insertedJournal[0]?.id); if (!journalId) throw new Error("INVENTORY_COUNT_JOURNAL_FAILED"); await tx.insert(journalEntryLines).values(journal.lines.map((line) => ({ journalEntryId: journalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) }))); }
+    await tx.update(inventoryCounts).set({ status: "POSTED", postedAt: new Date() }).where(eq(inventoryCounts.id, countId)); await tx.insert(auditEvents).values({ actor, actionCode: "POST", entityType: "INVENTORY_COUNT", entityId: String(countId), requestId: "POST-COUNT:" + count.countNo }); return { countId, status: "POSTED" as const, totalVariance: totalVariance.toFixed(6) };
+  });
+}
+
+export async function listWarehouses() { const db = await getDb(); if (!db) return [{ id: 1, companyId: 1, code: "MAIN", name: "المستودع الرئيسي", active: 1 }]; return db.select().from(warehouses).orderBy(warehouses.code); }
 
 
 export async function receiveStock(input: { itemId: number; warehouseId: number; quantity: string; unitCost: string; actor: string; reference: string }) {

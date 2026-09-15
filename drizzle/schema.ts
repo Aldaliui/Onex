@@ -174,6 +174,29 @@ export const adjustmentNoteLines = mysqlTable("adjustment_note_lines", {
   id: int("id").autoincrement().primaryKey(), adjustmentNoteId: int("adjustmentNoteId").notNull(), itemId: int("itemId").notNull(), quantity: decimal("quantity", { precision: 20, scale: 6 }).notNull(), unitPrice: decimal("unitPrice", { precision: 20, scale: 6 }).notNull(), taxAmount: decimal("taxAmount", { precision: 20, scale: 6 }).notNull().default("0"), lineTotal: decimal("lineTotal", { precision: 20, scale: 6 }).notNull(),
 });
 
+export const inventoryCounts = mysqlTable("inventory_counts", {
+  id: int("id").autoincrement().primaryKey(),
+  countNo: varchar("countNo", { length: 80 }).notNull().unique(),
+  warehouseId: int("warehouseId").notNull(),
+  countMode: mysqlEnum("countMode", ["PERIODIC", "CYCLE"]).notNull().default("PERIODIC"),
+  status: mysqlEnum("status", ["DRAFT", "POSTED", "CANCELLED"]).notNull().default("DRAFT"),
+  countedAt: timestamp("countedAt").defaultNow().notNull(),
+  postedAt: timestamp("postedAt"),
+  actor: varchar("actor", { length: 100 }).notNull().default("demo.user"),
+  notes: text("notes"),
+});
+
+export const inventoryCountLines = mysqlTable("inventory_count_lines", {
+  id: int("id").autoincrement().primaryKey(),
+  countId: int("countId").notNull(),
+  itemId: int("itemId").notNull(),
+  systemQuantity: decimal("systemQuantity", { precision: 20, scale: 6 }).notNull().default("0"),
+  countedQuantity: decimal("countedQuantity", { precision: 20, scale: 6 }).notNull().default("0"),
+  unitCost: decimal("unitCost", { precision: 20, scale: 6 }).notNull().default("0"),
+  varianceQuantity: decimal("varianceQuantity", { precision: 20, scale: 6 }).notNull().default("0"),
+  varianceValue: decimal("varianceValue", { precision: 20, scale: 6 }).notNull().default("0"),
+});
+
 export const stockMovements = mysqlTable("stock_movements", {
   id: int("id").autoincrement().primaryKey(),
   itemId: int("itemId").notNull(),
