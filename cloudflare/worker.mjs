@@ -1215,7 +1215,7 @@ async function api(request, env, url) {
   if (url.pathname === "/api/cloud/journals" && request.method === "POST") {
     const x = await readBody(request); if (!x.journalNo || !Array.isArray(x.lines) || !x.lines.length) return cloudJson({ error: "journalNo and lines are required" }, 400);
     const debit = x.lines.reduce((n, l) => n + Number(l.debit || 0), 0).toFixed(6); const credit = x.lines.reduce((n, l) => n + Number(l.credit || 0), 0).toFixed(6); if (debit !== credit) return cloudJson({ error: "journal is not balanced", debit, credit }, 400);
-    const batch = [{ sql: "INSERT INTO journal_entries(journalNo,entryType,totalDebit,totalCredit,status) VALUES(?,?,?,?,?)", params: [x.journalNo, x.entryType || "MANUAL", debit, credit, "POSTED"] }, ...x.lines.map((l) => ({ sql: "INSERT INTO journal_entry_lines(journalEntryId,accountCode,accountName,description,debit,credit) VALUES((SELECT id FROM journal_entries WHERE journalNo=?),?,?,?,?,?)", params: [x.journalNo, l.accountCode, l.accountName || null, l.description || null, l.debit || "0", l.credit || "0"] }))];
+    const batch = [{ sql: "INSERT INTO journal_entries(journalNo,entryType,totalDebit,totalCredit,status) VALUES(?,?,?,?,?)", params: [x.journalNo, x.entryType || "MANUAL", debit, credit, "POSTED"] }, ...x.lines.map((l) => ({ sql: "INSERT INTO journal_entry_lines(journalNo,accountCode,description,debit,credit) VALUES(?,?,?,?,?)", params: [x.journalNo, l.accountCode, l.description || null, l.debit || "0", l.credit || "0"] }))];
     return cloudJson({ ok: true, result: await env.ONEX_DB.batch(batch) });
   }
   if (url.pathname === "/api/cloud/stock/receive" && request.method === "POST") {
