@@ -167,6 +167,8 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    // Streamdown is an intentionally deferred markdown renderer; the initial app chunk stays below 500 kB.
+    chunkSizeWarningLimit: 1000,
   },
   server: {
     host: true,
