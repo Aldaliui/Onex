@@ -1260,8 +1260,14 @@ async function api(request, env, url) {
   if (url.pathname === "/api/cloud/journals" && request.method === "POST") {
     const x = await readBody(request); if (!x.journalNo || !Array.isArray(x.lines) || !x.lines.length) return cloudJson({ error: "journalNo and lines are required" }, 400);
     const debit = x.lines.reduce((n, l) => n + Number(l.debit || 0), 0).toFixed(6); const credit = x.lines.reduce((n, l) => n + Number(l.credit || 0), 0).toFixed(6); if (debit !== credit) return cloudJson({ error: "journal is not balanced", debit, credit }, 400);
-    const batch = [{ sql: "INSERT INTO journal_entries(journalNo,entryType,totalDebit,totalCredit,status) VALUES(?,?,?,?,?)", params: [x.journalNo, x.entryType || "MANUAL", debit, credit, "POSTED"] }, ...x.lines.map((l) => ({ sql: "INSERT INTO journal_entry_lines(journalNo,accountCode,description,debit,credit) VALUES(?,?,?,?,?)", params: [x.journalNo, l.accountCode, l.description || null, l.debit || "0", l.credit || "0"] }))];
-    return cloudJson({ ok: true, result: await env.ONEX_DB.batch(batch) });
+    const entry = await env.ONEX_DB.prepare("INSERT INTO journal_entries(journalNo,entryType,totalDebit,totalCredit,status) VALUES(?,?,?,?,?) RETURNING id,journalNo").bind(x.journalNo, x.entryType || "MANUAL", debit, credit, "POSTED").first();
+    const schema = await env.ONEX_DB.prepare("PRAGMA table_info(journal_entry_lines)").all();
+    const columns = new Set((schema.results || []).map((column) => column.name));
+    const statements = x.lines.map((l) => columns.has("journalNo")
+      ? env.ONEX_DB.prepare("INSERT INTO journal_entry_lines(journalNo,accountCode,description,debit,credit) VALUES(?,?,?,?,?)").bind(x.journalNo, l.accountCode, l.description || null, l.debit || "0", l.credit || "0")
+      : env.ONEX_DB.prepare("INSERT INTO journal_entry_lines(journalEntryId,accountCode,accountName,description,debit,credit) VALUES(?,?,?,?,?,?)").bind(entry.id, l.accountCode, l.accountName || null, l.description || null, l.debit || "0", l.credit || "0"));
+    const result = await env.ONEX_DB.batch(statements);
+    return cloudJson({ ok: true, journalNo: entry.journalNo, totalDebit: debit, totalCredit: credit, status: "POSTED", result });
   }
   if (url.pathname === "/api/cloud/stock/receive" && request.method === "POST") {
     const x = await readBody(request); const qty = Number(x.quantity); const cost = Number(x.unitCost); if (!x.itemId || !x.warehouseId || !(qty > 0) || !(cost >= 0)) return cloudJson({ error: "itemId, warehouseId, quantity and unitCost are required" }, 400);
