@@ -243,10 +243,13 @@ export async function getWindowContract(legacyForm: string) {
   const actions = unified?.actions?.split("|").filter(Boolean) || ["initialize", "query", "new", "validate", "save", "update", "delete", "approve", "post", "reverse", "print", "refresh", "exit"];
   const evidence = (value?: string) => (value || "").split(/[;|]/).map((item) => item.trim()).filter(Boolean).slice(0, 40);
   const count = (...values: unknown[]) => { for (const value of values) { const parsed = Number(value); if (Number.isFinite(parsed)) return parsed; } return 0; };
+  const standardFieldCount = count(unified?.standard_field_count, fields?.field_count);
+  const observedFieldCount = count(runtime?.observed_field_count, row?.observedProcedures);
+  const evidenceTokenCount = count(unified?.window_field_evidence_count, manifest?.strings);
   return {
     legacyForm: `${form}.fmx`, screenName: row?.screenName || form, domain, parentId: row?.parentId || "ROOT",
     source: { manifest: Boolean(manifest), runtime: Boolean(runtime), fields: Boolean(fields), unified: Boolean(unified), specification: `legacy-source/all_window_specs/${form}.rebuild.md` },
-    counts: { fields: count(fields?.fields, unified?.window_field_evidence_count, runtime?.observed_field_count, row?.observedProcedures), procedures: count(manifest?.procedures, runtime?.observed_procedure_count, row?.observedProcedures), triggers: count(manifest?.triggers, runtime?.observed_trigger_count, row?.observedTriggers), tables: count(manifest?.tables, runtime?.observed_table_count, row?.observedTableIndicators) },
+    counts: { fields: standardFieldCount || observedFieldCount, standardFields: standardFieldCount, observedFields: observedFieldCount, evidenceTokens: evidenceTokenCount, procedures: count(manifest?.procedures, runtime?.observed_procedure_count, row?.observedProcedures), triggers: count(manifest?.triggers, runtime?.observed_trigger_count, row?.observedTriggers), tables: count(manifest?.tables, runtime?.observed_table_count, row?.observedTableIndicators) },
     evidence: { fields: evidence(fields?.fields), procedures: evidence(fields?.procedures || runtime?.legacy_packages), triggers: evidence(fields?.triggers), tables: evidence(fields?.tables) },
     actions, coreApi: unified?.core_api || runtime?.core_api || `ONEX_${domain.replace(/[^A-Z]/gi, "_")}_WINDOW_API`,
     midoModules: moduleByDomain[domain.split("/")[0].toUpperCase()] || ["business-operations-core.js", "document-cycle-core.js"],

@@ -75,6 +75,15 @@ describe("Onyx rebuild contracts", () => {
     expect(contract.specificationPath).toContain("all_window_specs");
   });
 
+  it("keeps GLST004 field counts separate from evidence-token totals", async () => {
+    const caller = appRouter.createCaller(ctx);
+    const contract = await caller.windows.contract({ legacyForm: "GLST004.fmx" });
+    expect(contract.counts.fields).toBe(10);
+    expect(contract.counts.standardFields).toBe(10);
+    expect(contract.counts.evidenceTokens).toBe(3915);
+    expect(contract.counts.fields).not.toBe(contract.counts.evidenceTokens);
+  });
+
   it("executes only declared window actions in safe simulation mode", async () => {
     const caller = appRouter.createCaller(ctx);
     const result = await caller.windows.executeAction({ legacyForm: "ERP_LOGIN.fmx", action: "query" });
