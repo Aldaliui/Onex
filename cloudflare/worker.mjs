@@ -197,14 +197,26 @@ async function listInvoices(env, request) {
   const url = new URL(request.url);
   const search = (url.searchParams.get("search") || "").trim();
   const limit = boundedLimit(url);
-  const result = await env.ONEX_DB.prepare(`
-    SELECT id, docNo, customerId, warehouseId, currencyCode, exchangeRate, subtotal, taxTotal, grandTotal, status, paymentMethod, paidAmount, remainingAmount, paymentReference, notes, cogsJournalNo, inventoryPostedAt, createdBy, createdAt, updatedAt, postedAt
-    FROM invoices
-    WHERE ? = '' OR docNo LIKE '%' || ? || '%' OR status LIKE '%' || ? || '%'
-    ORDER BY createdAt DESC
-    LIMIT ?
-  `).bind(search, search, search, limit).all();
-  return json({ rows: result.results ?? [] }, 200, request);
+  try {
+    const result = await env.ONEX_DB.prepare(`
+      SELECT id, docNo, customerId, warehouseId, currencyCode, exchangeRate, subtotal, taxTotal, grandTotal, status, paymentMethod, paidAmount, remainingAmount, paymentReference, notes, cogsJournalNo, inventoryPostedAt, createdBy, createdAt, updatedAt, postedAt
+      FROM invoices
+      WHERE ? = '' OR docNo LIKE '%' || ? || '%' OR status LIKE '%' || ? || '%'
+      ORDER BY createdAt DESC
+      LIMIT ?
+    `).bind(search, search, search, limit).all();
+    return json({ rows: result.results ?? [] }, 200, request);
+  } catch (error) {
+    console.warn("Invoice list extended schema unavailable; using base columns", error);
+    const result = await env.ONEX_DB.prepare(`
+      SELECT id, docNo, customerId, warehouseId, currencyCode, subtotal, taxTotal, grandTotal, status, createdBy, createdAt, postedAt
+      FROM invoices
+      WHERE ? = '' OR docNo LIKE '%' || ? || '%' OR status LIKE '%' || ? || '%'
+      ORDER BY createdAt DESC
+      LIMIT ?
+    `).bind(search, search, search, limit).all();
+    return json({ rows: (result.results ?? []).map((row) => ({ ...row, exchangeRate: 1, paymentMethod: null, paidAmount: 0, remainingAmount: Number(row.grandTotal ?? 0), paymentReference: null, notes: null, cogsJournalNo: null, inventoryPostedAt: null, updatedAt: null })) }, 200, request);
+  }
 }
 
 async function listItems(env, request) {
@@ -224,7 +236,14 @@ async function listItems(env, request) {
 
 async function getInvoice(env, request, invoiceId) {
   if (!positiveInteger(invoiceId)) return errorResponse("INVALID_INVOICE_ID", 400, request);
-  const invoice = await env.ONEX_DB.prepare(`SELECT id, docNo, customerId, warehouseId, currencyCode, exchangeRate, subtotal, taxTotal, grandTotal, status, paymentMethod, paidAmount, remainingAmount, paymentReference, notes, cogsJournalNo, inventoryPostedAt, createdBy, createdAt, updatedAt, postedAt FROM invoices WHERE id = ? LIMIT 1`).bind(invoiceId).first();
+  let invoice;
+  try {
+    invoice = await env.ONEX_DB.prepare(`SELECT id, docNo, customerId, warehouseId, currencyCode, exchangeRate, subtotal, taxTotal, grandTotal, status, paymentMethod, paidAmount, remainingAmount, paymentReference, notes, cogsJournalNo, inventoryPostedAt, createdBy, createdAt, updatedAt, postedAt FROM invoices WHERE id = ? LIMIT 1`).bind(invoiceId).first();
+  } catch (error) {
+    console.warn("Invoice detail extended schema unavailable; using base columns", error);
+    invoice = await env.ONEX_DB.prepare(`SELECT id, docNo, customerId, warehouseId, currencyCode, subtotal, taxTotal, grandTotal, status, createdBy, createdAt, postedAt FROM invoices WHERE id = ? LIMIT 1`).bind(invoiceId).first();
+    if (invoice) invoice = { ...invoice, exchangeRate: "1", paymentMethod: null, paidAmount: "0", remainingAmount: invoice.grandTotal, paymentReference: null, notes: null, cogsJournalNo: null, inventoryPostedAt: null, updatedAt: null };
+  }
   if (!invoice) return errorResponse("INVOICE_NOT_FOUND", 404, request);
   const lines = await env.ONEX_DB.prepare(`SELECT l.id, l.itemId, i.code, COALESCE(NULLIF(i.description, ''), i.name) AS description, l.quantity, l.unitPrice, l.taxAmount, l.lineTotal FROM invoice_lines l JOIN items i ON i.id = l.itemId WHERE l.invoiceId = ? ORDER BY l.id`).bind(invoiceId).all();
   return json({ ...invoice, exchangeRate: Number(invoice.exchangeRate), subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), grandTotal: Number(invoice.grandTotal), paidAmount: Number(invoice.paidAmount), remainingAmount: Number(invoice.remainingAmount), localGrandTotal: Number(invoice.grandTotal) * Number(invoice.exchangeRate), lines: lines.results ?? [] }, 200, request);
