@@ -44,6 +44,18 @@ describe("ONEX module unit tests", () => {
     expect((await api.invoices.reverse({ invoiceId: created.invoiceId, actor: "unit.ar" })).status).toBe("REVERSED");
   });
 
+  it("AR priority windows: expose compatibility clones with bounded actions", async () => {
+    const api = caller();
+    const invoice = await api.windows.contract({ legacyForm: "ARST004.fmx" });
+    const reversal = await api.windows.contract({ legacyForm: "ARST006.fmx" });
+    const inquiry = await api.windows.contract({ legacyForm: "ARST023.fmx" });
+    expect(invoice.clone).toMatchObject({ mode: "COMPATIBILITY_CLONE", sourceAvailable: false });
+    expect(invoice.actions).toEqual(expect.arrayContaining(["save", "post"]));
+    expect(reversal.actions).toEqual(expect.arrayContaining(["reverse"]));
+    expect(reversal.actions).not.toContain("delete");
+    expect(inquiry.actions).toEqual(expect.arrayContaining(["query", "print"]));
+  });
+
   it("AP: exposes purchasing windows and save/update/delete actions", async () => {
     const api = caller();
     const contract = await api.windows.contract({ legacyForm: forms.ap });

@@ -249,7 +249,13 @@ export async function getWindowContract(legacyForm: string) {
   const row = loadFallbackWindows().find((item) => item.legacyForm.replace(/\.fmx$/i, "").toUpperCase() === form.toUpperCase());
   const domain = row?.domainCode || runtime?.domain || "OTHER";
   const moduleByDomain: Record<string, string[]> = { AR: ["receivables-core.js", "commercial-invoice-core.js", "invoice-posting-core.js", "document-cycle-core.js"], AP: ["business-operations-core.js", "commercial-invoice-core.js", "document-cycle-core.js"], GL: ["accounting-core.js", "commercial-accounting-core.js", "chart-of-accounts-core.js", "period-close-core.js"], INVENTORY: ["business-operations-core.js", "invoice-posting-core.js"], POS: ["business-operations-core.js", "commercial-invoice-core.js"], HR: ["business-operations-core.js"] };
-  const actions = unified?.actions?.split("|").filter(Boolean) || ["initialize", "query", "new", "validate", "save", "update", "delete", "approve", "post", "reverse", "print", "refresh", "exit"];
+  const defaultActions = ["initialize", "query", "new", "validate", "save", "update", "delete", "approve", "post", "reverse", "print", "refresh", "exit"];
+  const priorityActions: Record<string, string[]> = {
+    ARST004: ["initialize", "query", "new", "validate", "save", "approve", "post", "print", "refresh", "exit"],
+    ARST006: ["initialize", "query", "validate", "reverse", "print", "refresh", "exit"],
+    ARST023: ["initialize", "query", "validate", "print", "refresh", "exit"],
+  };
+  const actions = priorityActions[form.toUpperCase()] || unified?.actions?.split("|").filter(Boolean) || defaultActions;
   const evidence = (value?: string) => (value || "").split(/[;|]/).map((item) => item.trim()).filter(Boolean).slice(0, 40);
   const count = (...values: unknown[]) => { for (const value of values) { const parsed = Number(value); if (Number.isFinite(parsed)) return parsed; } return 0; };
   return {
@@ -261,6 +267,7 @@ export async function getWindowContract(legacyForm: string) {
     midoModules: moduleByDomain[domain.split("/")[0].toUpperCase()] || ["business-operations-core.js", "document-cycle-core.js"],
     legacyContract,
     status: legacyContract?.implementationStatus === "IMPLEMENTED" ? "IMPLEMENTED_WITH_CLOUD_CORE" : unified?.production_status || "NOT_READY_FOR_PRODUCTION", specificationPath: `legacy-source/all_window_specs/${form}.rebuild.md`,
+    clone: priorityActions[form.toUpperCase()] ? { mode: "COMPATIBILITY_CLONE", sourceForm: `${form}.fmx`, sourceAvailable: false, updateTrack: "AR_CORE_PHASE1" } : undefined,
   };
 }
 
