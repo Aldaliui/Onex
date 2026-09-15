@@ -4,12 +4,13 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ENV } from "./_core/env";
 import { accounts, auditEvents, branches, companies, customers, fiscalPeriods, invoices, invoiceLines, items, journalEntries, journalEntryLines, suppliers, stockBalances, stockMovements, warehouses, windowRegistry, type InsertUser, users } from "../drizzle/schema";
-import { buildReversalJournal, buildSaleJournal, calculateInvoice, canPostToPeriod, validateJournal } from "./accountingCore";
+import { buildPurchaseJournal, buildReversalJournal, buildSaleJournal, calculateInvoice, canPostToPeriod, validateJournal } from "./accountingCore";
 import { getLegacyWindowContract } from "./legacyWindowContracts";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let demoInvoiceSequence = 1000;
 const demoInvoices = new Map<number, { invoiceId: number; docNo: string; subtotal: number; taxTotal: number; grandTotal: number; status: "DRAFT" | "POSTED" | "REVERSED" }>();
+const demoPurchaseInvoices = new Map<number, { invoiceId: number; docNo: string; subtotal: number; taxTotal: number; grandTotal: number; status: "DRAFT" | "POSTED" | "REVERSED" }>();
 const demoSuppliers: Array<{ id: number; companyId: number; code: string; legalName: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, code: "SUP-001", legalName: "مورد تجريبي", currencyCode: "SAR", status: "ACTIVE" }];
 const demoCustomers: Array<{ id: number; companyId: number; code: string; legalName: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, code: "CUST-001", legalName: "عميل تجريبي", currencyCode: "SAR", status: "ACTIVE" }];
 const demoItems = [{ id: 1, companyId: 1, code: "ITEM-001", description: "صنف تجريبي", stockFlag: 1, unitCost: "100", revenueAccount: "4100", inventoryAccount: "1300", cogsAccount: "5100", active: 1 }];
@@ -277,14 +278,15 @@ export async function getMasterData() {
   if (!db) return {
     companies: [{ id: 1, code: "ONEX", name: "شركة Onyx التجريبية", baseCurrency: "SAR" }],
     customers: [{ id: 1, companyId: 1, code: "CUST-001", legalName: "عميل تجريبي", currencyCode: "SAR", status: "ACTIVE" as const }],
+    suppliers: demoSuppliers,
     items: [{ id: 1, companyId: 1, code: "ITEM-001", description: "صنف تجريبي", stockFlag: 1, unitCost: "100", revenueAccount: "4100", inventoryAccount: "1300", cogsAccount: "5100", active: 1 }],
     warehouses: [{ id: 1, companyId: 1, code: "MAIN", name: "المستودع الرئيسي", active: 1 }],
     balances: [{ balance: { quantity: "100", totalCost: "10000", unitCost: "100" }, item: { code: "ITEM-001" }, warehouse: { code: "MAIN" } }],
   };
-  const [companyRows, customerRows, itemRows, warehouseRows, balanceRows] = await Promise.all([
-    db.select().from(companies).limit(20), db.select().from(customers).limit(100), db.select().from(items).limit(100), db.select().from(warehouses).limit(50), db.select({ balance: stockBalances, item: items, warehouse: warehouses }).from(stockBalances).leftJoin(items, eq(stockBalances.itemId, items.id)).leftJoin(warehouses, eq(stockBalances.warehouseId, warehouses.id)).limit(100),
+  const [companyRows, customerRows, supplierRows, itemRows, warehouseRows, balanceRows] = await Promise.all([
+    db.select().from(companies).limit(20), db.select().from(customers).limit(100), db.select().from(suppliers).limit(100), db.select().from(items).limit(100), db.select().from(warehouses).limit(50), db.select({ balance: stockBalances, item: items, warehouse: warehouses }).from(stockBalances).leftJoin(items, eq(stockBalances.itemId, items.id)).leftJoin(warehouses, eq(stockBalances.warehouseId, warehouses.id)).limit(100),
   ]);
-  return { companies: companyRows, customers: customerRows, items: itemRows, warehouses: warehouseRows, balances: balanceRows };
+  return { companies: companyRows, customers: customerRows, suppliers: supplierRows, items: itemRows, warehouses: warehouseRows, balances: balanceRows };
 }
 
 export async function getErpControlData() {
@@ -403,6 +405,96 @@ export async function createInvoice(input: { docNo: string; customerId: number; 
     await tx.insert(invoiceLines).values(input.lines.map((line) => ({ invoiceId, itemId: line.itemId, quantity: line.quantity, unitPrice: line.unitPrice, taxAmount: line.taxAmount, lineTotal: (Number(line.quantity) * Number(line.unitPrice) + Number(line.taxAmount)).toFixed(6) })));
     await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE", entityType: "AR_DOC", entityId: String(invoiceId), requestId: idempotencyKey });
     return { invoiceId, docNo: input.docNo, subtotal, taxTotal, grandTotal, status: "DRAFT" as const };
+  });
+}
+
+export async function createPurchaseInvoice(input: { docNo: string; supplierId: number; warehouseId: number; currencyCode?: string; exchangeRate?: string; paymentMethod?: string; paidAmount?: string; paymentReference?: string; lines: { itemId: number; quantity: string; unitPrice: string; taxAmount: string }[]; actor: string; }) {
+  const calculated = calculateInvoice(input.lines, input.paidAmount || "0");
+  const { subtotal, taxTotal, grandTotal } = calculated;
+  const idempotencyKey = `APST003:${input.docNo}`;
+  const db = await getDb();
+  if (!db) {
+    if (Array.from(demoPurchaseInvoices.values()).some((invoice) => invoice.docNo === input.docNo)) throw new Error("DUPLICATE_IDEMPOTENCY_KEY");
+    const invoiceId = ++demoInvoiceSequence;
+    const result = { invoiceId, docNo: input.docNo, subtotal, taxTotal, grandTotal, status: "DRAFT" as const };
+    demoPurchaseInvoices.set(invoiceId, result);
+    return result;
+  }
+  return db.transaction(async (tx) => {
+    const paidAmount = Number(input.paidAmount || 0);
+    const inserted = await tx.insert(invoices).values({ invoiceType: "PURCHASE", docNo: input.docNo, customerId: null, supplierId: input.supplierId, warehouseId: input.warehouseId, currencyCode: input.currencyCode || "SAR", exchangeRate: input.exchangeRate || "1", subtotal: subtotal.toFixed(6), taxTotal: taxTotal.toFixed(6), grandTotal: grandTotal.toFixed(6), paymentMethod: input.paymentMethod || "CREDIT", paidAmount: paidAmount.toFixed(6), remainingAmount: (grandTotal - paidAmount).toFixed(6), paymentReference: input.paymentReference || null, idempotencyKey, sourceForm: "APST003", createdBy: input.actor }).$returningId();
+    const invoiceId = Number(inserted[0]?.id);
+    if (!invoiceId) throw new Error("PURCHASE_INVOICE_CREATE_FAILED");
+    await tx.insert(invoiceLines).values(input.lines.map((line) => ({ invoiceId, itemId: line.itemId, quantity: line.quantity, unitPrice: line.unitPrice, taxAmount: line.taxAmount, lineTotal: (Number(line.quantity) * Number(line.unitPrice) + Number(line.taxAmount)).toFixed(6) })));
+    await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE", entityType: "AP_DOC", entityId: String(invoiceId), requestId: idempotencyKey });
+    return { invoiceId, docNo: input.docNo, subtotal, taxTotal, grandTotal, status: "DRAFT" as const };
+  });
+}
+
+export async function postPurchaseInvoice(invoiceId: number, actor: string) {
+  const db = await getDb();
+  if (!db) {
+    const invoice = demoPurchaseInvoices.get(invoiceId);
+    if (!invoice) throw new Error("PURCHASE_INVOICE_NOT_FOUND");
+    if (invoice.status !== "DRAFT") throw new Error("PURCHASE_INVOICE_ALREADY_POSTED_OR_REVERSED");
+    invoice.status = "POSTED";
+    return { invoiceId, status: "POSTED" as const };
+  }
+  return db.transaction(async (tx) => {
+    const invoice = (await tx.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.invoiceType, "PURCHASE"))).limit(1))[0];
+    if (!invoice) throw new Error("PURCHASE_INVOICE_NOT_FOUND");
+    if (invoice.status !== "DRAFT") throw new Error("PURCHASE_INVOICE_ALREADY_POSTED_OR_REVERSED");
+    const lines = await tx.select({ line: invoiceLines, item: items, balance: stockBalances }).from(invoiceLines).innerJoin(items, eq(invoiceLines.itemId, items.id)).leftJoin(stockBalances, and(eq(stockBalances.itemId, invoiceLines.itemId), eq(stockBalances.warehouseId, invoice.warehouseId))).where(eq(invoiceLines.invoiceId, invoiceId));
+    const periods = await tx.select().from(fiscalPeriods).where(and(eq(fiscalPeriods.companyId, 1), eq(fiscalPeriods.status, "OPEN"))).orderBy(desc(fiscalPeriods.startsOn));
+    const period = periods.find((candidate) => canPostToPeriod(candidate, invoice.createdAt).allowed);
+    const periodCheck = canPostToPeriod(period, invoice.createdAt);
+    if (!periodCheck.allowed) throw new Error(periodCheck.reason || "PERIOD_NOT_POSTABLE");
+    for (const row of lines) {
+      const quantity = Number(row.line.quantity); const unitCost = Number(row.line.unitPrice); const totalCost = quantity * unitCost;
+      if (!row.item.stockFlag) continue;
+      const beforeQty = Number(row.balance?.quantity ?? 0); const beforeCost = Number(row.balance?.totalCost ?? 0);
+      const afterQty = beforeQty + quantity; const afterCost = beforeCost + totalCost;
+      if (row.balance) await tx.update(stockBalances).set({ quantity: afterQty.toFixed(6), totalCost: afterCost.toFixed(6), unitCost: (afterCost / afterQty).toFixed(6), versionNo: row.balance.versionNo + 1 }).where(eq(stockBalances.id, row.balance.id));
+      else await tx.insert(stockBalances).values({ itemId: row.line.itemId, warehouseId: invoice.warehouseId, quantity: quantity.toFixed(6), totalCost: totalCost.toFixed(6), unitCost: unitCost.toFixed(6), versionNo: 1 });
+      await tx.insert(stockMovements).values({ itemId: row.line.itemId, warehouseId: invoice.warehouseId, sourceInvoiceId: invoiceId, movementType: "PURCHASE_RECEIPT", quantityIn: quantity.toFixed(6), unitCost: unitCost.toFixed(6), totalCost: totalCost.toFixed(6), balanceAfter: afterQty.toFixed(6), createdBy: actor });
+    }
+    const purchaseJournal = buildPurchaseJournal({ total: Number(invoice.grandTotal), subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal) });
+    const insertedJournal = await tx.insert(journalEntries).values({ journalNo: `AP-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "AP_PURCHASE", totalDebit: purchaseJournal.totalDebit.toFixed(6), totalCredit: purchaseJournal.totalCredit.toFixed(6) }).$returningId();
+    const journalId = Number(insertedJournal[0]?.id); if (!journalId) throw new Error("JOURNAL_CREATE_FAILED");
+    await tx.insert(journalEntryLines).values(purchaseJournal.lines.map((line) => ({ journalEntryId: journalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) })));
+    await tx.update(invoices).set({ status: "POSTED", postedAt: new Date() }).where(eq(invoices.id, invoiceId));
+    await tx.insert(auditEvents).values({ actor, actionCode: "POST", entityType: "AP_DOC", entityId: String(invoiceId), requestId: `POST:${invoice.docNo}` });
+    return { invoiceId, status: "POSTED" as const };
+  });
+}
+
+export async function reversePurchaseInvoice(invoiceId: number, actor: string) {
+  const db = await getDb();
+  if (!db) {
+    const invoice = demoPurchaseInvoices.get(invoiceId);
+    if (!invoice || invoice.status !== "POSTED") throw new Error("ONLY_POSTED_PURCHASE_INVOICES_CAN_BE_REVERSED");
+    invoice.status = "REVERSED";
+    return { invoiceId, status: "REVERSED" as const };
+  }
+  return db.transaction(async (tx) => {
+    const invoice = (await tx.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.invoiceType, "PURCHASE"))).limit(1))[0];
+    if (!invoice || invoice.status !== "POSTED") throw new Error("ONLY_POSTED_PURCHASE_INVOICES_CAN_BE_REVERSED");
+    const lines = await tx.select({ line: invoiceLines, item: items, balance: stockBalances }).from(invoiceLines).innerJoin(items, eq(invoiceLines.itemId, items.id)).leftJoin(stockBalances, and(eq(stockBalances.itemId, invoiceLines.itemId), eq(stockBalances.warehouseId, invoice.warehouseId))).where(eq(invoiceLines.invoiceId, invoiceId));
+    for (const row of lines) {
+      if (!row.item.stockFlag || !row.balance) continue;
+      const quantity = Number(row.line.quantity); const beforeQty = Number(row.balance.quantity); const unitCost = Number(row.balance.unitCost); if (beforeQty < quantity) throw new Error(`INSUFFICIENT_STOCK_FOR_PURCHASE_REVERSAL:${row.item.code}`);
+      const afterQty = beforeQty - quantity; const totalCost = quantity * unitCost; const afterCost = Math.max(0, Number(row.balance.totalCost) - totalCost);
+      await tx.update(stockBalances).set({ quantity: afterQty.toFixed(6), totalCost: afterCost.toFixed(6), unitCost: afterQty ? (afterCost / afterQty).toFixed(6) : "0", versionNo: row.balance.versionNo + 1 }).where(eq(stockBalances.id, row.balance.id));
+      await tx.insert(stockMovements).values({ itemId: row.line.itemId, warehouseId: invoice.warehouseId, sourceInvoiceId: invoiceId, movementType: "PURCHASE_RETURN", quantityOut: quantity.toFixed(6), unitCost: unitCost.toFixed(6), totalCost: totalCost.toFixed(6), balanceAfter: afterQty.toFixed(6), createdBy: actor });
+    }
+    const original = buildPurchaseJournal({ total: Number(invoice.grandTotal), subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal) });
+    const reversal = validateJournal({ description: "عكس فاتورة مشتريات", source: "PURCHASE_INVOICE_REVERSAL", lines: original.lines.map((line) => ({ ...line, debit: line.credit, credit: line.debit, description: `عكس: ${line.description || ""}` })) });
+    const insertedJournal = await tx.insert(journalEntries).values({ journalNo: `AP-REV-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "AP_REVERSAL", totalDebit: reversal.totalDebit.toFixed(6), totalCredit: reversal.totalCredit.toFixed(6) }).$returningId();
+    const journalId = Number(insertedJournal[0]?.id); if (!journalId) throw new Error("REVERSAL_JOURNAL_CREATE_FAILED");
+    await tx.insert(journalEntryLines).values(reversal.lines.map((line) => ({ journalEntryId: journalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) })));
+    await tx.update(invoices).set({ status: "REVERSED" }).where(eq(invoices.id, invoiceId));
+    await tx.insert(auditEvents).values({ actor, actionCode: "REVERSE", entityType: "AP_DOC", entityId: String(invoiceId), requestId: `REV:${invoice.docNo}` });
+    return { invoiceId, status: "REVERSED" as const };
   });
 }
 

@@ -104,7 +104,9 @@ export const stockBalances = mysqlTable("stock_balances", {
 export const invoices = mysqlTable("invoices", {
   id: int("id").autoincrement().primaryKey(),
   docNo: varchar("docNo", { length: 80 }).notNull().unique(),
-  customerId: int("customerId").notNull(),
+  invoiceType: mysqlEnum("invoiceType", ["SALE", "PURCHASE"]).notNull().default("SALE"),
+  customerId: int("customerId"),
+  supplierId: int("supplierId"),
   warehouseId: int("warehouseId").notNull(),
   currencyCode: varchar("currencyCode", { length: 3 }).notNull().default("SAR"),
   exchangeRate: decimal("exchangeRate", { precision: 20, scale: 8 }).notNull().default("1"),

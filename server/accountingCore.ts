@@ -68,6 +68,15 @@ export function buildSaleJournal(input: { total: number; subtotal: number; taxTo
   return validateJournal({ description: "ترحيل فاتورة مبيعات", source: "SALE_INVOICE", lines });
 }
 
+export function buildPurchaseJournal(input: { total: number; subtotal: number; taxTotal: number; inventoryAccount?: string; payableAccount?: string; taxAccount?: string }) {
+  const lines: JournalLineInput[] = [
+    { accountCode: input.inventoryAccount || "1300", debit: input.subtotal, credit: 0, description: "إدخال المشتريات إلى المخزون" },
+  ];
+  if (input.taxTotal > EPSILON) lines.push({ accountCode: input.taxAccount || "1400", debit: input.taxTotal, credit: 0, description: "ضريبة المشتريات" });
+  lines.push({ accountCode: input.payableAccount || "2100", debit: 0, credit: input.total, description: "ذمم المورد من فاتورة المشتريات" });
+  return validateJournal({ description: "ترحيل فاتورة مشتريات", source: "PURCHASE_INVOICE", lines });
+}
+
 export function buildReversalJournal(input: { total: number; subtotal: number; taxTotal: number; totalCogs: number; revenueAccount?: string; receivableAccount?: string; taxAccount?: string; cogsAccount?: string; inventoryAccount?: string }) {
   const original = buildSaleJournal(input);
   return validateJournal({

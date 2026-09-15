@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildReversalJournal, buildSaleJournal, calculateInvoice, canPostToPeriod, validateJournal } from "./accountingCore";
+import { buildPurchaseJournal, buildReversalJournal, buildSaleJournal, calculateInvoice, canPostToPeriod, validateJournal } from "./accountingCore";
 import { getLegacyWindowContract } from "./legacyWindowContracts";
 
 describe("accounting core rules", () => {
@@ -17,6 +17,11 @@ describe("accounting core rules", () => {
     expect(sale.totalDebit).toBe(sale.totalCredit);
     expect(reversal.totalDebit).toBe(reversal.totalCredit);
     expect(reversal.lines[0].credit).toBe(215);
+  });
+  it("builds a balanced purchase entry to inventory and supplier payable", () => {
+    const purchase = buildPurchaseJournal({ total: 215, subtotal: 200, taxTotal: 15 });
+    expect(purchase.totalDebit).toBe(purchase.totalCredit);
+    expect(purchase.lines.some((line) => line.accountCode === "2100" && line.credit === 215)).toBe(true);
   });
   it("enforces open fiscal period dates", () => {
     expect(canPostToPeriod({ status: "CLOSED", startsOn: "2026-01-01", endsOn: "2026-01-31" }, "2026-01-10").allowed).toBe(false);

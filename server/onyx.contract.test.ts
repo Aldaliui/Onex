@@ -119,4 +119,14 @@ describe("Onyx rebuild contracts", () => {
     const reversed = await caller.invoices.reverse({ invoiceId: created.invoiceId, actor: "test" });
     expect(reversed.status).toBe("REVERSED");
   });
+
+  it("supports demo purchase create, post, and reversal lifecycle", async () => {
+    const caller = appRouter.createCaller(ctx);
+    const created = await caller.purchases.create({ docNo: `PURCHASE-${Date.now()}`, supplierId: 1, warehouseId: 1, actor: "test", lines: [{ itemId: 1, quantity: "3", unitPrice: "50", taxAmount: "7.5" }] });
+    expect(created.status).toBe("DRAFT");
+    const posted = await caller.purchases.post({ invoiceId: created.invoiceId, actor: "test" });
+    expect(posted.status).toBe("POSTED");
+    const reversed = await caller.purchases.reverse({ invoiceId: created.invoiceId, actor: "test" });
+    expect(reversed.status).toBe("REVERSED");
+  });
 });
