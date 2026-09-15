@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS journal_entries (
   totalDebit TEXT NOT NULL DEFAULT '0',
   totalCredit TEXT NOT NULL DEFAULT '0',
   status TEXT NOT NULL DEFAULT 'POSTED',
-  createdBy TEXT NOT NULL,
+  createdBy TEXT NOT NULL DEFAULT 'cloudflare-worker',
   createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -26,5 +26,4 @@ CREATE TABLE IF NOT EXISTS journal_entry_lines (
   description TEXT
 );
 
-CREATE INDEX IF NOT EXISTS journal_source_idx ON journal_entries(sourceRef);
 CREATE INDEX IF NOT EXISTS journal_line_no_idx ON journal_entry_lines(journalNo);
