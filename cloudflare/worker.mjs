@@ -1291,7 +1291,16 @@ async function api(request, env, url) {
     const like = `%${search}%`;
     let sql;
     let binds;
-    if (form === "ADMT027" || form === "ERP_JOURNAL") {
+    if (form === "ERP_DBA" || form === "ADMT027") {
+      sql = "SELECT id, openId, name, email, role, loginMethod, lastSignedIn FROM users WHERE (? = '' OR openId LIKE ? OR name LIKE ? OR email LIKE ?) ORDER BY id LIMIT ?";
+      binds = [search, like, like, like, limit];
+    } else if (form === "ERP_DBA_DFLT_DATA") {
+      sql = "SELECT id, companyId, code, name, active FROM branches WHERE (? = '' OR code LIKE ? OR name LIKE ?) ORDER BY code LIMIT ?";
+      binds = [search, like, like, limit];
+    } else if (form === "MRPACS004") {
+      sql = "SELECT id, companyId, code, name, active FROM warehouses WHERE (? = '' OR code LIKE ? OR name LIKE ?) ORDER BY code LIMIT ?";
+      binds = [search, like, like, limit];
+    } else if (form === "ERP_JOURNAL") {
       sql = "SELECT id, actor, actionCode, entityType, entityId, requestId, createdAt FROM audit_events WHERE (? = '' OR actionCode LIKE ? OR entityType LIKE ?) ORDER BY createdAt DESC, id DESC LIMIT ?";
       binds = [search, like, like, limit];
     } else if (form === "ARST004" || form.startsWith("POST")) {
@@ -1342,6 +1351,36 @@ async function api(request, env, url) {
   }
   if (url.pathname === "/api/cloud/windows/action" && request.method === "POST") return cloudJson({ ok: true, status: "SIMULATED", source: "cloud-d1" });
   if (url.pathname === "/api/cloud/ai/assist" && request.method === "POST") return cloudJson({ answer: "تم تحويل الطلب إلى طبقة Cloudflare D1. هذه إجابة تشغيلية أولية من Worker، ويمكن ربط نموذج الذكاء الاصطناعي لاحقًا." });
+  if (url.pathname === "/api/cloud/users" && request.method === "GET") {
+    const q = (url.searchParams.get("search") || "").trim(); const lim = limitOf(url); const like = `%${q}%`;
+    const r = await env.ONEX_DB.prepare("SELECT id, openId, name, email, role, loginMethod, lastSignedIn FROM users WHERE (? = '' OR openId LIKE ? OR name LIKE ? OR email LIKE ?) ORDER BY id LIMIT ?").bind(q, like, like, like, lim).all();
+    return cloudJson(r.results);
+  }
+  if (url.pathname === "/api/cloud/users" && request.method === "POST") {
+    const x = await readBody(request); if (!x.openId) return cloudJson({ error: "openId is required" }, 400);
+    const r = await env.ONEX_DB.prepare("INSERT INTO users(openId,name,email,loginMethod,role) VALUES(?,?,?,?,?) ON CONFLICT(openId) DO UPDATE SET name=excluded.name,email=excluded.email,loginMethod=excluded.loginMethod,role=excluded.role").bind(x.openId, x.name || null, x.email || null, x.loginMethod || "workbench", x.role || "user").run();
+    return cloudJson({ ok: true, result: r });
+  }
+  if (url.pathname === "/api/cloud/branches" && request.method === "GET") {
+    const q = (url.searchParams.get("search") || "").trim(); const lim = limitOf(url); const like = `%${q}%`;
+    const r = await env.ONEX_DB.prepare("SELECT id, companyId, code, name, active FROM branches WHERE (? = '' OR code LIKE ? OR name LIKE ?) ORDER BY code LIMIT ?").bind(q, like, like, lim).all();
+    return cloudJson(r.results);
+  }
+  if (url.pathname === "/api/cloud/branches" && request.method === "POST") {
+    const x = await readBody(request); if (!x.code || !x.name) return cloudJson({ error: "code and name are required" }, 400);
+    const r = await env.ONEX_DB.prepare("INSERT INTO branches(companyId,code,name,active) VALUES(?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,active=excluded.active").bind(x.companyId || 1, x.code, x.name, x.active ?? 1).run();
+    return cloudJson({ ok: true, result: r });
+  }
+  if (url.pathname === "/api/cloud/warehouses" && request.method === "GET") {
+    const q = (url.searchParams.get("search") || "").trim(); const lim = limitOf(url); const like = `%${q}%`;
+    const r = await env.ONEX_DB.prepare("SELECT id, companyId, code, name, active FROM warehouses WHERE (? = '' OR code LIKE ? OR name LIKE ?) ORDER BY code LIMIT ?").bind(q, like, like, lim).all();
+    return cloudJson(r.results);
+  }
+  if (url.pathname === "/api/cloud/warehouses" && request.method === "POST") {
+    const x = await readBody(request); if (!x.code || !x.name) return cloudJson({ error: "code and name are required" }, 400);
+    const r = await env.ONEX_DB.prepare("INSERT INTO warehouses(companyId,code,name,active) VALUES(?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,active=excluded.active").bind(x.companyId || 1, x.code, x.name, x.active ?? 1).run();
+    return cloudJson({ ok: true, result: r });
+  }
   if (url.pathname === "/api/cloud/accounts" && request.method === "GET") {
     const q = (url.searchParams.get("search") || "").trim(); const lim = limitOf(url);
     const r = q ? await env.ONEX_DB.prepare("SELECT * FROM accounts WHERE code LIKE ? OR name LIKE ? ORDER BY code LIMIT ?").bind(`%${q}%`, `%${q}%`, lim).all() : await env.ONEX_DB.prepare("SELECT * FROM accounts ORDER BY code LIMIT ?").bind(lim).all();

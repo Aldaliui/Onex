@@ -36,6 +36,9 @@ const mapOperation = (op: Operation) => {
     case "windows.saveSupplier": return ["/suppliers", "POST"] as const;
     case "windows.saveItem": return ["/items", "POST"] as const;
     case "windows.saveJournal": return ["/journals", "POST"] as const;
+    case "windows.saveSystemUser": return ["/users", "POST"] as const;
+    case "windows.saveBranch": return ["/branches", "POST"] as const;
+    case "windows.saveWarehouse": return ["/warehouses", "POST"] as const;
     case "windows.executeAction": return ["/windows/action", "POST"] as const;
     case "invoices.create": return ["/invoices", "POST"] as const;
     case "invoices.post": return [`/invoices/${encodeURIComponent(String(input?.invoiceId || ""))}?action=post`, "POST"] as const;
