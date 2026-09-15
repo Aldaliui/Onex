@@ -31,5 +31,10 @@ describe("ERP control and inventory flows", () => {
     expect(supplier?.accountId).toBeTruthy();
     expect(cash?.accountId).toBeTruthy();
     expect(bank?.accountId).toBeTruthy();
+    const control = await api.controlData();
+    expect(control.accounts.find((account) => account.id === customer?.accountId)?.code).toMatch(/^1200-/);
+    expect(control.accounts.find((account) => account.id === supplier?.accountId)?.code).toMatch(/^2100-/);
+    expect(control.accounts.find((account) => account.id === cash?.accountId)?.code).toMatch(/^1100-/);
+    expect(control.accounts.find((account) => account.id === bank?.accountId)?.code).toMatch(/^1110-/);
   });
 });

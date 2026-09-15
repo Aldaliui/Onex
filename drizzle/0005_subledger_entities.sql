@@ -23,9 +23,9 @@ CREATE TABLE `banks` (
   CONSTRAINT `banks_id` PRIMARY KEY(`id`),
   CONSTRAINT `bank_company_code` UNIQUE(`companyId`,`code`)
 );
-INSERT INTO accounts (`companyId`,`code`,`name`,`accountType`,`parentCode`,`currencyCode`,`active`)
+INSERT IGNORE INTO accounts (`companyId`,`code`,`name`,`accountType`,`parentCode`,`currencyCode`,`active`)
 SELECT c.companyId, CONCAT('1200-', LPAD(c.id, 4, '0')), c.legalName, 'ASSET', '1200', c.currencyCode, 1 FROM customers c WHERE c.accountId IS NULL;
 UPDATE customers c JOIN accounts a ON a.companyId = c.companyId AND a.code = CONCAT('1200-', LPAD(c.id, 4, '0')) SET c.accountId = a.id WHERE c.accountId IS NULL;
-INSERT INTO accounts (`companyId`,`code`,`name`,`accountType`,`parentCode`,`currencyCode`,`active`)
+INSERT IGNORE INTO accounts (`companyId`,`code`,`name`,`accountType`,`parentCode`,`currencyCode`,`active`)
 SELECT s.companyId, CONCAT('2100-', LPAD(s.id, 4, '0')), s.legalName, 'LIABILITY', '2100', s.currencyCode, 1 FROM suppliers s WHERE s.accountId IS NULL;
 UPDATE suppliers s JOIN accounts a ON a.companyId = s.companyId AND a.code = CONCAT('2100-', LPAD(s.id, 4, '0')) SET s.accountId = a.id WHERE s.accountId IS NULL;

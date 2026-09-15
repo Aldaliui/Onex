@@ -23,6 +23,12 @@ describe("accounting core rules", () => {
     expect(purchase.totalDebit).toBe(purchase.totalCredit);
     expect(purchase.lines.some((line) => line.accountCode === "2100" && line.credit === 215)).toBe(true);
   });
+  it("accepts linked customer and supplier subledger accounts", () => {
+    const sale = buildSaleJournal({ total: 215, subtotal: 200, taxTotal: 15, totalCogs: 80, receivableAccount: "1200-0007" });
+    const purchase = buildPurchaseJournal({ total: 215, subtotal: 200, taxTotal: 15, payableAccount: "2100-0004" });
+    expect(sale.lines.find((line) => line.accountCode === "1200-0007")?.debit).toBe(215);
+    expect(purchase.lines.find((line) => line.accountCode === "2100-0004")?.credit).toBe(215);
+  });
   it("enforces open fiscal period dates", () => {
     expect(canPostToPeriod({ status: "CLOSED", startsOn: "2026-01-01", endsOn: "2026-01-31" }, "2026-01-10").allowed).toBe(false);
     expect(canPostToPeriod({ status: "OPEN", startsOn: "2026-01-01", endsOn: "2026-01-31" }, "2026-02-01").reason).toBe("DATE_OUTSIDE_PERIOD");
