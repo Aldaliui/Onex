@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ENV } from "./_core/env";
-import { accounts, auditEvents, branches, companies, customers, fiscalPeriods, invoices, invoiceLines, items, journalEntries, journalEntryLines, suppliers, stockBalances, stockMovements, warehouses, windowRegistry, type InsertUser, users } from "../drizzle/schema";
+import { accounts, auditEvents, banks, branches, cashBoxes, companies, customers, fiscalPeriods, invoices, invoiceLines, items, journalEntries, journalEntryLines, suppliers, stockBalances, stockMovements, warehouses, windowRegistry, type InsertUser, users } from "../drizzle/schema";
 import { buildPurchaseJournal, buildReversalJournal, buildSaleJournal, calculateInvoice, canPostToPeriod, validateJournal } from "./accountingCore";
 import { getLegacyWindowContract } from "./legacyWindowContracts";
 
@@ -11,12 +11,14 @@ let _db: ReturnType<typeof drizzle> | null = null;
 let demoInvoiceSequence = 1000;
 const demoInvoices = new Map<number, { invoiceId: number; docNo: string; subtotal: number; taxTotal: number; grandTotal: number; status: "DRAFT" | "POSTED" | "REVERSED" }>();
 const demoPurchaseInvoices = new Map<number, { invoiceId: number; docNo: string; subtotal: number; taxTotal: number; grandTotal: number; status: "DRAFT" | "POSTED" | "REVERSED" }>();
-const demoSuppliers: Array<{ id: number; companyId: number; code: string; legalName: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, code: "SUP-001", legalName: "مورد تجريبي", currencyCode: "SAR", status: "ACTIVE" }];
-const demoCustomers: Array<{ id: number; companyId: number; code: string; legalName: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, code: "CUST-001", legalName: "عميل تجريبي", currencyCode: "SAR", status: "ACTIVE" }];
+const demoSuppliers: Array<{ id: number; companyId: number; accountId?: number; code: string; legalName: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, accountId: 4, code: "SUP-001", legalName: "مورد تجريبي", currencyCode: "SAR", status: "ACTIVE" }];
+const demoCustomers: Array<{ id: number; companyId: number; accountId?: number; code: string; legalName: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, accountId: 5, code: "CUST-001", legalName: "عميل تجريبي", currencyCode: "SAR", status: "ACTIVE" }];
+const demoCashBoxes: Array<{ id: number; companyId: number; accountId?: number; code: string; name: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, accountId: 1, code: "CASH-001", name: "الصندوق الرئيسي", currencyCode: "SAR", status: "ACTIVE" }];
+const demoBanks: Array<{ id: number; companyId: number; accountId?: number; code: string; name: string; accountNumber: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, accountId: 1, code: "BANK-001", name: "البنك الرئيسي", accountNumber: "", currencyCode: "SAR", status: "ACTIVE" }];
 const demoItems = [{ id: 1, companyId: 1, code: "ITEM-001", description: "صنف تجريبي", stockFlag: 1, unitCost: "100", revenueAccount: "4100", inventoryAccount: "1300", cogsAccount: "5100", active: 1 }];
 const demoJournals: Array<{ id: number; journalNo: string; entryType: string; totalDebit: string; totalCredit: string; status: "POSTED" }> = [];
 const demoBranches = [{ id: 1, companyId: 1, code: "MAIN", name: "الفرع الرئيسي", active: 1 }];
-const demoAccounts: Array<{ id: number; companyId: number; code: string; name: string; accountType: string; parentCode?: string; currencyCode: string; active: number }> = [{ id: 1, companyId: 1, code: "1100", name: "النقدية", accountType: "ASSET", currencyCode: "SAR", active: 1 }, { id: 2, companyId: 1, code: "4100", name: "إيرادات المبيعات", accountType: "REVENUE", currencyCode: "SAR", active: 1 }, { id: 3, companyId: 1, code: "5100", name: "تكلفة المبيعات", accountType: "EXPENSE", currencyCode: "SAR", active: 1 }];
+const demoAccounts: Array<{ id: number; companyId: number; code: string; name: string; accountType: string; parentCode?: string; currencyCode: string; active: number }> = [{ id: 1, companyId: 1, code: "1100", name: "النقدية", accountType: "ASSET", currencyCode: "SAR", active: 1 }, { id: 2, companyId: 1, code: "4100", name: "إيرادات المبيعات", accountType: "REVENUE", currencyCode: "SAR", active: 1 }, { id: 3, companyId: 1, code: "5100", name: "تكلفة المبيعات", accountType: "EXPENSE", currencyCode: "SAR", active: 1 }, { id: 4, companyId: 1, code: "2100-0001", name: "مورد تجريبي", accountType: "LIABILITY", parentCode: "2100", currencyCode: "SAR", active: 1 }, { id: 5, companyId: 1, code: "1200-0001", name: "عميل تجريبي", accountType: "ASSET", parentCode: "1200", currencyCode: "SAR", active: 1 }];
 const demoPeriods = [{ id: 1, companyId: 1, code: "2026-01", startsOn: new Date("2026-01-01"), endsOn: new Date("2026-01-31"), status: "OPEN" as const }];
 
 type FallbackWindow = {
@@ -277,16 +279,18 @@ export async function getMasterData() {
   const db = await getDb();
   if (!db) return {
     companies: [{ id: 1, code: "ONEX", name: "شركة Onyx التجريبية", baseCurrency: "SAR" }],
-    customers: [{ id: 1, companyId: 1, code: "CUST-001", legalName: "عميل تجريبي", currencyCode: "SAR", status: "ACTIVE" as const }],
+    customers: demoCustomers,
     suppliers: demoSuppliers,
+    cashBoxes: demoCashBoxes,
+    banks: demoBanks,
     items: [{ id: 1, companyId: 1, code: "ITEM-001", description: "صنف تجريبي", stockFlag: 1, unitCost: "100", revenueAccount: "4100", inventoryAccount: "1300", cogsAccount: "5100", active: 1 }],
     warehouses: [{ id: 1, companyId: 1, code: "MAIN", name: "المستودع الرئيسي", active: 1 }],
     balances: [{ balance: { quantity: "100", totalCost: "10000", unitCost: "100" }, item: { code: "ITEM-001" }, warehouse: { code: "MAIN" } }],
   };
-  const [companyRows, customerRows, supplierRows, itemRows, warehouseRows, balanceRows] = await Promise.all([
-    db.select().from(companies).limit(20), db.select().from(customers).limit(100), db.select().from(suppliers).limit(100), db.select().from(items).limit(100), db.select().from(warehouses).limit(50), db.select({ balance: stockBalances, item: items, warehouse: warehouses }).from(stockBalances).leftJoin(items, eq(stockBalances.itemId, items.id)).leftJoin(warehouses, eq(stockBalances.warehouseId, warehouses.id)).limit(100),
+  const [companyRows, customerRows, supplierRows, cashBoxRows, bankRows, itemRows, warehouseRows, balanceRows] = await Promise.all([
+    db.select().from(companies).limit(20), db.select().from(customers).limit(100), db.select().from(suppliers).limit(100), db.select().from(cashBoxes).limit(100), db.select().from(banks).limit(100), db.select().from(items).limit(100), db.select().from(warehouses).limit(50), db.select({ balance: stockBalances, item: items, warehouse: warehouses }).from(stockBalances).leftJoin(items, eq(stockBalances.itemId, items.id)).leftJoin(warehouses, eq(stockBalances.warehouseId, warehouses.id)).limit(100),
   ]);
-  return { companies: companyRows, customers: customerRows, suppliers: supplierRows, items: itemRows, warehouses: warehouseRows, balances: balanceRows };
+  return { companies: companyRows, customers: customerRows, suppliers: supplierRows, cashBoxes: cashBoxRows, banks: bankRows, items: itemRows, warehouses: warehouseRows, balances: balanceRows };
 }
 
 export async function getErpControlData() {
@@ -333,11 +337,19 @@ export async function searchSystemUsers(search?: string, limit = 20) {
   return db.select({ id: users.id, openId: users.openId, name: users.name, email: users.email, role: users.role, lastSignedIn: users.lastSignedIn }).from(users).where(filters).orderBy(users.id).limit(limit);
 }
 
+async function createLinkedAccount(tx: any, input: { companyId: number; entityId: number; name: string; accountType: string; parentCode: string; currencyCode: string }) {
+  const code = `${input.parentCode}-${String(input.entityId).padStart(4, "0")}`;
+  const existing = (await tx.select().from(accounts).where(and(eq(accounts.companyId, input.companyId), eq(accounts.code, code))).limit(1))[0];
+  if (existing) return existing;
+  const inserted = await tx.insert(accounts).values({ companyId: input.companyId, code, name: input.name, accountType: input.accountType, parentCode: input.parentCode, currencyCode: input.currencyCode, active: 1 }).$returningId();
+  return (await tx.select().from(accounts).where(eq(accounts.id, Number(inserted[0]?.id))).limit(1))[0];
+}
+
 export async function saveCustomer(input: { id?: number; companyId: number; code: string; legalName: string; currencyCode?: string; status?: "ACTIVE" | "BLOCKED" | "CLOSED" }) {
   const db = await getDb();
-  if (!db) { const existing = demoCustomers.find((row) => row.id === input.id || row.code === input.code); if (existing) Object.assign(existing, input); else demoCustomers.push({ id: Math.max(...demoCustomers.map((row) => row.id), 0) + 1, companyId: input.companyId, code: input.code, legalName: input.legalName, currencyCode: input.currencyCode || "SAR", status: input.status || "ACTIVE" }); return demoCustomers.at(-1); }
-  if (input.id) { await db.update(customers).set({ code: input.code, legalName: input.legalName, currencyCode: input.currencyCode || "SAR", status: input.status || "ACTIVE" }).where(eq(customers.id, input.id)); return db.select().from(customers).where(eq(customers.id, input.id)).limit(1).then((rows) => rows[0]); }
-  const inserted = await db.insert(customers).values({ companyId: input.companyId, code: input.code, legalName: input.legalName, currencyCode: input.currencyCode || "SAR", status: input.status || "ACTIVE" }).$returningId(); return db.select().from(customers).where(eq(customers.id, Number(inserted[0]?.id))).limit(1).then((rows) => rows[0]);
+  const currencyCode = input.currencyCode || "SAR"; const status = input.status || "ACTIVE";
+  if (!db) { const existing = demoCustomers.find((row) => row.id === input.id || row.code === input.code); if (existing) { Object.assign(existing, input); return { ...existing, accountId: (existing as any).accountId }; } const id = Math.max(...demoCustomers.map((row) => row.id), 0) + 1; const accountId = Math.max(...demoAccounts.map((row) => row.id), 0) + 1; demoAccounts.push({ id: accountId, companyId: input.companyId, code: `1200-${String(id).padStart(4, "0")}`, name: input.legalName, accountType: "ASSET", parentCode: "1200", currencyCode, active: 1 }); const row = { id, companyId: input.companyId, code: input.code, legalName: input.legalName, currencyCode, status, accountId }; demoCustomers.push(row); return row; }
+  return db.transaction(async (tx) => { if (input.id) { const current = (await tx.select().from(customers).where(eq(customers.id, input.id)).limit(1))[0]; await tx.update(customers).set({ code: input.code, legalName: input.legalName, currencyCode, status }).where(eq(customers.id, input.id)); if (current?.accountId) await tx.update(accounts).set({ name: input.legalName, currencyCode, active: status === "ACTIVE" ? 1 : 0 }).where(eq(accounts.id, current.accountId)); return (await tx.select().from(customers).where(eq(customers.id, input.id)).limit(1))[0]; } const inserted = await tx.insert(customers).values({ companyId: input.companyId, code: input.code, legalName: input.legalName, currencyCode, status }).$returningId(); const id = Number(inserted[0]?.id); if (!id) throw new Error("CUSTOMER_CREATE_FAILED"); const account = await createLinkedAccount(tx, { companyId: input.companyId, entityId: id, name: input.legalName, accountType: "ASSET", parentCode: "1200", currencyCode }); await tx.update(customers).set({ accountId: account.id }).where(eq(customers.id, id)); return (await tx.select().from(customers).where(eq(customers.id, id)).limit(1))[0]; });
 }
 
 export async function searchSuppliers(search?: string, limit = 20) {
@@ -348,10 +360,21 @@ export async function searchSuppliers(search?: string, limit = 20) {
 }
 
 export async function saveSupplier(input: { id?: number; companyId: number; code: string; legalName: string; currencyCode?: string; status?: "ACTIVE" | "BLOCKED" | "CLOSED" }) {
-  const db = await getDb();
-  if (!db) { const existing = demoSuppliers.find((row) => row.id === input.id || row.code === input.code); if (existing) Object.assign(existing, input); else demoSuppliers.push({ id: Math.max(...demoSuppliers.map((row) => row.id), 0) + 1, companyId: input.companyId, code: input.code, legalName: input.legalName, currencyCode: input.currencyCode || "SAR", status: input.status || "ACTIVE" }); return demoSuppliers.at(-1); }
-  if (input.id) { await db.update(suppliers).set({ code: input.code, legalName: input.legalName, currencyCode: input.currencyCode || "SAR", status: input.status || "ACTIVE" }).where(eq(suppliers.id, input.id)); return db.select().from(suppliers).where(eq(suppliers.id, input.id)).limit(1).then((rows) => rows[0]); }
-  const inserted = await db.insert(suppliers).values({ companyId: input.companyId, code: input.code, legalName: input.legalName, currencyCode: input.currencyCode || "SAR", status: input.status || "ACTIVE" }).$returningId(); return db.select().from(suppliers).where(eq(suppliers.id, Number(inserted[0]?.id))).limit(1).then((rows) => rows[0]);
+  const db = await getDb(); const currencyCode = input.currencyCode || "SAR"; const status = input.status || "ACTIVE";
+  if (!db) { const existing = demoSuppliers.find((row) => row.id === input.id || row.code === input.code); if (existing) { Object.assign(existing, input); return { ...existing, accountId: (existing as any).accountId }; } const id = Math.max(...demoSuppliers.map((row) => row.id), 0) + 1; const accountId = Math.max(...demoAccounts.map((row) => row.id), 0) + 1; demoAccounts.push({ id: accountId, companyId: input.companyId, code: `2100-${String(id).padStart(4, "0")}`, name: input.legalName, accountType: "LIABILITY", parentCode: "2100", currencyCode, active: 1 }); const row = { id, companyId: input.companyId, code: input.code, legalName: input.legalName, currencyCode, status, accountId }; demoSuppliers.push(row); return row; }
+  return db.transaction(async (tx) => { if (input.id) { const current = (await tx.select().from(suppliers).where(eq(suppliers.id, input.id)).limit(1))[0]; await tx.update(suppliers).set({ code: input.code, legalName: input.legalName, currencyCode, status }).where(eq(suppliers.id, input.id)); if (current?.accountId) await tx.update(accounts).set({ name: input.legalName, currencyCode, active: status === "ACTIVE" ? 1 : 0 }).where(eq(accounts.id, current.accountId)); return (await tx.select().from(suppliers).where(eq(suppliers.id, input.id)).limit(1))[0]; } const inserted = await tx.insert(suppliers).values({ companyId: input.companyId, code: input.code, legalName: input.legalName, currencyCode, status }).$returningId(); const id = Number(inserted[0]?.id); if (!id) throw new Error("SUPPLIER_CREATE_FAILED"); const account = await createLinkedAccount(tx, { companyId: input.companyId, entityId: id, name: input.legalName, accountType: "LIABILITY", parentCode: "2100", currencyCode }); await tx.update(suppliers).set({ accountId: account.id }).where(eq(suppliers.id, id)); return (await tx.select().from(suppliers).where(eq(suppliers.id, id)).limit(1))[0]; });
+}
+
+export async function saveCashBox(input: { id?: number; companyId: number; code: string; name: string; currencyCode?: string; status?: "ACTIVE" | "BLOCKED" | "CLOSED" }) {
+  const db = await getDb(); const currencyCode = input.currencyCode || "SAR"; const status = input.status || "ACTIVE";
+  if (!db) { const existing = demoCashBoxes.find((row) => row.id === input.id || row.code === input.code); if (existing) { Object.assign(existing, input); return existing; } const id = Math.max(...demoCashBoxes.map((row) => row.id), 0) + 1; const accountId = Math.max(...demoAccounts.map((row) => row.id), 0) + 1; demoAccounts.push({ id: accountId, companyId: input.companyId, code: `1100-${String(id).padStart(4, "0")}`, name: input.name, accountType: "ASSET", parentCode: "1100", currencyCode, active: 1 }); const row = { id, companyId: input.companyId, accountId, code: input.code, name: input.name, currencyCode, status }; demoCashBoxes.push(row); return row; }
+  return db.transaction(async (tx) => { const inserted = await tx.insert(cashBoxes).values({ companyId: input.companyId, code: input.code, name: input.name, currencyCode, status }).$returningId(); const id = Number(inserted[0]?.id); const account = await createLinkedAccount(tx, { companyId: input.companyId, entityId: id, name: input.name, accountType: "ASSET", parentCode: "1100", currencyCode }); await tx.update(cashBoxes).set({ accountId: account.id }).where(eq(cashBoxes.id, id)); return (await tx.select().from(cashBoxes).where(eq(cashBoxes.id, id)).limit(1))[0]; });
+}
+
+export async function saveBank(input: { id?: number; companyId: number; code: string; name: string; accountNumber?: string; currencyCode?: string; status?: "ACTIVE" | "BLOCKED" | "CLOSED" }) {
+  const db = await getDb(); const currencyCode = input.currencyCode || "SAR"; const status = input.status || "ACTIVE";
+  if (!db) { const existing = demoBanks.find((row) => row.id === input.id || row.code === input.code); if (existing) { Object.assign(existing, input); return existing; } const id = Math.max(...demoBanks.map((row) => row.id), 0) + 1; const accountId = Math.max(...demoAccounts.map((row) => row.id), 0) + 1; demoAccounts.push({ id: accountId, companyId: input.companyId, code: `1110-${String(id).padStart(4, "0")}`, name: input.name, accountType: "ASSET", parentCode: "1110", currencyCode, active: 1 }); const row = { id, companyId: input.companyId, accountId, code: input.code, name: input.name, accountNumber: input.accountNumber || "", currencyCode, status }; demoBanks.push(row); return row; }
+  return db.transaction(async (tx) => { const inserted = await tx.insert(banks).values({ companyId: input.companyId, code: input.code, name: input.name, accountNumber: input.accountNumber || null, currencyCode, status }).$returningId(); const id = Number(inserted[0]?.id); const account = await createLinkedAccount(tx, { companyId: input.companyId, entityId: id, name: input.name, accountType: "ASSET", parentCode: "1110", currencyCode }); await tx.update(banks).set({ accountId: account.id }).where(eq(banks.id, id)); return (await tx.select().from(banks).where(eq(banks.id, id)).limit(1))[0]; });
 }
 
 export async function searchItems(search?: string, limit = 20) {

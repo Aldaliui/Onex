@@ -19,4 +19,17 @@ describe("ERP control and inventory flows", () => {
     const receipt = await api.inventory.receive({ itemId: 1, warehouseId: 1, quantity: "3", unitCost: "50", reference: `GRN-${Date.now()}` });
     expect(receipt.status).toBe("RECEIVED");
   });
+
+  it("creates automatic subledger accounts for financial entities", async () => {
+    const api = appRouter.createCaller(ctx);
+    const suffix = Date.now();
+    const customer = await api.windows.saveCustomer({ code: `CUST-${suffix}`, legalName: "عميل مربوط" });
+    const supplier = await api.windows.saveSupplier({ code: `SUP-${suffix}`, legalName: "مورد مربوط" });
+    const cash = await api.windows.saveCashBox({ code: `CASH-${suffix}`, name: "صندوق مربوط" });
+    const bank = await api.windows.saveBank({ code: `BANK-${suffix}`, name: "بنك مربوط", accountNumber: "123" });
+    expect(customer?.accountId).toBeTruthy();
+    expect(supplier?.accountId).toBeTruthy();
+    expect(cash?.accountId).toBeTruthy();
+    expect(bank?.accountId).toBeTruthy();
+  });
 });

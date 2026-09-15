@@ -62,6 +62,7 @@ export const warehouses = mysqlTable("warehouses", {
 export const customers = mysqlTable("customers", {
   id: int("id").autoincrement().primaryKey(),
   companyId: int("companyId").notNull(),
+  accountId: int("accountId"),
   code: varchar("code", { length: 50 }).notNull(),
   legalName: varchar("legalName", { length: 250 }).notNull(),
   currencyCode: varchar("currencyCode", { length: 3 }).notNull().default("SAR"),
@@ -71,11 +72,33 @@ export const customers = mysqlTable("customers", {
 export const suppliers = mysqlTable("suppliers", {
   id: int("id").autoincrement().primaryKey(),
   companyId: int("companyId").notNull(),
+  accountId: int("accountId"),
   code: varchar("code", { length: 50 }).notNull(),
   legalName: varchar("legalName", { length: 250 }).notNull(),
   currencyCode: varchar("currencyCode", { length: 3 }).notNull().default("SAR"),
   status: mysqlEnum("status", ["ACTIVE", "BLOCKED", "CLOSED"]).notNull().default("ACTIVE"),
 }, (table) => ({ companyCode: unique("supplier_company_code").on(table.companyId, table.code) }));
+
+export const cashBoxes = mysqlTable("cash_boxes", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull(),
+  accountId: int("accountId"),
+  code: varchar("code", { length: 50 }).notNull(),
+  name: varchar("name", { length: 250 }).notNull(),
+  currencyCode: varchar("currencyCode", { length: 3 }).notNull().default("SAR"),
+  status: mysqlEnum("status", ["ACTIVE", "BLOCKED", "CLOSED"]).notNull().default("ACTIVE"),
+}, (table) => ({ companyCode: unique("cash_box_company_code").on(table.companyId, table.code) }));
+
+export const banks = mysqlTable("banks", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull(),
+  accountId: int("accountId"),
+  code: varchar("code", { length: 50 }).notNull(),
+  name: varchar("name", { length: 250 }).notNull(),
+  accountNumber: varchar("accountNumber", { length: 100 }),
+  currencyCode: varchar("currencyCode", { length: 3 }).notNull().default("SAR"),
+  status: mysqlEnum("status", ["ACTIVE", "BLOCKED", "CLOSED"]).notNull().default("ACTIVE"),
+}, (table) => ({ companyCode: unique("bank_company_code").on(table.companyId, table.code) }));
 
 export const items = mysqlTable("items", {
   id: int("id").autoincrement().primaryKey(),

@@ -6,10 +6,12 @@ import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { invokeLLM } from "./_core/llm";
 import { LOCAL_COOKIE } from "./_core/localAuth";
 import { executeOracleAction, getOracleBridgeStatus } from "./_core/oracleBridge";
-import { createInvoice, createPurchaseInvoice, getCatalogSources, getDashboard, getErpControlData, getFinancialReportCatalog, getMasterData, getSystemTree, getWindowCatalog, getWindowContract, getWindowDomains, postInvoice, postPurchaseInvoice, receiveStock, reverseInvoice, reversePurchaseInvoice, runFinancialReport, saveAccount, saveCustomer, saveItem, saveJournal, saveSupplier, searchCustomers, searchInvoices, searchItems, searchJournals, searchSuppliers, searchSystemUsers } from "./db";
+import { createInvoice, createPurchaseInvoice, getCatalogSources, getDashboard, getErpControlData, getFinancialReportCatalog, getMasterData, getSystemTree, getWindowCatalog, getWindowContract, getWindowDomains, postInvoice, postPurchaseInvoice, receiveStock, reverseInvoice, reversePurchaseInvoice, runFinancialReport, saveAccount, saveBank, saveCashBox, saveCustomer, saveItem, saveJournal, saveSupplier, searchCustomers, searchInvoices, searchItems, searchJournals, searchSuppliers, searchSystemUsers } from "./db";
 
 const invoiceLine = z.object({ itemId: z.number().int().positive(), quantity: z.string().min(1), unitPrice: z.string().min(1), taxAmount: z.string().default("0") });
 const partyInput = z.object({ id: z.number().int().positive().optional(), companyId: z.number().int().positive().default(1), code: z.string().min(1).max(50), legalName: z.string().min(1).max(250), currencyCode: z.string().length(3).default("SAR"), status: z.enum(["ACTIVE", "BLOCKED", "CLOSED"]).default("ACTIVE") });
+const cashBoxInput = z.object({ id: z.number().int().positive().optional(), companyId: z.number().int().positive().default(1), code: z.string().min(1).max(50), name: z.string().min(1).max(250), currencyCode: z.string().length(3).default("SAR"), status: z.enum(["ACTIVE", "BLOCKED", "CLOSED"]).default("ACTIVE") });
+const bankInput = cashBoxInput.extend({ accountNumber: z.string().max(100).optional() });
 const itemInput = z.object({ id: z.number().int().positive().optional(), companyId: z.number().int().positive().default(1), code: z.string().min(1).max(80), description: z.string().min(1).max(500), stockFlag: z.number().int().min(0).max(1).default(1), unitCost: z.string().default("0"), revenueAccount: z.string().default("4100"), inventoryAccount: z.string().default("1300"), cogsAccount: z.string().default("5100"), active: z.number().int().min(0).max(1).default(1) });
 const journalLine = z.object({ accountCode: z.string().min(1).max(80), accountName: z.string().max(240).optional(), description: z.string().max(500).optional(), debit: z.string().default("0"), credit: z.string().default("0") });
 
@@ -47,6 +49,8 @@ export const appRouter = router({
     }),
     saveCustomer: protectedProcedure.input(partyInput).mutation(({ input }) => saveCustomer(input)),
     saveSupplier: protectedProcedure.input(partyInput).mutation(({ input }) => saveSupplier(input)),
+    saveCashBox: protectedProcedure.input(cashBoxInput).mutation(({ input }) => saveCashBox(input)),
+    saveBank: protectedProcedure.input(bankInput).mutation(({ input }) => saveBank(input)),
     saveItem: protectedProcedure.input(itemInput).mutation(({ input }) => saveItem(input)),
     saveJournal: protectedProcedure.input(z.object({ journalNo: z.string().min(1).max(80), entryType: z.string().min(1).max(40), actor: z.string().default("workbench.user"), lines: z.array(journalLine).min(2) })).mutation(({ input }) => saveJournal(input)),
     saveAccount: protectedProcedure.input(z.object({ id: z.number().int().positive().optional(), companyId: z.number().int().positive().default(1), code: z.string().min(1).max(80), name: z.string().min(1).max(240), accountType: z.string().min(1).max(30), parentCode: z.string().max(80).optional(), currencyCode: z.string().length(3).default("SAR"), active: z.number().int().min(0).max(1).default(1) })).mutation(({ input }) => saveAccount(input)),
