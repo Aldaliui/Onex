@@ -378,7 +378,7 @@ export async function saveJournal(input: { journalNo: string; entryType: string;
   return db.transaction(async (tx) => { const inserted = await tx.insert(journalEntries).values({ journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6) }).$returningId(); const id = Number(inserted[0]?.id); if (!id) throw new Error("JOURNAL_CREATE_FAILED"); await tx.insert(journalEntryLines).values(input.lines.map((line) => ({ journalEntryId: id, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: line.debit, credit: line.credit }))); await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE", entityType: "GL_JOURNAL", entityId: String(id), requestId: `JOURNAL:${input.journalNo}` }); return { id, journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6), status: "POSTED" as const }; });
 }
 
-export async function createInvoice(input: { docNo: string; customerId: number; warehouseId: number; lines: { itemId: number; quantity: string; unitPrice: string; taxAmount: string }[]; actor: string; }) {
+export async function createInvoice(input: { docNo: string; customerId: number; warehouseId: number; currencyCode?: string; exchangeRate?: string; paymentMethod?: string; paidAmount?: string; paymentReference?: string; lines: { itemId: number; quantity: string; unitPrice: string; taxAmount: string }[]; actor: string; }) {
   const db = await getDb();
   const subtotal = input.lines.reduce((sum, line) => sum + Number(line.quantity) * Number(line.unitPrice), 0);
   const taxTotal = input.lines.reduce((sum, line) => sum + Number(line.taxAmount), 0);
@@ -387,12 +387,14 @@ export async function createInvoice(input: { docNo: string; customerId: number; 
   if (!db) {
     if (Array.from(demoInvoices.values()).some((invoice) => invoice.docNo === input.docNo)) throw new Error("DUPLICATE_IDEMPOTENCY_KEY");
     const invoiceId = ++demoInvoiceSequence;
-    const result = { invoiceId, docNo: input.docNo, subtotal, taxTotal, grandTotal, status: "DRAFT" as const };
+    const paidAmount = Number(input.paidAmount || 0);
+    const result = { invoiceId, docNo: input.docNo, currencyCode: input.currencyCode || "SAR", exchangeRate: Number(input.exchangeRate || 1), paymentMethod: input.paymentMethod || "CASH", paidAmount, remainingAmount: grandTotal - paidAmount, subtotal, taxTotal, grandTotal, status: "DRAFT" as const };
     demoInvoices.set(invoiceId, result);
     return result;
   }
   return db.transaction(async (tx) => {
-    const inserted = await tx.insert(invoices).values({ docNo: input.docNo, customerId: input.customerId, warehouseId: input.warehouseId, subtotal: subtotal.toFixed(6), taxTotal: taxTotal.toFixed(6), grandTotal: grandTotal.toFixed(6), idempotencyKey, createdBy: input.actor }).$returningId();
+    const paidAmount = Number(input.paidAmount || 0);
+    const inserted = await tx.insert(invoices).values({ docNo: input.docNo, customerId: input.customerId, warehouseId: input.warehouseId, currencyCode: input.currencyCode || "SAR", exchangeRate: input.exchangeRate || "1", subtotal: subtotal.toFixed(6), taxTotal: taxTotal.toFixed(6), grandTotal: grandTotal.toFixed(6), paymentMethod: input.paymentMethod || "CASH", paidAmount: paidAmount.toFixed(6), remainingAmount: (grandTotal - paidAmount).toFixed(6), paymentReference: input.paymentReference || null, idempotencyKey, createdBy: input.actor }).$returningId();
     const invoiceId = Number(inserted[0]?.id);
     if (!invoiceId) throw new Error("INVOICE_CREATE_FAILED");
     await tx.insert(invoiceLines).values(input.lines.map((line) => ({ invoiceId, itemId: line.itemId, quantity: line.quantity, unitPrice: line.unitPrice, taxAmount: line.taxAmount, lineTotal: (Number(line.quantity) * Number(line.unitPrice) + Number(line.taxAmount)).toFixed(6) })));

@@ -73,7 +73,7 @@ export const appRouter = router({
     }),
   }),
   invoices: router({
-    create: publicProcedure.input(z.object({ docNo: z.string().min(1), customerId: z.number().int().positive(), warehouseId: z.number().int().positive(), lines: z.array(invoiceLine).min(1), actor: z.string().default("demo.user") })).mutation(({ input }) => createInvoice(input)),
+    create: publicProcedure.input(z.object({ docNo: z.string().min(1), customerId: z.number().int().positive(), warehouseId: z.number().int().positive(), currencyCode: z.string().length(3).default("SAR"), exchangeRate: z.string().default("1"), paymentMethod: z.enum(["CASH", "CREDIT", "CHECK", "WALLET", "BANK_TRANSFER"]).default("CASH"), paidAmount: z.string().default("0"), paymentReference: z.string().max(160).optional(), lines: z.array(invoiceLine).min(1), actor: z.string().default("demo.user") })).mutation(({ input }) => createInvoice(input)),
     post: publicProcedure.input(z.object({ invoiceId: z.number().int().positive(), actor: z.string().default("demo.user") })).mutation(({ input }) => postInvoice(input.invoiceId, input.actor)),
     reverse: publicProcedure.input(z.object({ invoiceId: z.number().int().positive(), actor: z.string().default("demo.user") })).mutation(({ input }) => reverseInvoice(input.invoiceId, input.actor)),
   }),

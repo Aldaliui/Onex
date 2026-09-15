@@ -50,6 +50,7 @@ function AuthenticatedWorkbench() {
   const saveSupplier = trpc.windows.saveSupplier.useMutation();
   const saveItem = trpc.windows.saveItem.useMutation();
   const saveJournal = trpc.windows.saveJournal.useMutation();
+  const executeWindowAction = trpc.windows.executeAction.useMutation();
   const filteredModules = useMemo(() => modules.map((module) => ({ ...module, windows: module.windows.filter((w) => `${w.id} ${w.label}`.toLowerCase().includes(query.toLowerCase())) })).filter((module) => module.windows.length || module.label.includes(query)), [query]);
 
   const openWindow = async (window: RuntimeWindow) => {
@@ -79,7 +80,16 @@ function AuthenticatedWorkbench() {
 
   const handleAction = async (action: WindowAction) => {
     const id = manager.activeId; if (!id) return;
+    if (action === "edit") return manager.markDirty(id);
     if (action === "save") return saveDraft();
+    if (action === "post") {
+      try {
+        const result = await executeWindowAction.mutateAsync({ legacyForm: `${id}.fmx`, action: "post" });
+        toast.success(result.message || `تم ترحيل ${id}`);
+        return manager.commitWindow(id);
+      } catch (error) { toast.error(error instanceof Error ? error.message : `تعذر ترحيل ${id}`); return; }
+    }
+    if (action === "undo") { manager.markClean(id); return toast.info(`تم التراجع عن تعديلات ${id}`); }
     if (action === "cancel") return manager.markClean(id);
     if (action === "query") { await records.refetch(); return toast.success(`تم تحديث سجلات ${id} من قاعدة البيانات`); }
     if (action === "new") return toast.info(`سجل جديد في ${id}`);
@@ -91,6 +101,9 @@ function AuthenticatedWorkbench() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "F10") { event.preventDefault(); void handleAction("save"); }
+      if (event.key === "F11") { event.preventDefault(); void handleAction("post"); }
+      if (event.key === "F2") { event.preventDefault(); void handleAction("edit"); }
+      if (event.ctrlKey && event.key.toLowerCase() === "z") { event.preventDefault(); void handleAction("undo"); }
       if (event.key === "F7") { event.preventDefault(); void handleAction("query"); }
       if (event.key === "Escape" && manager.activeId) { event.preventDefault(); void manager.closeWindow(manager.activeId); }
       if (event.ctrlKey && event.key.toLowerCase() === "p") { event.preventDefault(); void handleAction("print"); }

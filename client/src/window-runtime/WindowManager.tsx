@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 
 export type WindowKind = "transaction" | "inquiry" | "report";
 export type WindowPhase = "idle" | "opening" | "initializing" | "ready" | "dirty" | "committing" | "committed" | "closing" | "closed" | "error";
-export type WindowAction = "new" | "save" | "delete" | "query" | "print" | "cancel" | "help";
+export type WindowAction = "new" | "edit" | "save" | "post" | "undo" | "delete" | "query" | "print" | "cancel" | "help";
 
 export type WindowRecord = {
   id: string;
