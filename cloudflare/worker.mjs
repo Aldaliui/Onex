@@ -1294,12 +1294,92 @@ async function glReverseJournal(env, request, journalId) {
   return json({ journalId, journalNo: journal.journalNo, reversalJournalNo: reversalNo, status: "REVERSED" }, 200, request);
 }
 
+const LOCAL_AUTH_COOKIE = "onex_local_session";
+const LOCAL_AUTH_TTL = 60 * 60 * 8;
+
+function localAuthCredentials(env) {
+  return {
+    username: env.LOCAL_AUTH_USERNAME || "administrator",
+    password: env.LOCAL_AUTH_PASSWORD || "onex-local",
+    secret: env.LOCAL_AUTH_SECRET || "onex-local-session-secret",
+  };
+}
+
+function base64UrlEncode(value) {
+  const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function base64UrlDecode(value) {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((value.length + 3) % 4);
+  const binary = atob(padded);
+  return new Uint8Array([...binary].map((char) => char.charCodeAt(0)));
+}
+
+async function localAuthSignature(value, secret) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return base64UrlEncode(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value))));
+}
+
+async function localAuthToken(user, secret) {
+  const payload = base64UrlEncode(JSON.stringify({ ...user, exp: Math.floor(Date.now() / 1000) + LOCAL_AUTH_TTL }));
+  return `${payload}.${await localAuthSignature(payload, secret)}`;
+}
+
+async function localAuthUser(request, env) {
+  const cookie = request.headers.get("Cookie") || "";
+  const match = cookie.match(new RegExp(`(?:^|;\\s*)${LOCAL_AUTH_COOKIE}=([^;]+)`));
+  if (!match) return null;
+  try {
+    const [payload, signature] = match[1].split(".");
+    const credentials = localAuthCredentials(env);
+    if (!payload || !signature || signature !== await localAuthSignature(payload, credentials.secret)) return null;
+    const user = JSON.parse(new TextDecoder().decode(base64UrlDecode(payload)));
+    if (!user?.exp || user.exp < Math.floor(Date.now() / 1000)) return null;
+    return user;
+  } catch { return null; }
+}
+
+function localAuthUserPayload(credentials) {
+  const now = new Date().toISOString();
+  return { id: 1, openId: `local:${credentials.username}`, email: `${credentials.username}@local.onex`, name: "مدير النظام", loginMethod: "local", role: "admin", createdAt: now, updatedAt: now, lastSignedIn: now };
+}
+
+async function localAuthDispatch(request, env, path) {
+  const credentials = localAuthCredentials(env);
+  if (path === "/api/local-auth/config" && request.method === "GET") return json({ enabled: true, username: credentials.username }, 200, request);
+  if (path === "/api/local-auth/me" && request.method === "GET") {
+    const user = await localAuthUser(request, env);
+    return user ? json(user, 200, request) : json({ error: "UNAUTHENTICATED" }, 401, request);
+  }
+  if (path === "/api/local-auth/logout" && request.method === "POST") {
+    return new Response(JSON.stringify({ success: true }), { status: 200, headers: { ...responseHeaders(request), "set-cookie": `${LOCAL_AUTH_COOKIE}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax` } });
+  }
+  if (path === "/api/local-auth/login" && request.method === "POST") {
+    const input = await request.json().catch(() => ({}));
+    if (input.username !== credentials.username || input.password !== credentials.password) return json({ error: "INVALID_CREDENTIALS" }, 401, request);
+    const user = localAuthUserPayload(credentials);
+    const token = await localAuthToken(user, credentials.secret);
+    return new Response(JSON.stringify({ success: true, user }), { status: 200, headers: { ...responseHeaders(request), "set-cookie": `${LOCAL_AUTH_COOKIE}=${token}; Max-Age=${LOCAL_AUTH_TTL}; Path=/; HttpOnly; Secure; SameSite=Lax` } });
+  }
+  if (path === "/api/cloud/auth/me" && request.method === "GET") {
+    const user = await localAuthUser(request, env);
+    return user ? json({ data: user }, 200, request) : json({ data: null }, 200, request);
+  }
+  if (path === "/api/cloud/auth/logout" && request.method === "POST") return localAuthDispatch(request, env, "/api/local-auth/logout");
+  return null;
+}
+
 export default {
   async fetch(request, env) {
     const headers = responseHeaders(request);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
     try {
       const url = new URL(request.url);
+      const localAuthResponse = await localAuthDispatch(request, env, url.pathname);
+      if (localAuthResponse) return localAuthResponse;
       if (url.pathname === "/__health" && request.method === "GET") return health(env, request);
       if (url.pathname === "/api/gl/periods" && request.method === "GET") return glListPeriods(env, request);
       if (url.pathname === "/api/gl/journals" && request.method === "POST") return glCreateJournal(env, request);
