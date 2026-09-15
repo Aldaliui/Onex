@@ -372,6 +372,596 @@ async function receiveStock(env, request) {
   return json({ itemId, warehouseId, quantity: quantity.toFixed(6), unitCost: unitCost.toFixed(6), totalCost: (quantity * unitCost).toFixed(6), status: "RECEIVED", reference }, 201, request);
 }
 
+function inventoryParseId(value) {
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+function inventoryRequiredText(value, max = 160) {
+  return typeof value === "string" && value.trim().length > 0 && value.trim().length <= max
+    ? value.trim()
+    : null;
+}
+
+function inventoryDecimalText(value, { min = null } = {}) {
+  const text = typeof value === "number" ? String(value) : value;
+  if (typeof text !== "string" || !/^\d+(?:\.\d{1,9})?$/.test(text.trim())) return null;
+  const normalized = text.trim();
+  const number = Number(normalized);
+  if (!Number.isFinite(number) || (min !== null && number < min)) return null;
+  return number.toFixed(6);
+}
+
+async function inventoryBodyJson(request) {
+  try {
+    const body = await request.json();
+    return body && typeof body === "object" && !Array.isArray(body) ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+function inventoryResponse(data, request, env, status = 200) {
+  return json(data, status, request);
+}
+
+function inventoryErrorResponse(code, request, env, status = 400, details) {
+  return inventoryResponse({ error: code, ...(details ? { details } : {}) }, request, env, status);
+}
+
+/*
+ * Production gate:
+ * - Configure ONEX_API_TOKEN as a Worker secret.
+ * - The upstream identity layer must set X-Onex-Actor after validating the user.
+ * - Do not trust X-Onex-Actor from an untrusted public client.
+ * Local tests can use the same secret through .dev.vars.
+ */
+function inventoryAuthorize(request, env, action) {
+  const expected = env.ONEX_API_TOKEN;
+  const supplied = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+  if (!expected || !supplied || supplied !== expected) {
+    return { error: "UNAUTHORIZED", status: 401 };
+  }
+
+  const actor = inventoryRequiredText(request.headers.get("x-onex-actor"), 120);
+  const companyId = inventoryParseId(request.headers.get("x-onex-company-id") || "1");
+  if (!actor || !companyId) return { error: "IDENTITY_CONTEXT_REQUIRED", status: 401 };
+
+  return { actor, companyId, action };
+}
+
+async function inventoryAudit(env, actor, actionCode, entityType, entityId, requestId) {
+  await env.ONEX_DB.prepare(`
+    INSERT INTO audit_events (actor, actionCode, entityType, entityId, requestId)
+    VALUES (?, ?, ?, ?, ?)
+  `).bind(actor, actionCode, entityType, String(entityId), requestId).run();
+}
+
+async function inventoryHealth(request, env) {
+  const result = await env.ONEX_DB
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+    .all();
+  return inventoryResponse({
+    ok: true,
+    service: "onex-workbench",
+    storage: "cloudflare-d1",
+    database: "onex-production",
+    tables: result.results?.map((row) => row.name) ?? [],
+  }, request, env);
+}
+
+async function inventoryListItems(request, env, auth) {
+  const url = new URL(request.url);
+  const search = (url.searchParams.get("search") || "").trim();
+  const active = url.searchParams.get("active");
+  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 50), 1), 200);
+  const activeFilter = active === "0" || active === "1" ? Number(active) : null;
+
+  const result = await env.ONEX_DB.prepare(`
+    SELECT id, companyId, code, name, description, itemType, unitCode, active,
+           stockFlag, unitCost, revenueAccount, inventoryAccount, cogsAccount
+    FROM items
+    WHERE companyId = ?
+      AND (? = '' OR code LIKE '%' || ? || '%' OR name LIKE '%' || ? || '%' OR description LIKE '%' || ? || '%')
+      AND (? IS NULL OR active = ?)
+    ORDER BY code
+    LIMIT ?
+  `).bind(auth.companyId, search, search, search, search, activeFilter, activeFilter, limit).all();
+
+  return inventoryResponse({ rows: result.results ?? [], limit }, request, env);
+}
+
+async function inventoryGetItem(request, env, auth, id) {
+  const item = await env.ONEX_DB.prepare(`
+    SELECT id, companyId, code, name, description, itemType, unitCode, active,
+           stockFlag, unitCost, revenueAccount, inventoryAccount, cogsAccount
+    FROM items WHERE id = ? AND companyId = ? LIMIT 1
+  `).bind(id, auth.companyId).first();
+  if (!item) return inventoryErrorResponse("ITEM_NOT_FOUND", request, env, 404);
+
+  const units = await env.ONEX_DB.prepare(`
+    SELECT id, unitCode, unitName, conversionToBase, isBase, barcode, active
+    FROM item_units WHERE itemId = ? ORDER BY isBase DESC, unitCode
+  `).bind(id).all();
+  return inventoryResponse({ ...item, units: units.results ?? [] }, request, env);
+}
+
+async function inventoryCreateItem(request, env, auth) {
+  const body = await inventoryBodyJson(request);
+  const code = inventoryRequiredText(body?.code, 80);
+  const name = inventoryRequiredText(body?.name, 200);
+  const description = typeof body?.description === "string" ? body.description.trim().slice(0, 1000) : name;
+  const itemType = inventoryRequiredText(body?.itemType || "STOCK", 40);
+  const unitCode = inventoryRequiredText(body?.unitCode || "EA", 30);
+  const unitName = inventoryRequiredText(body?.unitName || unitCode, 80);
+  const unitCost = inventoryDecimalText(body?.unitCost ?? "0", { min: 0 });
+  const stockFlag = body?.stockFlag === undefined ? 1 : (body.stockFlag ? 1 : 0);
+
+  if (!code || !name || !itemType || !unitCode || !unitName || !unitCost) {
+    return inventoryErrorResponse("INVALID_ITEM_INPUT", request, env, 400);
+  }
+
+  const existing = await env.ONEX_DB.prepare(
+    "SELECT id FROM items WHERE companyId = ? AND code = ? LIMIT 1",
+  ).bind(auth.companyId, code).first();
+  if (existing) return inventoryErrorResponse("ITEM_CODE_EXISTS", request, env, 409);
+
+  const result = await env.ONEX_DB.prepare(`
+    INSERT INTO items (companyId, code, name, description, itemType, unitCode, active, stockFlag, unitCost)
+    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+    RETURNING id, companyId, code, name, description, itemType, unitCode, active, stockFlag, unitCost
+  `).bind(auth.companyId, code, name, description, itemType, unitCode, stockFlag, unitCost).first();
+
+  if (!result) return inventoryErrorResponse("ITEM_CREATE_FAILED", request, env, 500);
+
+  await env.ONEX_DB.batch([
+    env.ONEX_DB.prepare(`
+      INSERT INTO item_units (itemId, unitCode, unitName, conversionToBase, isBase)
+      VALUES (?, ?, ?, '1.000000', 1)
+    `).bind(result.id, unitCode, unitName),
+    env.ONEX_DB.prepare(`
+      INSERT INTO audit_events (actor, actionCode, entityType, entityId, requestId)
+      VALUES (?, 'CREATE', 'INVENTORY_ITEM', ?, ?)
+    `).bind(auth.actor, String(result.id), `INVT003:${code}`),
+  ]);
+
+  return inventoryResponse(result, request, env, 201);
+}
+
+async function inventoryUpdateItem(request, env, auth, id) {
+  const body = await inventoryBodyJson(request);
+  const current = await env.ONEX_DB.prepare(
+    "SELECT id FROM items WHERE id = ? AND companyId = ? LIMIT 1",
+  ).bind(id, auth.companyId).first();
+  if (!current) return inventoryErrorResponse("ITEM_NOT_FOUND", request, env, 404);
+
+  const fields = [];
+  const values = [];
+  if (body && body.name !== undefined) {
+    const name = inventoryRequiredText(body.name, 200);
+    if (!name) return inventoryErrorResponse("INVALID_ITEM_NAME", request, env, 400);
+    fields.push("name = ?"); values.push(name);
+  }
+  if (body && body.description !== undefined) {
+    if (typeof body.description !== "string" || body.description.length > 1000) return inventoryErrorResponse("INVALID_ITEM_DESCRIPTION", request, env, 400);
+    fields.push("description = ?"); values.push(body.description.trim());
+  }
+  if (body && body.active !== undefined) {
+    if (![0, 1, true, false].includes(body.active)) return inventoryErrorResponse("INVALID_ITEM_STATUS", request, env, 400);
+    fields.push("active = ?"); values.push(body.active ? 1 : 0);
+  }
+  if (body && body.unitCost !== undefined) {
+    const unitCost = inventoryDecimalText(body.unitCost, { min: 0 });
+    if (!unitCost) return inventoryErrorResponse("INVALID_UNIT_COST", request, env, 400);
+    fields.push("unitCost = ?"); values.push(unitCost);
+  }
+  if (!fields.length) return inventoryErrorResponse("NO_ITEM_CHANGES", request, env, 400);
+
+  values.push(id, auth.companyId);
+  const updated = await env.ONEX_DB.prepare(`
+    UPDATE items SET ${fields.join(", ")} WHERE id = ? AND companyId = ?
+    RETURNING id, companyId, code, name, description, itemType, unitCode, active, stockFlag, unitCost
+  `).bind(...values).first();
+
+  await inventoryAudit(env, auth.actor, "UPDATE", "INVENTORY_ITEM", id, `INVT003:${id}:UPDATE`);
+  return inventoryResponse(updated, request, env);
+}
+
+async function inventoryListWarehouses(request, env, auth) {
+  const url = new URL(request.url);
+  const search = (url.searchParams.get("search") || "").trim();
+  const active = url.searchParams.get("active");
+  const activeFilter = active === "0" || active === "1" ? Number(active) : null;
+  const result = await env.ONEX_DB.prepare(`
+    SELECT id, companyId, code, name, active
+    FROM warehouses
+    WHERE companyId = ?
+      AND (? = '' OR code LIKE '%' || ? || '%' OR name LIKE '%' || ? || '%')
+      AND (? IS NULL OR active = ?)
+    ORDER BY code
+  `).bind(auth.companyId, search, search, search, activeFilter, activeFilter).all();
+  return inventoryResponse({ rows: result.results ?? [] }, request, env);
+}
+
+async function inventoryGetWarehouse(request, env, auth, id) {
+  const warehouse = await env.ONEX_DB.prepare(`
+    SELECT id, companyId, code, name, active FROM warehouses
+    WHERE id = ? AND companyId = ? LIMIT 1
+  `).bind(id, auth.companyId).first();
+  if (!warehouse) return inventoryErrorResponse("WAREHOUSE_NOT_FOUND", request, env, 404);
+  const locations = await env.ONEX_DB.prepare(`
+    SELECT id, warehouseId, code, name, active FROM warehouse_locations
+    WHERE warehouseId = ? ORDER BY code
+  `).bind(id).all();
+  return inventoryResponse({ ...warehouse, locations: locations.results ?? [] }, request, env);
+}
+
+async function inventoryCreateWarehouse(request, env, auth) {
+  const body = await inventoryBodyJson(request);
+  const code = inventoryRequiredText(body?.code, 80);
+  const name = inventoryRequiredText(body?.name, 200);
+  if (!code || !name) return inventoryErrorResponse("INVALID_WAREHOUSE_INPUT", request, env, 400);
+
+  const existing = await env.ONEX_DB.prepare(
+    "SELECT id FROM warehouses WHERE companyId = ? AND code = ? LIMIT 1",
+  ).bind(auth.companyId, code).first();
+  if (existing) return inventoryErrorResponse("WAREHOUSE_CODE_EXISTS", request, env, 409);
+
+  const result = await env.ONEX_DB.prepare(`
+    INSERT INTO warehouses (companyId, code, name, active)
+    VALUES (?, ?, ?, 1)
+    RETURNING id, companyId, code, name, active
+  `).bind(auth.companyId, code, name).first();
+  if (!result) return inventoryErrorResponse("WAREHOUSE_CREATE_FAILED", request, env, 500);
+
+  await inventoryAudit(env, auth.actor, "CREATE", "INVENTORY_WAREHOUSE", result.id, `INVT004:${code}`);
+  return inventoryResponse(result, request, env, 201);
+}
+
+async function inventoryUpdateWarehouse(request, env, auth, id) {
+  const body = await inventoryBodyJson(request);
+  const current = await env.ONEX_DB.prepare(
+    "SELECT id FROM warehouses WHERE id = ? AND companyId = ? LIMIT 1",
+  ).bind(id, auth.companyId).first();
+  if (!current) return inventoryErrorResponse("WAREHOUSE_NOT_FOUND", request, env, 404);
+
+  const fields = [];
+  const values = [];
+  if (body && body.name !== undefined) {
+    const name = inventoryRequiredText(body.name, 200);
+    if (!name) return inventoryErrorResponse("INVALID_WAREHOUSE_NAME", request, env, 400);
+    fields.push("name = ?"); values.push(name);
+  }
+  if (body && body.active !== undefined) {
+    if (![0, 1, true, false].includes(body.active)) return inventoryErrorResponse("INVALID_WAREHOUSE_STATUS", request, env, 400);
+    fields.push("active = ?"); values.push(body.active ? 1 : 0);
+  }
+  if (!fields.length) return inventoryErrorResponse("NO_WAREHOUSE_CHANGES", request, env, 400);
+
+  values.push(id, auth.companyId);
+  const updated = await env.ONEX_DB.prepare(`
+    UPDATE warehouses SET ${fields.join(", ")} WHERE id = ? AND companyId = ?
+    RETURNING id, companyId, code, name, active
+  `).bind(...values).first();
+  await inventoryAudit(env, auth.actor, "UPDATE", "INVENTORY_WAREHOUSE", id, `INVT004:${id}:UPDATE`);
+  return inventoryResponse(updated, request, env);
+}
+
+
+function normalizeInventoryLine(line, index) {
+  const itemId = inventoryParseId(line?.itemId);
+  const quantity = inventoryDecimalText(line?.quantity, { min: 0.000001 });
+  const unitCost = inventoryDecimalText(line?.unitCost ?? "0", { min: 0 });
+  const unitCode = inventoryRequiredText(line?.unitCode || "EA", 30);
+  if (!itemId || !quantity || !unitCost || !unitCode) return null;
+  return {
+    lineNo: index + 1,
+    itemId,
+    quantity,
+    unitCost,
+    unitCode,
+    batchNo: line.batchNo ? inventoryRequiredText(line.batchNo, 120) : null,
+    expireDate: line.expireDate ? inventoryRequiredText(line.expireDate, 40) : null,
+    serialNo: line.serialNo ? inventoryRequiredText(line.serialNo, 160) : null,
+    locationId: line.locationId ? inventoryParseId(line.locationId) : null,
+  };
+}
+
+function documentWarehouses(docType, body) {
+  const fromWarehouseId = body?.fromWarehouseId ? inventoryParseId(body.fromWarehouseId) : null;
+  const toWarehouseId = body?.toWarehouseId ? inventoryParseId(body.toWarehouseId) : null;
+  if (docType === "RECEIPT" && !toWarehouseId) return null;
+  if (docType === "ISSUE" && !fromWarehouseId) return null;
+  if (docType === "TRANSFER" && (!fromWarehouseId || !toWarehouseId || fromWarehouseId === toWarehouseId)) return null;
+  return { fromWarehouseId, toWarehouseId };
+}
+
+async function getInventoryDocument(request, env, auth, id) {
+  const document = await env.ONEX_DB.prepare(`
+    SELECT id, companyId, docNo, docType, status, fromWarehouseId, toWarehouseId,
+           idempotencyKey, referenceNo, description, createdBy, createdAt, postedBy, postedAt
+    FROM inventory_documents WHERE id = ? AND companyId = ? LIMIT 1
+  `).bind(id, auth.companyId).first();
+  if (!document) return inventoryErrorResponse("INVENTORY_DOCUMENT_NOT_FOUND", request, env, 404);
+  const lines = await env.ONEX_DB.prepare(`
+    SELECT id, lineNo, itemId, quantity, unitCost, unitCode, batchNo, expireDate, serialNo, locationId
+    FROM inventory_document_lines WHERE documentId = ? ORDER BY lineNo
+  `).bind(id).all();
+  return inventoryResponse({ ...document, lines: lines.results ?? [] }, request, env);
+}
+
+async function listInventoryDocuments(request, env, auth) {
+  const url = new URL(request.url);
+  const status = url.searchParams.get("status");
+  const docType = url.searchParams.get("docType");
+  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 50), 1), 200);
+  const result = await env.ONEX_DB.prepare(`
+    SELECT id, companyId, docNo, docType, status, fromWarehouseId, toWarehouseId,
+           referenceNo, description, createdBy, createdAt, postedBy, postedAt
+    FROM inventory_documents
+    WHERE companyId = ?
+      AND (? = '' OR status = ?)
+      AND (? = '' OR docType = ?)
+    ORDER BY createdAt DESC, id DESC
+    LIMIT ?
+  `).bind(auth.companyId, status || "", status || "", docType || "", docType || "", limit).all();
+  return inventoryResponse({ rows: result.results ?? [], limit }, request, env);
+}
+
+async function createInventoryDocument(request, env, auth) {
+  const body = await inventoryBodyJson(request);
+  const docType = inventoryRequiredText(body?.docType, 20)?.toUpperCase();
+  const docNo = inventoryRequiredText(body?.docNo, 80);
+  const idempotencyKey = inventoryRequiredText(body?.idempotencyKey || `INV:${docType}:${docNo}`, 180);
+  const warehouses = documentWarehouses(docType, body);
+  const rawLines = Array.isArray(body?.lines) ? body.lines : [];
+  const lines = rawLines.map(normalizeInventoryLine);
+  if (!['RECEIPT', 'ISSUE', 'TRANSFER'].includes(docType) || !docNo || !idempotencyKey || !warehouses || !rawLines.length || lines.some((line) => !line)) {
+    return inventoryErrorResponse("INVALID_INVENTORY_DOCUMENT_INPUT", request, env, 400);
+  }
+
+  const existing = await env.ONEX_DB.prepare(`
+    SELECT id, docNo, status FROM inventory_documents
+    WHERE companyId = ? AND idempotencyKey = ? LIMIT 1
+  `).bind(auth.companyId, idempotencyKey).first();
+  if (existing) return inventoryResponse({ ...existing, alreadyExists: true }, request, env, 200);
+
+  const warehouseIds = [warehouses.fromWarehouseId, warehouses.toWarehouseId].filter(Boolean);
+  for (const warehouseId of warehouseIds) {
+    const warehouse = await env.ONEX_DB.prepare(
+      "SELECT id FROM warehouses WHERE id = ? AND companyId = ? AND active = 1 LIMIT 1",
+    ).bind(warehouseId, auth.companyId).first();
+    if (!warehouse) return inventoryErrorResponse("WAREHOUSE_NOT_FOUND_OR_INACTIVE", request, env, 400);
+  }
+  for (const line of lines) {
+    const item = await env.ONEX_DB.prepare(
+      "SELECT id FROM items WHERE id = ? AND companyId = ? AND active = 1 LIMIT 1",
+    ).bind(line.itemId, auth.companyId).first();
+    if (!item) return inventoryErrorResponse("ITEM_NOT_FOUND_OR_INACTIVE", request, env, 400, { itemId: line.itemId });
+  }
+
+  const document = await env.ONEX_DB.prepare(`
+    INSERT INTO inventory_documents
+      (companyId, docNo, docType, status, fromWarehouseId, toWarehouseId,
+       idempotencyKey, referenceNo, description, createdBy)
+    VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?)
+    RETURNING id, companyId, docNo, docType, status, fromWarehouseId, toWarehouseId, idempotencyKey
+  `).bind(
+    auth.companyId, docNo, docType, warehouses.fromWarehouseId, warehouses.toWarehouseId,
+    idempotencyKey, body.referenceNo ? inventoryRequiredText(body.referenceNo, 120) : null,
+    body.description ? inventoryRequiredText(body.description, 1000) : null, auth.actor,
+  ).first();
+  if (!document) return inventoryErrorResponse("INVENTORY_DOCUMENT_CREATE_FAILED", request, env, 500);
+
+  const statements = lines.map((line) => env.ONEX_DB.prepare(`
+    INSERT INTO inventory_document_lines
+      (documentId, lineNo, itemId, quantity, unitCost, unitCode, batchNo, expireDate, serialNo, locationId)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(document.id, line.lineNo, line.itemId, line.quantity, line.unitCost, line.unitCode, line.batchNo, line.expireDate, line.serialNo, line.locationId));
+  statements.push(env.ONEX_DB.prepare(`
+    INSERT INTO audit_events (actor, actionCode, entityType, entityId, requestId)
+    VALUES (?, 'CREATE', 'INVENTORY_DOCUMENT', ?, ?)
+  `).bind(auth.actor, String(document.id), idempotencyKey));
+  await env.ONEX_DB.batch(statements);
+  return inventoryResponse({ ...document, lines }, request, env, 201);
+}
+
+async function postInventoryDocument(request, env, auth, id) {
+  const document = await env.ONEX_DB.prepare(`
+    SELECT id, companyId, docNo, docType, status, fromWarehouseId, toWarehouseId
+    FROM inventory_documents WHERE id = ? AND companyId = ? LIMIT 1
+  `).bind(id, auth.companyId).first();
+  if (!document) return inventoryErrorResponse("INVENTORY_DOCUMENT_NOT_FOUND", request, env, 404);
+  if (document.status !== "DRAFT") return inventoryErrorResponse("INVENTORY_DOCUMENT_NOT_DRAFT", request, env, 409);
+
+  const linesResult = await env.ONEX_DB.prepare(`
+    SELECT lineNo, itemId, quantity, unitCost, unitCode, batchNo, expireDate, serialNo, locationId
+    FROM inventory_document_lines WHERE documentId = ? ORDER BY lineNo
+  `).bind(id).all();
+  const lines = linesResult.results ?? [];
+  if (!lines.length) return inventoryErrorResponse("INVENTORY_DOCUMENT_HAS_NO_LINES", request, env, 400);
+
+  const settings = await env.ONEX_DB.prepare(
+    "SELECT allowNegativeStock, useBatchNo, useExpireDate, useSerialNo FROM inventory_settings WHERE id = 1",
+  ).first();
+  const allowNegative = Number(settings?.allowNegativeStock || 0) === 1;
+
+  const sourceWarehouse = document.fromWarehouseId;
+  const destinationWarehouse = document.toWarehouseId;
+  const required = new Map();
+  for (const line of lines) {
+    const key = `${line.itemId}:${sourceWarehouse}`;
+    if (sourceWarehouse) required.set(key, (required.get(key) || 0) + Number(line.quantity));
+    if (settings?.useBatchNo && line.batchNo === null) return inventoryErrorResponse("BATCH_REQUIRED", request, env, 400);
+    if (settings?.useExpireDate && line.expireDate === null) return inventoryErrorResponse("EXPIRY_REQUIRED", request, env, 400);
+    if (settings?.useSerialNo && line.serialNo === null) return inventoryErrorResponse("SERIAL_REQUIRED", request, env, 400);
+  }
+
+  if (sourceWarehouse && !allowNegative) {
+    for (const [key, needed] of required) {
+      const [itemId, warehouseId] = key.split(":");
+      const balance = await env.ONEX_DB.prepare(
+        "SELECT quantity FROM stock_balances WHERE itemId = ? AND warehouseId = ? LIMIT 1",
+      ).bind(Number(itemId), Number(warehouseId)).first();
+      if (!balance || Number(balance.quantity) < needed) {
+        return inventoryErrorResponse("INSUFFICIENT_STOCK", request, env, 409, { itemId: Number(itemId), warehouseId: Number(warehouseId), available: balance?.quantity || "0", required: needed.toFixed(6) });
+      }
+    }
+  }
+
+  const mapping = await env.ONEX_DB.prepare(`
+    SELECT debitAccountCode, creditAccountCode
+    FROM inventory_account_mappings
+    WHERE companyId = ? AND docType = ? AND active = 1 LIMIT 1
+  `).bind(auth.companyId, document.docType).first();
+  if (!mapping) return inventoryErrorResponse("INVENTORY_ACCOUNT_MAPPING_NOT_FOUND", request, env, 409);
+
+  const accountCodes = [...new Set([mapping.debitAccountCode, mapping.creditAccountCode])];
+  const accountRows = {};
+  for (const accountCode of accountCodes) {
+    const account = await env.ONEX_DB.prepare(`
+      SELECT code, name FROM accounts WHERE companyId = ? AND code = ? AND active = 1 LIMIT 1
+    `).bind(auth.companyId, accountCode).first();
+    if (!account) return inventoryErrorResponse("INVENTORY_ACCOUNT_NOT_FOUND", request, env, 409, { accountCode });
+    accountRows[accountCode] = account;
+  }
+  const journalTotal = lines.reduce((sum, line) => sum + Number(line.quantity) * Number(line.unitCost), 0).toFixed(6);
+  const journalNo = `INV-${document.docType}-${document.docNo}`;
+  const statements = [env.ONEX_DB.prepare(`
+    INSERT OR IGNORE INTO journal_entries
+      (journalNo, sourceInventoryDocumentId, entryType, sourceRef, totalDebit, totalCredit, status, createdBy)
+    VALUES (?, ?, ?, ?, ?, ?, 'POSTED', ?)
+  `).bind(journalNo, id, `INVENTORY_${document.docType}`, document.docNo, journalTotal, journalTotal, auth.actor)];
+  statements.push(env.ONEX_DB.prepare(`
+    INSERT OR IGNORE INTO journal_entry_lines
+      (journalNo, accountCode, debit, credit, description)
+    SELECT journalNo, ?, ?, '0', ?
+    FROM journal_entries WHERE sourceInventoryDocumentId = ?
+  `).bind(mapping.debitAccountCode, journalTotal, `${document.docType} ${document.docNo}`, id));
+  statements.push(env.ONEX_DB.prepare(`
+    INSERT OR IGNORE INTO journal_entry_lines
+      (journalNo, accountCode, debit, credit, description)
+    SELECT journalNo, ?, '0', ?, ?
+    FROM journal_entries WHERE sourceInventoryDocumentId = ?
+  `).bind(mapping.creditAccountCode, journalTotal, `${document.docType} ${document.docNo}`, id));
+  for (const line of lines) {
+    const qty = line.quantity;
+    const cost = line.unitCost;
+    const source = sourceWarehouse;
+    const destination = destinationWarehouse;
+    if (source) {
+      statements.push(env.ONEX_DB.prepare(`
+        UPDATE stock_balances
+        SET quantity = printf('%.6f', CAST(quantity AS REAL) - CAST(? AS REAL)),
+            totalCost = printf('%.6f', (CAST(quantity AS REAL) - CAST(? AS REAL)) * CAST(unitCost AS REAL)),
+            versionNo = versionNo + 1
+        WHERE itemId = ? AND warehouseId = ? AND (? = 1 OR CAST(quantity AS REAL) >= CAST(? AS REAL))
+      `).bind(qty, qty, line.itemId, source, allowNegative ? 1 : 0, qty));
+    }
+    if (destination) {
+      statements.push(env.ONEX_DB.prepare(`
+        INSERT INTO stock_balances (itemId, warehouseId, quantity, unitCost, totalCost, reservedQuantity, versionNo)
+        VALUES (?, ?, ?, ?, printf('%.6f', CAST(? AS REAL) * CAST(? AS REAL)), '0', 1)
+        ON CONFLICT(itemId, warehouseId) DO UPDATE SET
+          quantity = printf('%.6f', CAST(stock_balances.quantity AS REAL) + CAST(excluded.quantity AS REAL)),
+          unitCost = excluded.unitCost,
+          totalCost = printf('%.6f', (CAST(stock_balances.quantity AS REAL) + CAST(excluded.quantity AS REAL)) * CAST(excluded.unitCost AS REAL)),
+          versionNo = stock_balances.versionNo + 1
+      `).bind(line.itemId, destination, qty, cost, qty, cost));
+    }
+    if (source) {
+      statements.push(env.ONEX_DB.prepare(`
+        INSERT INTO stock_movements
+          (itemId, warehouseId, inventoryDocumentId, movementType, quantityIn, quantityOut, unitCost, totalCost, balanceAfter, createdBy)
+        SELECT ?, ?, ?, ?, '0', ?, ?, printf('%.6f', CAST(? AS REAL) * CAST(? AS REAL)), quantity, ?
+        FROM stock_balances WHERE itemId = ? AND warehouseId = ?
+      `).bind(line.itemId, source, id, document.docType === 'TRANSFER' ? 'TRANSFER_OUT' : 'ISSUE', qty, cost, qty, cost, auth.actor, line.itemId, source));
+    }
+    if (destination) {
+      statements.push(env.ONEX_DB.prepare(`
+        INSERT INTO stock_movements
+          (itemId, warehouseId, inventoryDocumentId, movementType, quantityIn, quantityOut, unitCost, totalCost, balanceAfter, createdBy)
+        SELECT ?, ?, ?, ?, ?, '0', ?, printf('%.6f', CAST(? AS REAL) * CAST(? AS REAL)), quantity, ?
+        FROM stock_balances WHERE itemId = ? AND warehouseId = ?
+      `).bind(line.itemId, destination, id, document.docType === 'TRANSFER' ? 'TRANSFER_IN' : 'RECEIPT', qty, cost, qty, cost, auth.actor, line.itemId, destination));
+    }
+    if (line.batchNo && destination) {
+      statements.push(env.ONEX_DB.prepare(`
+        INSERT INTO stock_batches (itemId, warehouseId, batchNo, expireDate, quantity, unitCost)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(itemId, warehouseId, batchNo) DO UPDATE SET quantity = printf('%.6f', CAST(stock_batches.quantity AS REAL) + CAST(excluded.quantity AS REAL)), expireDate = excluded.expireDate, unitCost = excluded.unitCost
+      `).bind(line.itemId, destination, line.batchNo, line.expireDate, qty, cost));
+    }
+  }
+  statements.push(env.ONEX_DB.prepare(`
+    UPDATE inventory_documents
+    SET status = 'POSTED', postedBy = ?, postedAt = CURRENT_TIMESTAMP,
+        journalNo = (SELECT journalNo FROM journal_entries WHERE sourceInventoryDocumentId = ? LIMIT 1)
+    WHERE id = ? AND companyId = ? AND status = 'DRAFT'
+  `).bind(auth.actor, id, id, auth.companyId));
+  statements.push(env.ONEX_DB.prepare(`
+    INSERT INTO audit_events (actor, actionCode, entityType, entityId, requestId)
+    VALUES (?, 'POST', 'INVENTORY_DOCUMENT', ?, ?)
+  `).bind(auth.actor, String(id), `POST:${document.docNo}`));
+  await env.ONEX_DB.batch(statements);
+  return inventoryResponse({ id, docNo: document.docNo, status: "POSTED", docType: document.docType }, request, env);
+}
+
+async function listInventoryMovements(request, env, auth) {
+  const url = new URL(request.url);
+  const itemId = url.searchParams.get("itemId") ? inventoryParseId(url.searchParams.get("itemId")) : null;
+  const warehouseId = url.searchParams.get("warehouseId") ? inventoryParseId(url.searchParams.get("warehouseId")) : null;
+  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 100), 1), 500);
+  const result = await env.ONEX_DB.prepare(`
+    SELECT sm.id, sm.itemId, sm.warehouseId, sm.inventoryDocumentId, sm.movementType,
+           sm.quantityIn, sm.quantityOut, sm.unitCost, sm.totalCost, sm.balanceAfter,
+           sm.createdBy, sm.createdAt, d.docNo, d.docType
+    FROM stock_movements sm
+    JOIN inventory_documents d ON d.id = sm.inventoryDocumentId
+    JOIN items i ON i.id = sm.itemId
+    WHERE i.companyId = ?
+      AND (? IS NULL OR sm.itemId = ?)
+      AND (? IS NULL OR sm.warehouseId = ?)
+    ORDER BY sm.createdAt DESC, sm.id DESC LIMIT ?
+  `).bind(auth.companyId, itemId, itemId, warehouseId, warehouseId, limit).all();
+  return inventoryResponse({ rows: result.results ?? [], limit }, request, env);
+}
+
+async function inventoryDispatch(request, env, path, auth) {
+  const itemMatch = path.match(/^\/api\/inventory\/items(?:\/(\d+))?$/);
+  if (itemMatch) {
+    const id = itemMatch[1] ? inventoryParseId(itemMatch[1]) : null;
+    if (request.method === "GET") return id ? inventoryGetItem(request, env, auth, id) : inventoryListItems(request, env, auth);
+    if (request.method === "POST" && !id) return inventoryCreateItem(request, env, auth);
+    if (request.method === "PATCH" && id) return inventoryUpdateItem(request, env, auth, id);
+    return inventoryErrorResponse("METHOD_NOT_ALLOWED", request, env, 405);
+  }
+
+  const documentMatch = path.match(/^\/api\/inventory\/documents(?:\/(\d+))?(\/post)?$/);
+  if (documentMatch) {
+    const id = documentMatch[1] ? inventoryParseId(documentMatch[1]) : null;
+    if (documentMatch[2] === '/post' && request.method === 'POST' && id) return postInventoryDocument(request, env, auth, id);
+    if (request.method === 'GET' && id) return getInventoryDocument(request, env, auth, id);
+    if (request.method === 'GET' && !id) return listInventoryDocuments(request, env, auth);
+    if (request.method === 'POST' && !id) return createInventoryDocument(request, env, auth);
+    return inventoryErrorResponse("METHOD_NOT_ALLOWED", request, env, 405);
+  }
+
+  if (path === '/api/inventory/movements' && request.method === 'GET') return listInventoryMovements(request, env, auth);
+
+  const warehouseMatch = path.match(/^\/api\/inventory\/warehouses(?:\/(\d+))?$/);
+  if (warehouseMatch) {
+    const id = warehouseMatch[1] ? inventoryParseId(warehouseMatch[1]) : null;
+    if (request.method === "GET") return id ? inventoryGetWarehouse(request, env, auth, id) : inventoryListWarehouses(request, env, auth);
+    if (request.method === "POST" && !id) return inventoryCreateWarehouse(request, env, auth);
+    if (request.method === "PATCH" && id) return inventoryUpdateWarehouse(request, env, auth, id);
+    return inventoryErrorResponse("METHOD_NOT_ALLOWED", request, env, 405);
+  }
+
+  return null;
+}
+
+
 export default {
   async fetch(request, env) {
     const headers = responseHeaders(request);
@@ -379,6 +969,13 @@ export default {
     try {
       const url = new URL(request.url);
       if (url.pathname === "/__health" && request.method === "GET") return health(env, request);
+      if (url.pathname.startsWith("/api/inventory/")) {
+        const auth = inventoryAuthorize(request, env, `${request.method} ${url.pathname}`);
+        if (auth.error) return inventoryErrorResponse(auth.error, request, env, auth.status);
+        const result = await inventoryDispatch(request, env, url.pathname, auth);
+        if (result) return result;
+        return inventoryErrorResponse("NOT_FOUND", request, env, 404);
+      }
       if (url.pathname === "/api/erp/master-data" && request.method === "GET") return masterData(env, request);
       if (url.pathname === "/api/erp/customers" && request.method === "GET") return listCustomers(env, request);
       if (url.pathname === "/api/erp/items" && request.method === "GET") return listItems(env, request);
