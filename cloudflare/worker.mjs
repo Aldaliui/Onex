@@ -1330,6 +1330,7 @@ export default {
       if (purchasePostMatch && request.method === "POST") return postPurchaseInvoice(env, request, Number(purchasePostMatch[1]));
       if (url.pathname === "/api/erp/vouchers" && request.method === "POST") return createVoucher(env, request);
       if (url.pathname === "/api/erp/inventory/receive" && request.method === "POST") return receiveStock(env, request);
+      if (env.ASSETS) return env.ASSETS.fetch(request);
       return proxyWorkbench(request);
     } catch (error) {
       if (error instanceof Response) return error;

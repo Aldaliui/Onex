@@ -72,6 +72,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build application assets
+        run: pnpm build
+
       - name: Deploy Worker
         run: pnpm dlx wrangler@${{ env.WRANGLER_VERSION }} deploy --keep-vars --config cloudflare/wrangler.jsonc
         env:
