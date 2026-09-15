@@ -160,6 +160,20 @@ export const invoiceLines = mysqlTable("invoice_lines", {
   lineTotal: decimal("lineTotal", { precision: 20, scale: 6 }).notNull(),
 });
 
+export const adjustmentNotes = mysqlTable("adjustment_notes", {
+  id: int("id").autoincrement().primaryKey(),
+  docNo: varchar("docNo", { length: 80 }).notNull().unique(),
+  documentKind: mysqlEnum("documentKind", ["SALES_RETURN", "PURCHASE_RETURN", "SALES_DISCOUNT", "SALES_ADDITION", "PURCHASE_DISCOUNT", "PURCHASE_ADDITION"]).notNull(),
+  originalInvoiceId: int("originalInvoiceId").notNull(), customerId: int("customerId"), supplierId: int("supplierId"), warehouseId: int("warehouseId").notNull(),
+  subtotal: decimal("subtotal", { precision: 20, scale: 6 }).notNull().default("0"), taxTotal: decimal("taxTotal", { precision: 20, scale: 6 }).notNull().default("0"), grandTotal: decimal("grandTotal", { precision: 20, scale: 6 }).notNull().default("0"),
+  reason: varchar("reason", { length: 500 }), status: mysqlEnum("status", ["DRAFT", "POSTED", "REVERSED"]).notNull().default("DRAFT"),
+  idempotencyKey: varchar("idempotencyKey", { length: 160 }).notNull().unique(), createdBy: varchar("createdBy", { length: 100 }).notNull().default("demo.user"), createdAt: timestamp("createdAt").defaultNow().notNull(), postedAt: timestamp("postedAt"),
+}, (table) => ({ originalIdx: index("adjustment_original_idx").on(table.originalInvoiceId), kindIdx: index("adjustment_kind_idx").on(table.documentKind) }));
+
+export const adjustmentNoteLines = mysqlTable("adjustment_note_lines", {
+  id: int("id").autoincrement().primaryKey(), adjustmentNoteId: int("adjustmentNoteId").notNull(), itemId: int("itemId").notNull(), quantity: decimal("quantity", { precision: 20, scale: 6 }).notNull(), unitPrice: decimal("unitPrice", { precision: 20, scale: 6 }).notNull(), taxAmount: decimal("taxAmount", { precision: 20, scale: 6 }).notNull().default("0"), lineTotal: decimal("lineTotal", { precision: 20, scale: 6 }).notNull(),
+});
+
 export const stockMovements = mysqlTable("stock_movements", {
   id: int("id").autoincrement().primaryKey(),
   itemId: int("itemId").notNull(),

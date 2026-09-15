@@ -129,4 +129,14 @@ describe("Onyx rebuild contracts", () => {
     const reversed = await caller.purchases.reverse({ invoiceId: created.invoiceId, actor: "test" });
     expect(reversed.status).toBe("REVERSED");
   });
+
+  it("supports sales returns and adjustment notes against an original invoice", async () => {
+    const caller = appRouter.createCaller(ctx);
+    const invoice = await caller.invoices.create({ docNo: `ADJ-ORIGINAL-${Date.now()}`, customerId: 1, warehouseId: 1, actor: "test", lines: [{ itemId: 1, quantity: "1", unitPrice: "100", taxAmount: "15" }] });
+    await caller.invoices.post({ invoiceId: invoice.invoiceId, actor: "test" });
+    const adjustment = await caller.adjustments.create({ docNo: `SR-${Date.now()}`, documentKind: "SALES_RETURN", originalInvoiceId: invoice.invoiceId, reason: "اختبار مرتجع", actor: "test", lines: [{ itemId: 1, quantity: "1", unitPrice: "100", taxAmount: "15" }] });
+    expect(adjustment.status).toBe("DRAFT");
+    const posted = await caller.adjustments.post({ adjustmentId: adjustment.adjustmentId, actor: "test" });
+    expect(posted.status).toBe("POSTED");
+  });
 });

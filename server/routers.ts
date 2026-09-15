@@ -6,7 +6,7 @@ import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { invokeLLM } from "./_core/llm";
 import { LOCAL_COOKIE } from "./_core/localAuth";
 import { executeOracleAction, getOracleBridgeStatus } from "./_core/oracleBridge";
-import { createInvoice, createPurchaseInvoice, getCatalogSources, getDashboard, getErpControlData, getFinancialReportCatalog, getMasterData, getSystemTree, getWindowCatalog, getWindowContract, getWindowDomains, postInvoice, postPurchaseInvoice, receiveStock, reverseInvoice, reversePurchaseInvoice, runFinancialReport, saveAccount, saveBank, saveCashBox, saveCustomer, saveItem, saveJournal, saveSupplier, searchCustomers, searchInvoices, searchItems, searchJournals, searchSuppliers, searchSystemUsers } from "./db";
+import { createAdjustmentNote, createInvoice, createPurchaseInvoice, getCatalogSources, getDashboard, getErpControlData, getFinancialReportCatalog, getMasterData, getSystemTree, getWindowCatalog, getWindowContract, getWindowDomains, postAdjustmentNote, postInvoice, postPurchaseInvoice, receiveStock, reverseInvoice, reversePurchaseInvoice, runFinancialReport, saveAccount, saveBank, saveCashBox, saveCustomer, saveItem, saveJournal, saveSupplier, searchCustomers, searchInvoices, searchItems, searchJournals, searchSuppliers, searchSystemUsers } from "./db";
 
 const invoiceLine = z.object({ itemId: z.number().int().positive(), quantity: z.string().min(1), unitPrice: z.string().min(1), taxAmount: z.string().default("0") });
 const partyInput = z.object({ id: z.number().int().positive().optional(), companyId: z.number().int().positive().default(1), code: z.string().min(1).max(50), legalName: z.string().min(1).max(250), currencyCode: z.string().length(3).default("SAR"), status: z.enum(["ACTIVE", "BLOCKED", "CLOSED"]).default("ACTIVE") });
@@ -85,6 +85,10 @@ export const appRouter = router({
     create: protectedProcedure.input(z.object({ docNo: z.string().min(1), supplierId: z.number().int().positive(), warehouseId: z.number().int().positive(), currencyCode: z.string().length(3).default("SAR"), exchangeRate: z.string().default("1"), paymentMethod: z.enum(["CASH", "CREDIT", "CHECK", "WALLET", "BANK_TRANSFER"]).default("CREDIT"), paidAmount: z.string().default("0"), paymentReference: z.string().max(160).optional(), lines: z.array(invoiceLine).min(1), actor: z.string().default("workbench.user") })).mutation(({ input }) => createPurchaseInvoice(input)),
     post: protectedProcedure.input(z.object({ invoiceId: z.number().int().positive(), actor: z.string().default("workbench.user") })).mutation(({ input }) => postPurchaseInvoice(input.invoiceId, input.actor)),
     reverse: protectedProcedure.input(z.object({ invoiceId: z.number().int().positive(), actor: z.string().default("workbench.user") })).mutation(({ input }) => reversePurchaseInvoice(input.invoiceId, input.actor)),
+  }),
+  adjustments: router({
+    create: protectedProcedure.input(z.object({ docNo: z.string().min(1), documentKind: z.enum(["SALES_RETURN", "PURCHASE_RETURN", "SALES_DISCOUNT", "SALES_ADDITION", "PURCHASE_DISCOUNT", "PURCHASE_ADDITION"]), originalInvoiceId: z.number().int().positive(), reason: z.string().max(500).optional(), lines: z.array(invoiceLine).min(1), actor: z.string().default("workbench.user") })).mutation(({ input }) => createAdjustmentNote(input)),
+    post: protectedProcedure.input(z.object({ adjustmentId: z.number().int().positive(), actor: z.string().default("workbench.user") })).mutation(({ input }) => postAdjustmentNote(input.adjustmentId, input.actor)),
   }),
   inventory: router({
     receive: protectedProcedure.input(z.object({ itemId: z.number().int().positive(), warehouseId: z.number().int().positive(), quantity: z.string().min(1), unitCost: z.string().min(1), actor: z.string().default("workbench.user"), reference: z.string().min(1).max(80) })).mutation(({ input }) => receiveStock(input)),
