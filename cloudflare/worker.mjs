@@ -297,7 +297,106 @@ async function createPurchase(env, request) {
   const idempotencyKey = `AP:${docNo}`;
   const created = await env.ONEX_DB.prepare("INSERT INTO purchase_invoices (docNo, supplierId, warehouseId, currencyCode, exchangeRate, subtotal, taxTotal, grandTotal, idempotencyKey, notes, createdBy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, docNo, currencyCode, exchangeRate, subtotal, taxTotal, grandTotal, status").bind(docNo, supplierId, warehouseId, currencyCode, exchangeRate.toFixed(8), subtotal.toFixed(6), taxTotal.toFixed(6), (subtotal + taxTotal).toFixed(6), idempotencyKey, typeof body.notes === "string" ? body.notes.slice(0, 1000) : null, "cloudflare-worker").first();
   await env.ONEX_DB.batch(normalized.map((line) => env.ONEX_DB.prepare("INSERT INTO purchase_lines (purchaseInvoiceId, itemId, quantity, unitPrice, taxAmount, lineTotal) VALUES (?, ?, ?, ?, ?, ?)").bind(created.id, line.itemId, line.quantity.toFixed(6), line.unitPrice.toFixed(6), line.taxAmount.toFixed(6), line.lineTotal.toFixed(6))));
+  if (body.postNow === true) return postPurchaseInvoice(env, request, created.id);
   return json({ ...created, exchangeRate: Number(created.exchangeRate), subtotal: Number(created.subtotal), taxTotal: Number(created.taxTotal), grandTotal: Number(created.grandTotal), localGrandTotal: Number(created.grandTotal) * Number(created.exchangeRate) }, 201, request);
+}
+
+
+async function postPurchaseInvoice(env, request, purchaseId) {
+  requireWriteAuth(request, env);
+  const purchase = await env.ONEX_DB.prepare(`
+    SELECT id, docNo, supplierId, warehouseId, currencyCode, exchangeRate, subtotal, taxTotal,
+           grandTotal, status, inventoryJournalNo
+    FROM purchase_invoices WHERE id = ? LIMIT 1
+  `).bind(purchaseId).first();
+  if (!purchase) return errorResponse("PURCHASE_INVOICE_NOT_FOUND", 404, request);
+  if (purchase.status === "POSTED") return json({ purchaseInvoiceId: purchaseId, status: "POSTED", idempotent: true }, 200, request);
+  if (purchase.status !== "DRAFT") return errorResponse("INVALID_PURCHASE_STATE", 409, request);
+
+  const linesResult = await env.ONEX_DB.prepare(`
+    SELECT id, itemId, quantity, unitPrice, taxAmount FROM purchase_lines
+    WHERE purchaseInvoiceId = ? ORDER BY id
+  `).bind(purchaseId).all();
+  const lines = linesResult.results ?? [];
+  if (!lines.length) return errorResponse("PURCHASE_HAS_NO_LINES", 400, request);
+
+  const rate = Number(purchase.exchangeRate);
+  const balances = new Map();
+  const plans = [];
+  let inventoryTotal = 0;
+  for (const line of lines) {
+    let balance = balances.get(line.itemId);
+    if (!balance) {
+      balance = await env.ONEX_DB.prepare(`
+        SELECT id, quantity, totalCost, unitCost, versionNo
+        FROM stock_balances WHERE itemId = ? AND warehouseId = ? LIMIT 1
+      `).bind(line.itemId, purchase.warehouseId).first();
+      if (!balance) balance = { id: null, quantity: 0, totalCost: 0, unitCost: 0, versionNo: null };
+      else balance = { ...balance, quantity: Number(balance.quantity), totalCost: Number(balance.totalCost), unitCost: Number(balance.unitCost) };
+      balances.set(line.itemId, balance);
+    }
+    const quantity = Number(line.quantity);
+    const inputUnitCost = Number(line.unitPrice) * rate;
+    if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(inputUnitCost) || inputUnitCost < 0) return errorResponse("INVALID_PURCHASE_LINE", 400, request);
+    const receivedValue = quantity * inputUnitCost;
+    const beforeQty = balance.quantity;
+    const beforeTotal = balance.totalCost;
+    balance.quantity = beforeQty + quantity;
+    balance.totalCost = beforeTotal + receivedValue;
+    balance.unitCost = balance.quantity > 0 ? balance.totalCost / balance.quantity : inputUnitCost;
+    inventoryTotal += receivedValue;
+    plans.push({ line, quantity, inputUnitCost, receivedValue, balance });
+  }
+
+  const journalNo = `AP-PURCHASE-${purchase.docNo}`;
+  const total = inventoryTotal.toFixed(6);
+  const statements = [];
+  for (const plan of plans.filter((x, i, a) => a.findIndex((y) => y.line.itemId === x.line.itemId) === i)) {
+    const b = plan.balance;
+    const itemQty = plans.filter((x) => x.line.itemId === plan.line.itemId).reduce((sum, x) => sum + x.quantity, 0);
+    const beforeQty = b.quantity - itemQty;
+    const beforeTotal = b.totalCost - plans.filter((x) => x.line.itemId === plan.line.itemId).reduce((sum, x) => sum + x.receivedValue, 0);
+    if (b.id === null) {
+      statements.push(env.ONEX_DB.prepare(`
+        INSERT INTO stock_balances (itemId, warehouseId, quantity, unitCost, totalCost, versionNo, reservedQuantity)
+        VALUES (?, ?, ?, ?, ?, 1, '0')
+      `).bind(plan.line.itemId, purchase.warehouseId, b.quantity.toFixed(6), b.unitCost.toFixed(6), b.totalCost.toFixed(6)));
+    } else {
+      statements.push(env.ONEX_DB.prepare(`
+        UPDATE stock_balances SET quantity = ?, unitCost = ?, totalCost = ?, versionNo = versionNo + 1
+        WHERE id = ? AND versionNo = ?
+      `).bind(b.quantity.toFixed(6), b.unitCost.toFixed(6), b.totalCost.toFixed(6), b.id, b.versionNo));
+    }
+  }
+  for (const plan of plans) {
+    statements.push(env.ONEX_DB.prepare(`
+      UPDATE purchase_lines SET appliedUnitCost = ?, appliedCostTotal = ? WHERE id = ?
+    `).bind(plan.inputUnitCost.toFixed(6), plan.receivedValue.toFixed(6), plan.line.id));
+    statements.push(env.ONEX_DB.prepare(`
+      INSERT INTO stock_movements
+        (itemId, warehouseId, sourceInvoiceId, sourcePurchaseInvoiceId, inventoryDocumentId,
+         movementType, quantityIn, quantityOut, unitCost, totalCost, balanceAfter, createdBy, reference)
+      VALUES (?, ?, NULL, ?, NULL, 'PURCHASE_RECEIPT', ?, '0', ?, ?, ?, ?, ?)
+    `).bind(plan.line.itemId, purchase.warehouseId, purchase.id, plan.quantity.toFixed(6), plan.inputUnitCost.toFixed(6), plan.receivedValue.toFixed(6), plan.balance.quantity.toFixed(6), "cloudflare-worker", purchase.docNo));
+  }
+  statements.push(env.ONEX_DB.prepare(`
+    INSERT INTO journal_entries (journalNo, entryType, sourceRef, sourcePurchaseInvoiceId, totalDebit, totalCredit, status, createdBy)
+    VALUES (?, 'AP_PURCHASE', ?, ?, ?, ?, 'POSTED', ?)
+  `).bind(journalNo, purchase.docNo, purchase.id, total, total, "cloudflare-worker"));
+  statements.push(env.ONEX_DB.prepare(`
+    INSERT INTO journal_entry_lines (journalNo, accountCode, debit, credit, description)
+    VALUES (?, '1300', ?, '0', ?), (?, '2100', '0', ?, ?)
+  `).bind(journalNo, total, `مخزون مشتريات ${purchase.docNo}`, journalNo, total, `التزام مورد ${purchase.docNo}`));
+  statements.push(env.ONEX_DB.prepare(`
+    UPDATE purchase_invoices SET status = 'POSTED', postedAt = CURRENT_TIMESTAMP, inventoryJournalNo = ?, inventoryPostedAt = CURRENT_TIMESTAMP
+    WHERE id = ? AND status = 'DRAFT'
+  `).bind(journalNo, purchase.id));
+  statements.push(env.ONEX_DB.prepare(`
+    INSERT INTO audit_events (actor, actionCode, entityType, entityId, requestId)
+    VALUES ('cloudflare-worker', 'POST', 'AP_DOC', ?, ?)
+  `).bind(String(purchase.id), `AP_POST:${purchase.docNo}`));
+  await env.ONEX_DB.batch(statements);
+  return json({ purchaseInvoiceId: purchase.id, docNo: purchase.docNo, status: "POSTED", inventoryJournalNo: journalNo, inventoryTotal: total }, 200, request);
 }
 
 async function createVoucher(env, request) {
@@ -1081,6 +1180,8 @@ export default {
       const invoiceMatch = url.pathname.match(/^\/api\/erp\/invoices\/(\d+)\/(post|reverse)$/);
       if (invoiceMatch && request.method === "POST") return updateInvoiceStatus(env, request, Number(invoiceMatch[1]), invoiceMatch[2] === "post" ? "POSTED" : "REVERSED");
       if (url.pathname === "/api/erp/purchases" && request.method === "POST") return createPurchase(env, request);
+      const purchasePostMatch = url.pathname.match(/^\/api\/erp\/purchases\/(\d+)\/post$/);
+      if (purchasePostMatch && request.method === "POST") return postPurchaseInvoice(env, request, Number(purchasePostMatch[1]));
       if (url.pathname === "/api/erp/vouchers" && request.method === "POST") return createVoucher(env, request);
       if (url.pathname === "/api/erp/inventory/receive" && request.method === "POST") return receiveStock(env, request);
       return proxyWorkbench(request);
