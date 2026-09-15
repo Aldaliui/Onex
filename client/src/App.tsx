@@ -7,9 +7,10 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
 import WindowWorkbench from "./pages/WindowWorkbench";
 import SystemSetup from "./pages/SystemSetup";
+import ComponentShowcase from "./pages/ComponentShowcase";
 
 function Router() {
-  return <Switch><Route path="/" component={WindowWorkbench} /><Route path="/workbench" component={WindowWorkbench} /><Route path="/setup" component={SystemSetup} /><Route path="/home" component={Home} /><Route path="/404" component={NotFound} /><Route component={NotFound} /></Switch>;
+  return <Switch><Route path="/" component={WindowWorkbench} /><Route path="/workbench" component={WindowWorkbench} /><Route path="/home" component={Home} /><Route path="/setup" component={SystemSetup} /><Route path="/showcase" component={ComponentShowcase} /><Route path="/404" component={NotFound} /><Route component={NotFound} /></Switch>;
 }
 
 export default function App() {

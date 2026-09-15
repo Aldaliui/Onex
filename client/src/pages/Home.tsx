@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,6 +27,7 @@ function StatusPill({ status }: { status: string }) {
 }
 
 export default function Home() {
+  const [, setLocation] = useLocation();
   const [section, setSection] = useState<"overview" | "windows" | "ar">("overview");
   const [windowSearch, setWindowSearch] = useState("");
   const [domain, setDomain] = useState("ALL");
@@ -75,13 +77,16 @@ export default function Home() {
         <button className={section === "overview" ? "nav-item active" : "nav-item"} onClick={() => setSection("overview")}><LayoutGrid size={17} />نظرة عامة</button>
         <button className={section === "windows" ? "nav-item active" : "nav-item"} onClick={() => setSection("windows")}><PanelLeft size={17} />دليل النوافذ <em>1,490</em></button>
         <button className={section === "ar" ? "nav-item active" : "nav-item"} onClick={() => setSection("ar")}><FileText size={17} />ARST004 <em>تجريبي</em></button>
+        <button className="nav-item" onClick={() => setLocation("/workbench")}><Boxes size={17} />مساحة تشغيل النوافذ <em>فتح</em></button>
+        <button className="nav-item" onClick={() => setLocation("/setup")}><Settings2 size={17} />تهيئة النظام <em>إعداد</em></button>
+        <button className="nav-item" onClick={() => setLocation("/showcase")}><Sparkles size={17} />معرض الواجهة <em>QA</em></button>
         <button className="nav-item muted" onClick={() => toast.info("ستُفعّل في المرحلة التالية")}><Warehouse size={17} />المخزون <em>قريبًا</em></button>
         <button className="nav-item muted" onClick={() => toast.info("ستُفعّل في المرحلة التالية")}><CircleDollarSign size={17} />الحسابات العامة <em>قريبًا</em></button>
       </nav>
       <div className="sidebar-bottom"><div className="bridge-card"><div className="bridge-top"><Link2 size={16} /><span>حالة الربط</span><b className={dbReady ? "online" : "offline"}>{dbReady ? "متصل" : "تجريبي"}</b></div><p>{dbReady ? "قاعدة البيانات التجريبية تعمل" : "Oracle bridge غير مضاف بعد"}</p><div className="bridge-line"><span style={{ width: dbReady ? "78%" : "24%" }} /></div></div><button className="profile"><div className="avatar">م</div><div><b>مدير النظام</b><span>demo.user</span></div><Settings2 size={16} /></button></div>
     </aside>
     <main className="main-content">
-      <header className="topbar"><div><p className="eyebrow">ONYX / REBUILD CONSOLE</p><h1>{section === "windows" ? "دليل النوافذ" : section === "ar" ? "ARST004 · فاتورة مبيعات" : "لوحة التحكم التنفيذية"}</h1></div><div className="top-actions"><div className="connection"><span className="pulse" /> وضع الاختبار <b>Oracle-ready</b></div><Button className="user-action" onClick={() => setSection("ar")}><Plus size={16} />عملية جديدة</Button></div></header>
+      <header className="topbar"><div><p className="eyebrow">ONYX / REBUILD CONSOLE</p><h1>{section === "windows" ? "دليل النوافذ" : section === "ar" ? "ARST004 · فاتورة مبيعات" : "لوحة التحكم التنفيذية"}</h1></div><div className="top-actions"><Button variant="outline" onClick={() => setLocation("/workbench")}><PanelLeft size={16} />المساحة المتقدمة</Button><Button variant="outline" onClick={() => setLocation("/setup")}><Settings2 size={16} />التهيئة</Button><div className="connection"><span className="pulse" /> وضع الاختبار <b>Oracle-ready</b></div><Button className="user-action" onClick={() => setSection("ar")}><Plus size={16} />عملية جديدة</Button></div></header>
       {section === "overview" && <>
         <section className="hero"><div><div className="hero-kicker"><ShieldCheck size={14} /> خارطة النظام القديم أصبحت قابلة للتشغيل</div><h2>نواة Onyx الحديثة،<br /><span>بنفس منطق النوافذ.</span></h2><p>نسخة تشغيلية تدريجية تحافظ على أسماء النوافذ، دورة العمل، الترحيل، والتدقيق — وتفتح الطريق لقاعدة Oracle الحقيقية.</p><div className="hero-actions"><Button onClick={() => setSection("ar")}><FileText size={16} />ابدأ ARST004</Button><Button variant="outline" onClick={() => setSection("windows")}><PanelLeft size={16} />استعرض 1,490 نافذة</Button></div></div><div className="hero-orbit"><div className="orbit-ring ring-one" /><div className="orbit-ring ring-two" /><div className="orbit-core"><Boxes size={33} /><span>ONEX</span></div><div className="orbit-tag tag-one">AR</div><div className="orbit-tag tag-two">GL</div><div className="orbit-tag tag-three">INV</div></div></section>
         <div className="stats-grid"><Stat icon={PanelLeft} label="نافذة مفهرسة" value={stats.windows.toLocaleString()} accent="violet" /><Stat icon={Boxes} label="مجالات النظام" value={stats.domains} accent="cyan" /><Stat icon={FileText} label="فواتير مرحّلة" value={stats.invoices} accent="amber" /><Stat icon={CircleDollarSign} label="قيود GL" value={stats.journals} accent="green" /></div>
