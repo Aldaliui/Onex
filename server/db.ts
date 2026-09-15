@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ENV } from "./_core/env";
 import { accounts, auditEvents, branches, companies, customers, fiscalPeriods, invoices, invoiceLines, items, journalEntries, journalEntryLines, suppliers, stockBalances, stockMovements, warehouses, windowRegistry, type InsertUser, users } from "../drizzle/schema";
+import { buildReversalJournal, buildSaleJournal, calculateInvoice, canPostToPeriod, validateJournal } from "./accountingCore";
+import { getLegacyWindowContract } from "./legacyWindowContracts";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let demoInvoiceSequence = 1000;
@@ -233,6 +235,7 @@ export async function getCatalogSources() {
 
 export async function getWindowContract(legacyForm: string) {
   const form = legacyForm.replace(/\.fmx$/i, "");
+  const legacyContract = getLegacyWindowContract(form);
   const runtime = catalogRow("legacy-source/window_runtime_contracts.csv", form);
   const fields = catalogRow("legacy-source/form_field_trigger_catalog.csv", form);
   const unified = catalogRow("legacy-source/unified_window_contracts.csv", form, 1);
@@ -248,9 +251,10 @@ export async function getWindowContract(legacyForm: string) {
     source: { manifest: Boolean(manifest), runtime: Boolean(runtime), fields: Boolean(fields), unified: Boolean(unified), specification: `legacy-source/all_window_specs/${form}.rebuild.md` },
     counts: { fields: count(fields?.fields, unified?.window_field_evidence_count, runtime?.observed_field_count, row?.observedProcedures), procedures: count(manifest?.procedures, runtime?.observed_procedure_count, row?.observedProcedures), triggers: count(manifest?.triggers, runtime?.observed_trigger_count, row?.observedTriggers), tables: count(manifest?.tables, runtime?.observed_table_count, row?.observedTableIndicators) },
     evidence: { fields: evidence(fields?.fields), procedures: evidence(fields?.procedures || runtime?.legacy_packages), triggers: evidence(fields?.triggers), tables: evidence(fields?.tables) },
-    actions, coreApi: unified?.core_api || runtime?.core_api || `ONEX_${domain.replace(/[^A-Z]/gi, "_")}_WINDOW_API`,
+    actions: legacyContract?.actions || actions, coreApi: legacyContract?.coreApi || unified?.core_api || runtime?.core_api || `ONEX_${domain.replace(/[^A-Z]/gi, "_")}_WINDOW_API`,
     midoModules: moduleByDomain[domain.split("/")[0].toUpperCase()] || ["business-operations-core.js", "document-cycle-core.js"],
-    status: unified?.production_status || "NOT_READY_FOR_PRODUCTION", specificationPath: `legacy-source/all_window_specs/${form}.rebuild.md`,
+    legacyContract,
+    status: legacyContract?.implementationStatus === "IMPLEMENTED" ? "IMPLEMENTED_WITH_CLOUD_CORE" : unified?.production_status || "NOT_READY_FOR_PRODUCTION", specificationPath: `legacy-source/all_window_specs/${form}.rebuild.md`,
   };
 }
 
@@ -371,18 +375,17 @@ export async function searchJournals(search?: string, limit = 20) {
 }
 
 export async function saveJournal(input: { journalNo: string; entryType: string; actor: string; lines: { accountCode: string; accountName?: string; description?: string; debit: string; credit: string }[] }) {
-  const debit = input.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0); const credit = input.lines.reduce((sum, line) => sum + Number(line.credit || 0), 0);
-  if (Math.abs(debit - credit) > 0.000001) throw new Error("JOURNAL_NOT_BALANCED");
+  const journal = validateJournal({ description: input.entryType, source: "MANUAL", lines: input.lines });
+  const debit = journal.totalDebit; const credit = journal.totalCredit;
   const db = await getDb();
   if (!db) { const id = demoJournals.length + 1; const result = { id, journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6), status: "POSTED" as const }; demoJournals.push(result); return result; }
-  return db.transaction(async (tx) => { const inserted = await tx.insert(journalEntries).values({ journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6) }).$returningId(); const id = Number(inserted[0]?.id); if (!id) throw new Error("JOURNAL_CREATE_FAILED"); await tx.insert(journalEntryLines).values(input.lines.map((line) => ({ journalEntryId: id, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: line.debit, credit: line.credit }))); await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE", entityType: "GL_JOURNAL", entityId: String(id), requestId: `JOURNAL:${input.journalNo}` }); return { id, journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6), status: "POSTED" as const }; });
+  return db.transaction(async (tx) => { const inserted = await tx.insert(journalEntries).values({ journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6) }).$returningId(); const id = Number(inserted[0]?.id); if (!id) throw new Error("JOURNAL_CREATE_FAILED"); await tx.insert(journalEntryLines).values(journal.lines.map((line) => ({ journalEntryId: id, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: line.debit.toFixed(6), credit: line.credit.toFixed(6) }))); await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE", entityType: "GL_JOURNAL", entityId: String(id), requestId: `JOURNAL:${input.journalNo}` }); return { id, journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6), status: "POSTED" as const }; });
 }
 
 export async function createInvoice(input: { docNo: string; customerId: number; warehouseId: number; currencyCode?: string; exchangeRate?: string; paymentMethod?: string; paidAmount?: string; paymentReference?: string; lines: { itemId: number; quantity: string; unitPrice: string; taxAmount: string }[]; actor: string; }) {
   const db = await getDb();
-  const subtotal = input.lines.reduce((sum, line) => sum + Number(line.quantity) * Number(line.unitPrice), 0);
-  const taxTotal = input.lines.reduce((sum, line) => sum + Number(line.taxAmount), 0);
-  const grandTotal = subtotal + taxTotal;
+  const calculated = calculateInvoice(input.lines, input.paidAmount || "0");
+  const { subtotal, taxTotal, grandTotal } = calculated;
   const idempotencyKey = `ARST004:${input.docNo}`;
   if (!db) {
     if (Array.from(demoInvoices.values()).some((invoice) => invoice.docNo === input.docNo)) throw new Error("DUPLICATE_IDEMPOTENCY_KEY");
@@ -437,6 +440,10 @@ export async function postInvoice(invoiceId: number, actor: string) {
     if (!invoice) throw new Error("INVOICE_NOT_FOUND");
     if (invoice.status !== "DRAFT") throw new Error("INVOICE_ALREADY_POSTED_OR_REVERSED");
     const lines = await tx.select({ line: invoiceLines, item: items, balance: stockBalances }).from(invoiceLines).innerJoin(items, eq(invoiceLines.itemId, items.id)).leftJoin(stockBalances, and(eq(stockBalances.itemId, invoiceLines.itemId), eq(stockBalances.warehouseId, invoice.warehouseId))).where(eq(invoiceLines.invoiceId, invoiceId));
+    const periods = await tx.select().from(fiscalPeriods).where(and(eq(fiscalPeriods.companyId, 1), eq(fiscalPeriods.status, "OPEN"))).orderBy(desc(fiscalPeriods.startsOn));
+    const period = periods.find((candidate) => canPostToPeriod(candidate, invoice.createdAt).allowed);
+    const periodCheck = canPostToPeriod(period, invoice.createdAt);
+    if (!periodCheck.allowed) throw new Error(periodCheck.reason || "PERIOD_NOT_POSTABLE");
     let totalCogs = 0;
     for (const row of lines) {
       const quantity = Number(row.line.quantity);
@@ -454,7 +461,11 @@ export async function postInvoice(invoiceId: number, actor: string) {
       }
     }
     const total = Number(invoice.grandTotal);
-    await tx.insert(journalEntries).values([{ journalNo: `AR-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "AR_SALE", totalDebit: total.toFixed(6), totalCredit: total.toFixed(6) }, { journalNo: `COGS-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "COGS_INVENTORY", totalDebit: totalCogs.toFixed(6), totalCredit: totalCogs.toFixed(6) }]);
+    const saleJournal = buildSaleJournal({ total, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), totalCogs });
+    const insertedJournal = await tx.insert(journalEntries).values({ journalNo: `AR-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "AR_SALE", totalDebit: saleJournal.totalDebit.toFixed(6), totalCredit: saleJournal.totalCredit.toFixed(6) }).$returningId();
+    const journalId = Number(insertedJournal[0]?.id);
+    if (!journalId) throw new Error("JOURNAL_CREATE_FAILED");
+    await tx.insert(journalEntryLines).values(saleJournal.lines.map((line) => ({ journalEntryId: journalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) })));
     await tx.update(invoices).set({ status: "POSTED", postedAt: new Date() }).where(eq(invoices.id, invoiceId));
     await tx.insert(auditEvents).values({ actor, actionCode: "POST", entityType: "AR_DOC", entityId: String(invoiceId), requestId: `POST:${invoice.docNo}` });
     return { invoiceId, status: "POSTED" as const, totalCogs };
@@ -473,6 +484,7 @@ export async function reverseInvoice(invoiceId: number, actor: string) {
     const invoice = (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1))[0];
     if (!invoice || invoice.status !== "POSTED") throw new Error("ONLY_POSTED_INVOICES_CAN_BE_REVERSED");
     const lines = await tx.select({ line: invoiceLines, item: items, balance: stockBalances }).from(invoiceLines).innerJoin(items, eq(invoiceLines.itemId, items.id)).leftJoin(stockBalances, and(eq(stockBalances.itemId, invoiceLines.itemId), eq(stockBalances.warehouseId, invoice.warehouseId))).where(eq(invoiceLines.invoiceId, invoiceId));
+    const originalJournal = (await tx.select().from(journalEntries).where(and(eq(journalEntries.sourceInvoiceId, invoiceId), eq(journalEntries.entryType, "AR_SALE"))).limit(1))[0];
     for (const row of lines) {
       if (!row.item.stockFlag || !row.balance) continue;
       const quantity = Number(row.line.quantity);
@@ -482,7 +494,14 @@ export async function reverseInvoice(invoiceId: number, actor: string) {
       await tx.update(stockBalances).set({ quantity: afterQty.toFixed(6), totalCost: afterCost.toFixed(6), unitCost: (afterCost / afterQty).toFixed(6), versionNo: row.balance.versionNo + 1 }).where(eq(stockBalances.id, row.balance.id));
       await tx.insert(stockMovements).values({ itemId: row.line.itemId, warehouseId: invoice.warehouseId, sourceInvoiceId: invoiceId, movementType: "SALES_RETURN", quantityIn: quantity.toFixed(6), unitCost: Number(row.balance.unitCost).toFixed(6), totalCost: cost.toFixed(6), balanceAfter: afterQty.toFixed(6), createdBy: actor });
     }
-    await tx.insert(journalEntries).values({ journalNo: `REV-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "REVERSAL", totalDebit: invoice.grandTotal, totalCredit: invoice.grandTotal });
+    if (!originalJournal) throw new Error("ORIGINAL_JOURNAL_NOT_FOUND");
+    const originalLines = await tx.select().from(journalEntryLines).where(eq(journalEntryLines.journalEntryId, originalJournal.id));
+    const totalCogs = Number(originalLines.find((line) => line.accountCode === "5100")?.debit || 0);
+    const reversal = buildReversalJournal({ total: Number(invoice.grandTotal), subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), totalCogs });
+    const insertedReversal = await tx.insert(journalEntries).values({ journalNo: `REV-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "REVERSAL", totalDebit: reversal.totalDebit.toFixed(6), totalCredit: reversal.totalCredit.toFixed(6) }).$returningId();
+    const reversalId = Number(insertedReversal[0]?.id);
+    if (!reversalId) throw new Error("REVERSAL_JOURNAL_CREATE_FAILED");
+    await tx.insert(journalEntryLines).values(reversal.lines.map((line) => ({ journalEntryId: reversalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) })));
     await tx.update(invoices).set({ status: "REVERSED" }).where(eq(invoices.id, invoiceId));
     await tx.insert(auditEvents).values({ actor, actionCode: "REVERSE", entityType: "AR_DOC", entityId: String(invoiceId), requestId: `REV:${invoice.docNo}` });
     return { invoiceId, status: "REVERSED" as const };
