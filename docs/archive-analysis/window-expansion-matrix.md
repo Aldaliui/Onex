@@ -118,4 +118,3 @@
 - `cloud-onex-window-matrix.csv`: صف مستقل لكل نافذة، مناسب للفرز والتصفية في Excel.
 - `window_gap_matrix.json`: مصفوفة الأدلة الخام الكاملة.
 - `window_gap_summary.txt`: ملخص التوزيع والأولوية.
-

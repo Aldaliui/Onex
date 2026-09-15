@@ -295,4 +295,3 @@
 
 - `inventory-core-window-contracts.csv`: صف لكل نافذة مع قوائم الحقول والجداول والإجراءات.
 - `inventory_core_contracts.json`: البيانات الكاملة المفهرسة حسب النافذة والحقل والجدول والإجراء والـTrigger.
-

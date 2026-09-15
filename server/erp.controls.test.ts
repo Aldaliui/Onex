@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 
-const ctx = { user: null, req: {} as TrpcContext["req"], res: {} as TrpcContext["res"] } as TrpcContext;
+const ctx = { user: { id: 1, openId: "unit", role: "admin" } as any, req: {} as TrpcContext["req"], res: {} as TrpcContext["res"] } as TrpcContext;
 
 describe("ERP control and inventory flows", () => {
   it("exposes branches, accounts, and open fiscal periods", async () => {
@@ -18,5 +18,23 @@ describe("ERP control and inventory flows", () => {
     expect(account?.code).toContain("TEST-");
     const receipt = await api.inventory.receive({ itemId: 1, warehouseId: 1, quantity: "3", unitCost: "50", reference: `GRN-${Date.now()}` });
     expect(receipt.status).toBe("RECEIVED");
+  });
+
+  it("creates automatic subledger accounts for financial entities", async () => {
+    const api = appRouter.createCaller(ctx);
+    const suffix = Date.now();
+    const customer = await api.windows.saveCustomer({ code: `CUST-${suffix}`, legalName: "عميل مربوط" });
+    const supplier = await api.windows.saveSupplier({ code: `SUP-${suffix}`, legalName: "مورد مربوط" });
+    const cash = await api.windows.saveCashBox({ code: `CASH-${suffix}`, name: "صندوق مربوط" });
+    const bank = await api.windows.saveBank({ code: `BANK-${suffix}`, name: "بنك مربوط", accountNumber: "123" });
+    expect(customer?.accountId).toBeTruthy();
+    expect(supplier?.accountId).toBeTruthy();
+    expect(cash?.accountId).toBeTruthy();
+    expect(bank?.accountId).toBeTruthy();
+    const control = await api.controlData();
+    expect(control.accounts.find((account) => account.id === customer?.accountId)?.code).toMatch(/^1200-/);
+    expect(control.accounts.find((account) => account.id === supplier?.accountId)?.code).toMatch(/^2100-/);
+    expect(control.accounts.find((account) => account.id === cash?.accountId)?.code).toMatch(/^1100-/);
+    expect(control.accounts.find((account) => account.id === bank?.accountId)?.code).toMatch(/^1110-/);
   });
 });

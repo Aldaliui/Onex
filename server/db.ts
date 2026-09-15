@@ -3,17 +3,22 @@ import { drizzle } from "drizzle-orm/mysql2";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ENV } from "./_core/env";
-import { accounts, auditEvents, branches, companies, customers, fiscalPeriods, invoices, invoiceLines, items, journalEntries, journalEntryLines, suppliers, stockBalances, stockMovements, warehouses, windowRegistry, type InsertUser, users } from "../drizzle/schema";
+import { accounts, auditEvents, banks, branches, cashBoxes, companies, customers, fiscalPeriods, invoices, invoiceLines, items, journalEntries, journalEntryLines, suppliers, stockBalances, stockMovements, warehouses, windowRegistry, type InsertUser, users } from "../drizzle/schema";
+import { buildPurchaseJournal, buildReversalJournal, buildSaleJournal, calculateInvoice, canPostToPeriod, validateJournal } from "./accountingCore";
+import { getLegacyWindowContract } from "./legacyWindowContracts";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let demoInvoiceSequence = 1000;
 const demoInvoices = new Map<number, { invoiceId: number; docNo: string; subtotal: number; taxTotal: number; grandTotal: number; status: "DRAFT" | "POSTED" | "REVERSED" }>();
-const demoSuppliers: Array<{ id: number; companyId: number; code: string; legalName: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, code: "SUP-001", legalName: "مورد تجريبي", currencyCode: "SAR", status: "ACTIVE" }];
-const demoCustomers: Array<{ id: number; companyId: number; code: string; legalName: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, code: "CUST-001", legalName: "عميل تجريبي", currencyCode: "SAR", status: "ACTIVE" }];
+const demoPurchaseInvoices = new Map<number, { invoiceId: number; docNo: string; subtotal: number; taxTotal: number; grandTotal: number; status: "DRAFT" | "POSTED" | "REVERSED" }>();
+const demoSuppliers: Array<{ id: number; companyId: number; accountId?: number; code: string; legalName: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, accountId: 4, code: "SUP-001", legalName: "مورد تجريبي", currencyCode: "SAR", status: "ACTIVE" }];
+const demoCustomers: Array<{ id: number; companyId: number; accountId?: number; code: string; legalName: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, accountId: 5, code: "CUST-001", legalName: "عميل تجريبي", currencyCode: "SAR", status: "ACTIVE" }];
+const demoCashBoxes: Array<{ id: number; companyId: number; accountId?: number; code: string; name: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, accountId: 1, code: "CASH-001", name: "الصندوق الرئيسي", currencyCode: "SAR", status: "ACTIVE" }];
+const demoBanks: Array<{ id: number; companyId: number; accountId?: number; code: string; name: string; accountNumber: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, accountId: 1, code: "BANK-001", name: "البنك الرئيسي", accountNumber: "", currencyCode: "SAR", status: "ACTIVE" }];
 const demoItems = [{ id: 1, companyId: 1, code: "ITEM-001", description: "صنف تجريبي", stockFlag: 1, unitCost: "100", revenueAccount: "4100", inventoryAccount: "1300", cogsAccount: "5100", active: 1 }];
 const demoJournals: Array<{ id: number; journalNo: string; entryType: string; totalDebit: string; totalCredit: string; status: "POSTED" }> = [];
 const demoBranches = [{ id: 1, companyId: 1, code: "MAIN", name: "الفرع الرئيسي", active: 1 }];
-const demoAccounts: Array<{ id: number; companyId: number; code: string; name: string; accountType: string; parentCode?: string; currencyCode: string; active: number }> = [{ id: 1, companyId: 1, code: "1100", name: "النقدية", accountType: "ASSET", currencyCode: "SAR", active: 1 }, { id: 2, companyId: 1, code: "4100", name: "إيرادات المبيعات", accountType: "REVENUE", currencyCode: "SAR", active: 1 }, { id: 3, companyId: 1, code: "5100", name: "تكلفة المبيعات", accountType: "EXPENSE", currencyCode: "SAR", active: 1 }];
+const demoAccounts: Array<{ id: number; companyId: number; code: string; name: string; accountType: string; parentCode?: string; currencyCode: string; active: number }> = [{ id: 1, companyId: 1, code: "1100", name: "النقدية", accountType: "ASSET", currencyCode: "SAR", active: 1 }, { id: 2, companyId: 1, code: "4100", name: "إيرادات المبيعات", accountType: "REVENUE", currencyCode: "SAR", active: 1 }, { id: 3, companyId: 1, code: "5100", name: "تكلفة المبيعات", accountType: "EXPENSE", currencyCode: "SAR", active: 1 }, { id: 4, companyId: 1, code: "2100-0001", name: "مورد تجريبي", accountType: "LIABILITY", parentCode: "2100", currencyCode: "SAR", active: 1 }, { id: 5, companyId: 1, code: "1200-0001", name: "عميل تجريبي", accountType: "ASSET", parentCode: "1200", currencyCode: "SAR", active: 1 }];
 const demoPeriods = [{ id: 1, companyId: 1, code: "2026-01", startsOn: new Date("2026-01-01"), endsOn: new Date("2026-01-31"), status: "OPEN" as const }];
 
 type FallbackWindow = {
@@ -233,6 +238,7 @@ export async function getCatalogSources() {
 
 export async function getWindowContract(legacyForm: string) {
   const form = legacyForm.replace(/\.fmx$/i, "");
+  const legacyContract = getLegacyWindowContract(form);
   const runtime = catalogRow("legacy-source/window_runtime_contracts.csv", form);
   const fields = catalogRow("legacy-source/form_field_trigger_catalog.csv", form);
   const unified = catalogRow("legacy-source/unified_window_contracts.csv", form, 1);
@@ -243,17 +249,15 @@ export async function getWindowContract(legacyForm: string) {
   const actions = unified?.actions?.split("|").filter(Boolean) || ["initialize", "query", "new", "validate", "save", "update", "delete", "approve", "post", "reverse", "print", "refresh", "exit"];
   const evidence = (value?: string) => (value || "").split(/[;|]/).map((item) => item.trim()).filter(Boolean).slice(0, 40);
   const count = (...values: unknown[]) => { for (const value of values) { const parsed = Number(value); if (Number.isFinite(parsed)) return parsed; } return 0; };
-  const standardFieldCount = count(unified?.standard_field_count, fields?.field_count);
-  const observedFieldCount = count(runtime?.observed_field_count, row?.observedProcedures);
-  const evidenceTokenCount = count(unified?.window_field_evidence_count, manifest?.strings);
   return {
     legacyForm: `${form}.fmx`, screenName: row?.screenName || form, domain, parentId: row?.parentId || "ROOT",
     source: { manifest: Boolean(manifest), runtime: Boolean(runtime), fields: Boolean(fields), unified: Boolean(unified), specification: `legacy-source/all_window_specs/${form}.rebuild.md` },
-    counts: { fields: standardFieldCount || observedFieldCount, standardFields: standardFieldCount, observedFields: observedFieldCount, evidenceTokens: evidenceTokenCount, procedures: count(manifest?.procedures, runtime?.observed_procedure_count, row?.observedProcedures), triggers: count(manifest?.triggers, runtime?.observed_trigger_count, row?.observedTriggers), tables: count(manifest?.tables, runtime?.observed_table_count, row?.observedTableIndicators) },
+    counts: { fields: count(fields?.fields, unified?.window_field_evidence_count, runtime?.observed_field_count, row?.observedProcedures), procedures: count(manifest?.procedures, runtime?.observed_procedure_count, row?.observedProcedures), triggers: count(manifest?.triggers, runtime?.observed_trigger_count, row?.observedTriggers), tables: count(manifest?.tables, runtime?.observed_table_count, row?.observedTableIndicators) },
     evidence: { fields: evidence(fields?.fields), procedures: evidence(fields?.procedures || runtime?.legacy_packages), triggers: evidence(fields?.triggers), tables: evidence(fields?.tables) },
-    actions, coreApi: unified?.core_api || runtime?.core_api || `ONEX_${domain.replace(/[^A-Z]/gi, "_")}_WINDOW_API`,
+    actions: legacyContract?.actions || actions, coreApi: legacyContract?.coreApi || unified?.core_api || runtime?.core_api || `ONEX_${domain.replace(/[^A-Z]/gi, "_")}_WINDOW_API`,
     midoModules: moduleByDomain[domain.split("/")[0].toUpperCase()] || ["business-operations-core.js", "document-cycle-core.js"],
-    status: unified?.production_status || "NOT_READY_FOR_PRODUCTION", specificationPath: `legacy-source/all_window_specs/${form}.rebuild.md`,
+    legacyContract,
+    status: legacyContract?.implementationStatus === "IMPLEMENTED" ? "IMPLEMENTED_WITH_CLOUD_CORE" : unified?.production_status || "NOT_READY_FOR_PRODUCTION", specificationPath: `legacy-source/all_window_specs/${form}.rebuild.md`,
   };
 }
 
@@ -275,15 +279,18 @@ export async function getMasterData() {
   const db = await getDb();
   if (!db) return {
     companies: [{ id: 1, code: "ONEX", name: "شركة Onyx التجريبية", baseCurrency: "SAR" }],
-    customers: [{ id: 1, companyId: 1, code: "CUST-001", legalName: "عميل تجريبي", currencyCode: "SAR", status: "ACTIVE" as const }],
+    customers: demoCustomers,
+    suppliers: demoSuppliers,
+    cashBoxes: demoCashBoxes,
+    banks: demoBanks,
     items: [{ id: 1, companyId: 1, code: "ITEM-001", description: "صنف تجريبي", stockFlag: 1, unitCost: "100", revenueAccount: "4100", inventoryAccount: "1300", cogsAccount: "5100", active: 1 }],
     warehouses: [{ id: 1, companyId: 1, code: "MAIN", name: "المستودع الرئيسي", active: 1 }],
     balances: [{ balance: { quantity: "100", totalCost: "10000", unitCost: "100" }, item: { code: "ITEM-001" }, warehouse: { code: "MAIN" } }],
   };
-  const [companyRows, customerRows, itemRows, warehouseRows, balanceRows] = await Promise.all([
-    db.select().from(companies).limit(20), db.select().from(customers).limit(100), db.select().from(items).limit(100), db.select().from(warehouses).limit(50), db.select({ balance: stockBalances, item: items, warehouse: warehouses }).from(stockBalances).leftJoin(items, eq(stockBalances.itemId, items.id)).leftJoin(warehouses, eq(stockBalances.warehouseId, warehouses.id)).limit(100),
+  const [companyRows, customerRows, supplierRows, cashBoxRows, bankRows, itemRows, warehouseRows, balanceRows] = await Promise.all([
+    db.select().from(companies).limit(20), db.select().from(customers).limit(100), db.select().from(suppliers).limit(100), db.select().from(cashBoxes).limit(100), db.select().from(banks).limit(100), db.select().from(items).limit(100), db.select().from(warehouses).limit(50), db.select({ balance: stockBalances, item: items, warehouse: warehouses }).from(stockBalances).leftJoin(items, eq(stockBalances.itemId, items.id)).leftJoin(warehouses, eq(stockBalances.warehouseId, warehouses.id)).limit(100),
   ]);
-  return { companies: companyRows, customers: customerRows, items: itemRows, warehouses: warehouseRows, balances: balanceRows };
+  return { companies: companyRows, customers: customerRows, suppliers: supplierRows, cashBoxes: cashBoxRows, banks: bankRows, items: itemRows, warehouses: warehouseRows, balances: balanceRows };
 }
 
 export async function getErpControlData() {
@@ -330,11 +337,19 @@ export async function searchSystemUsers(search?: string, limit = 20) {
   return db.select({ id: users.id, openId: users.openId, name: users.name, email: users.email, role: users.role, lastSignedIn: users.lastSignedIn }).from(users).where(filters).orderBy(users.id).limit(limit);
 }
 
+async function createLinkedAccount(tx: any, input: { companyId: number; entityId: number; name: string; accountType: string; parentCode: string; currencyCode: string }) {
+  const code = `${input.parentCode}-${String(input.entityId).padStart(4, "0")}`;
+  const existing = (await tx.select().from(accounts).where(and(eq(accounts.companyId, input.companyId), eq(accounts.code, code))).limit(1))[0];
+  if (existing) return existing;
+  const inserted = await tx.insert(accounts).values({ companyId: input.companyId, code, name: input.name, accountType: input.accountType, parentCode: input.parentCode, currencyCode: input.currencyCode, active: 1 }).$returningId();
+  return (await tx.select().from(accounts).where(eq(accounts.id, Number(inserted[0]?.id))).limit(1))[0];
+}
+
 export async function saveCustomer(input: { id?: number; companyId: number; code: string; legalName: string; currencyCode?: string; status?: "ACTIVE" | "BLOCKED" | "CLOSED" }) {
   const db = await getDb();
-  if (!db) { const existing = demoCustomers.find((row) => row.id === input.id || row.code === input.code); if (existing) Object.assign(existing, input); else demoCustomers.push({ id: Math.max(...demoCustomers.map((row) => row.id), 0) + 1, companyId: input.companyId, code: input.code, legalName: input.legalName, currencyCode: input.currencyCode || "SAR", status: input.status || "ACTIVE" }); return demoCustomers.at(-1); }
-  if (input.id) { await db.update(customers).set({ code: input.code, legalName: input.legalName, currencyCode: input.currencyCode || "SAR", status: input.status || "ACTIVE" }).where(eq(customers.id, input.id)); return db.select().from(customers).where(eq(customers.id, input.id)).limit(1).then((rows) => rows[0]); }
-  const inserted = await db.insert(customers).values({ companyId: input.companyId, code: input.code, legalName: input.legalName, currencyCode: input.currencyCode || "SAR", status: input.status || "ACTIVE" }).$returningId(); return db.select().from(customers).where(eq(customers.id, Number(inserted[0]?.id))).limit(1).then((rows) => rows[0]);
+  const currencyCode = input.currencyCode || "SAR"; const status = input.status || "ACTIVE";
+  if (!db) { const existing = demoCustomers.find((row) => row.id === input.id || row.code === input.code); if (existing) { Object.assign(existing, input); return { ...existing, accountId: (existing as any).accountId }; } const id = Math.max(...demoCustomers.map((row) => row.id), 0) + 1; const accountId = Math.max(...demoAccounts.map((row) => row.id), 0) + 1; demoAccounts.push({ id: accountId, companyId: input.companyId, code: `1200-${String(id).padStart(4, "0")}`, name: input.legalName, accountType: "ASSET", parentCode: "1200", currencyCode, active: 1 }); const row = { id, companyId: input.companyId, code: input.code, legalName: input.legalName, currencyCode, status, accountId }; demoCustomers.push(row); return row; }
+  return db.transaction(async (tx) => { if (input.id) { const current = (await tx.select().from(customers).where(eq(customers.id, input.id)).limit(1))[0]; await tx.update(customers).set({ code: input.code, legalName: input.legalName, currencyCode, status }).where(eq(customers.id, input.id)); if (current?.accountId) await tx.update(accounts).set({ name: input.legalName, currencyCode, active: status === "ACTIVE" ? 1 : 0 }).where(eq(accounts.id, current.accountId)); return (await tx.select().from(customers).where(eq(customers.id, input.id)).limit(1))[0]; } const inserted = await tx.insert(customers).values({ companyId: input.companyId, code: input.code, legalName: input.legalName, currencyCode, status }).$returningId(); const id = Number(inserted[0]?.id); if (!id) throw new Error("CUSTOMER_CREATE_FAILED"); const account = await createLinkedAccount(tx, { companyId: input.companyId, entityId: id, name: input.legalName, accountType: "ASSET", parentCode: "1200", currencyCode }); await tx.update(customers).set({ accountId: account.id }).where(eq(customers.id, id)); return (await tx.select().from(customers).where(eq(customers.id, id)).limit(1))[0]; });
 }
 
 export async function searchSuppliers(search?: string, limit = 20) {
@@ -345,10 +360,21 @@ export async function searchSuppliers(search?: string, limit = 20) {
 }
 
 export async function saveSupplier(input: { id?: number; companyId: number; code: string; legalName: string; currencyCode?: string; status?: "ACTIVE" | "BLOCKED" | "CLOSED" }) {
-  const db = await getDb();
-  if (!db) { const existing = demoSuppliers.find((row) => row.id === input.id || row.code === input.code); if (existing) Object.assign(existing, input); else demoSuppliers.push({ id: Math.max(...demoSuppliers.map((row) => row.id), 0) + 1, companyId: input.companyId, code: input.code, legalName: input.legalName, currencyCode: input.currencyCode || "SAR", status: input.status || "ACTIVE" }); return demoSuppliers.at(-1); }
-  if (input.id) { await db.update(suppliers).set({ code: input.code, legalName: input.legalName, currencyCode: input.currencyCode || "SAR", status: input.status || "ACTIVE" }).where(eq(suppliers.id, input.id)); return db.select().from(suppliers).where(eq(suppliers.id, input.id)).limit(1).then((rows) => rows[0]); }
-  const inserted = await db.insert(suppliers).values({ companyId: input.companyId, code: input.code, legalName: input.legalName, currencyCode: input.currencyCode || "SAR", status: input.status || "ACTIVE" }).$returningId(); return db.select().from(suppliers).where(eq(suppliers.id, Number(inserted[0]?.id))).limit(1).then((rows) => rows[0]);
+  const db = await getDb(); const currencyCode = input.currencyCode || "SAR"; const status = input.status || "ACTIVE";
+  if (!db) { const existing = demoSuppliers.find((row) => row.id === input.id || row.code === input.code); if (existing) { Object.assign(existing, input); return { ...existing, accountId: (existing as any).accountId }; } const id = Math.max(...demoSuppliers.map((row) => row.id), 0) + 1; const accountId = Math.max(...demoAccounts.map((row) => row.id), 0) + 1; demoAccounts.push({ id: accountId, companyId: input.companyId, code: `2100-${String(id).padStart(4, "0")}`, name: input.legalName, accountType: "LIABILITY", parentCode: "2100", currencyCode, active: 1 }); const row = { id, companyId: input.companyId, code: input.code, legalName: input.legalName, currencyCode, status, accountId }; demoSuppliers.push(row); return row; }
+  return db.transaction(async (tx) => { if (input.id) { const current = (await tx.select().from(suppliers).where(eq(suppliers.id, input.id)).limit(1))[0]; await tx.update(suppliers).set({ code: input.code, legalName: input.legalName, currencyCode, status }).where(eq(suppliers.id, input.id)); if (current?.accountId) await tx.update(accounts).set({ name: input.legalName, currencyCode, active: status === "ACTIVE" ? 1 : 0 }).where(eq(accounts.id, current.accountId)); return (await tx.select().from(suppliers).where(eq(suppliers.id, input.id)).limit(1))[0]; } const inserted = await tx.insert(suppliers).values({ companyId: input.companyId, code: input.code, legalName: input.legalName, currencyCode, status }).$returningId(); const id = Number(inserted[0]?.id); if (!id) throw new Error("SUPPLIER_CREATE_FAILED"); const account = await createLinkedAccount(tx, { companyId: input.companyId, entityId: id, name: input.legalName, accountType: "LIABILITY", parentCode: "2100", currencyCode }); await tx.update(suppliers).set({ accountId: account.id }).where(eq(suppliers.id, id)); return (await tx.select().from(suppliers).where(eq(suppliers.id, id)).limit(1))[0]; });
+}
+
+export async function saveCashBox(input: { id?: number; companyId: number; code: string; name: string; currencyCode?: string; status?: "ACTIVE" | "BLOCKED" | "CLOSED" }) {
+  const db = await getDb(); const currencyCode = input.currencyCode || "SAR"; const status = input.status || "ACTIVE";
+  if (!db) { const existing = demoCashBoxes.find((row) => row.id === input.id || row.code === input.code); if (existing) { Object.assign(existing, input); return existing; } const id = Math.max(...demoCashBoxes.map((row) => row.id), 0) + 1; const accountId = Math.max(...demoAccounts.map((row) => row.id), 0) + 1; demoAccounts.push({ id: accountId, companyId: input.companyId, code: `1100-${String(id).padStart(4, "0")}`, name: input.name, accountType: "ASSET", parentCode: "1100", currencyCode, active: 1 }); const row = { id, companyId: input.companyId, accountId, code: input.code, name: input.name, currencyCode, status }; demoCashBoxes.push(row); return row; }
+  return db.transaction(async (tx) => { const inserted = await tx.insert(cashBoxes).values({ companyId: input.companyId, code: input.code, name: input.name, currencyCode, status }).$returningId(); const id = Number(inserted[0]?.id); const account = await createLinkedAccount(tx, { companyId: input.companyId, entityId: id, name: input.name, accountType: "ASSET", parentCode: "1100", currencyCode }); await tx.update(cashBoxes).set({ accountId: account.id }).where(eq(cashBoxes.id, id)); return (await tx.select().from(cashBoxes).where(eq(cashBoxes.id, id)).limit(1))[0]; });
+}
+
+export async function saveBank(input: { id?: number; companyId: number; code: string; name: string; accountNumber?: string; currencyCode?: string; status?: "ACTIVE" | "BLOCKED" | "CLOSED" }) {
+  const db = await getDb(); const currencyCode = input.currencyCode || "SAR"; const status = input.status || "ACTIVE";
+  if (!db) { const existing = demoBanks.find((row) => row.id === input.id || row.code === input.code); if (existing) { Object.assign(existing, input); return existing; } const id = Math.max(...demoBanks.map((row) => row.id), 0) + 1; const accountId = Math.max(...demoAccounts.map((row) => row.id), 0) + 1; demoAccounts.push({ id: accountId, companyId: input.companyId, code: `1110-${String(id).padStart(4, "0")}`, name: input.name, accountType: "ASSET", parentCode: "1110", currencyCode, active: 1 }); const row = { id, companyId: input.companyId, accountId, code: input.code, name: input.name, accountNumber: input.accountNumber || "", currencyCode, status }; demoBanks.push(row); return row; }
+  return db.transaction(async (tx) => { const inserted = await tx.insert(banks).values({ companyId: input.companyId, code: input.code, name: input.name, accountNumber: input.accountNumber || null, currencyCode, status }).$returningId(); const id = Number(inserted[0]?.id); const account = await createLinkedAccount(tx, { companyId: input.companyId, entityId: id, name: input.name, accountType: "ASSET", parentCode: "1110", currencyCode }); await tx.update(banks).set({ accountId: account.id }).where(eq(banks.id, id)); return (await tx.select().from(banks).where(eq(banks.id, id)).limit(1))[0]; });
 }
 
 export async function searchItems(search?: string, limit = 20) {
@@ -374,18 +400,17 @@ export async function searchJournals(search?: string, limit = 20) {
 }
 
 export async function saveJournal(input: { journalNo: string; entryType: string; actor: string; lines: { accountCode: string; accountName?: string; description?: string; debit: string; credit: string }[] }) {
-  const debit = input.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0); const credit = input.lines.reduce((sum, line) => sum + Number(line.credit || 0), 0);
-  if (Math.abs(debit - credit) > 0.000001) throw new Error("JOURNAL_NOT_BALANCED");
+  const journal = validateJournal({ description: input.entryType, source: "MANUAL", lines: input.lines });
+  const debit = journal.totalDebit; const credit = journal.totalCredit;
   const db = await getDb();
   if (!db) { const id = demoJournals.length + 1; const result = { id, journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6), status: "POSTED" as const }; demoJournals.push(result); return result; }
-  return db.transaction(async (tx) => { const inserted = await tx.insert(journalEntries).values({ journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6) }).$returningId(); const id = Number(inserted[0]?.id); if (!id) throw new Error("JOURNAL_CREATE_FAILED"); await tx.insert(journalEntryLines).values(input.lines.map((line) => ({ journalEntryId: id, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: line.debit, credit: line.credit }))); await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE", entityType: "GL_JOURNAL", entityId: String(id), requestId: `JOURNAL:${input.journalNo}` }); return { id, journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6), status: "POSTED" as const }; });
+  return db.transaction(async (tx) => { const inserted = await tx.insert(journalEntries).values({ journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6) }).$returningId(); const id = Number(inserted[0]?.id); if (!id) throw new Error("JOURNAL_CREATE_FAILED"); await tx.insert(journalEntryLines).values(journal.lines.map((line) => ({ journalEntryId: id, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: line.debit.toFixed(6), credit: line.credit.toFixed(6) }))); await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE", entityType: "GL_JOURNAL", entityId: String(id), requestId: `JOURNAL:${input.journalNo}` }); return { id, journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6), status: "POSTED" as const }; });
 }
 
 export async function createInvoice(input: { docNo: string; customerId: number; warehouseId: number; currencyCode?: string; exchangeRate?: string; paymentMethod?: string; paidAmount?: string; paymentReference?: string; lines: { itemId: number; quantity: string; unitPrice: string; taxAmount: string }[]; actor: string; }) {
   const db = await getDb();
-  const subtotal = input.lines.reduce((sum, line) => sum + Number(line.quantity) * Number(line.unitPrice), 0);
-  const taxTotal = input.lines.reduce((sum, line) => sum + Number(line.taxAmount), 0);
-  const grandTotal = subtotal + taxTotal;
+  const calculated = calculateInvoice(input.lines, input.paidAmount || "0");
+  const { subtotal, taxTotal, grandTotal } = calculated;
   const idempotencyKey = `ARST004:${input.docNo}`;
   if (!db) {
     if (Array.from(demoInvoices.values()).some((invoice) => invoice.docNo === input.docNo)) throw new Error("DUPLICATE_IDEMPOTENCY_KEY");
@@ -403,6 +428,102 @@ export async function createInvoice(input: { docNo: string; customerId: number; 
     await tx.insert(invoiceLines).values(input.lines.map((line) => ({ invoiceId, itemId: line.itemId, quantity: line.quantity, unitPrice: line.unitPrice, taxAmount: line.taxAmount, lineTotal: (Number(line.quantity) * Number(line.unitPrice) + Number(line.taxAmount)).toFixed(6) })));
     await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE", entityType: "AR_DOC", entityId: String(invoiceId), requestId: idempotencyKey });
     return { invoiceId, docNo: input.docNo, subtotal, taxTotal, grandTotal, status: "DRAFT" as const };
+  });
+}
+
+export async function createPurchaseInvoice(input: { docNo: string; supplierId: number; warehouseId: number; currencyCode?: string; exchangeRate?: string; paymentMethod?: string; paidAmount?: string; paymentReference?: string; lines: { itemId: number; quantity: string; unitPrice: string; taxAmount: string }[]; actor: string; }) {
+  const calculated = calculateInvoice(input.lines, input.paidAmount || "0");
+  const { subtotal, taxTotal, grandTotal } = calculated;
+  const idempotencyKey = `APST003:${input.docNo}`;
+  const db = await getDb();
+  if (!db) {
+    if (Array.from(demoPurchaseInvoices.values()).some((invoice) => invoice.docNo === input.docNo)) throw new Error("DUPLICATE_IDEMPOTENCY_KEY");
+    const invoiceId = ++demoInvoiceSequence;
+    const result = { invoiceId, docNo: input.docNo, subtotal, taxTotal, grandTotal, status: "DRAFT" as const };
+    demoPurchaseInvoices.set(invoiceId, result);
+    return result;
+  }
+  return db.transaction(async (tx) => {
+    const paidAmount = Number(input.paidAmount || 0);
+    const inserted = await tx.insert(invoices).values({ invoiceType: "PURCHASE", docNo: input.docNo, customerId: null, supplierId: input.supplierId, warehouseId: input.warehouseId, currencyCode: input.currencyCode || "SAR", exchangeRate: input.exchangeRate || "1", subtotal: subtotal.toFixed(6), taxTotal: taxTotal.toFixed(6), grandTotal: grandTotal.toFixed(6), paymentMethod: input.paymentMethod || "CREDIT", paidAmount: paidAmount.toFixed(6), remainingAmount: (grandTotal - paidAmount).toFixed(6), paymentReference: input.paymentReference || null, idempotencyKey, sourceForm: "APST003", createdBy: input.actor }).$returningId();
+    const invoiceId = Number(inserted[0]?.id);
+    if (!invoiceId) throw new Error("PURCHASE_INVOICE_CREATE_FAILED");
+    await tx.insert(invoiceLines).values(input.lines.map((line) => ({ invoiceId, itemId: line.itemId, quantity: line.quantity, unitPrice: line.unitPrice, taxAmount: line.taxAmount, lineTotal: (Number(line.quantity) * Number(line.unitPrice) + Number(line.taxAmount)).toFixed(6) })));
+    await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE", entityType: "AP_DOC", entityId: String(invoiceId), requestId: idempotencyKey });
+    return { invoiceId, docNo: input.docNo, subtotal, taxTotal, grandTotal, status: "DRAFT" as const };
+  });
+}
+
+export async function postPurchaseInvoice(invoiceId: number, actor: string) {
+  const db = await getDb();
+  if (!db) {
+    const invoice = demoPurchaseInvoices.get(invoiceId);
+    if (!invoice) throw new Error("PURCHASE_INVOICE_NOT_FOUND");
+    if (invoice.status !== "DRAFT") throw new Error("PURCHASE_INVOICE_ALREADY_POSTED_OR_REVERSED");
+    invoice.status = "POSTED";
+    return { invoiceId, status: "POSTED" as const };
+  }
+  return db.transaction(async (tx) => {
+    const invoice = (await tx.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.invoiceType, "PURCHASE"))).limit(1))[0];
+    if (!invoice) throw new Error("PURCHASE_INVOICE_NOT_FOUND");
+    if (invoice.status !== "DRAFT") throw new Error("PURCHASE_INVOICE_ALREADY_POSTED_OR_REVERSED");
+    const supplier = invoice.supplierId ? (await tx.select().from(suppliers).where(eq(suppliers.id, invoice.supplierId)).limit(1))[0] : undefined;
+    if (!supplier?.accountId) throw new Error("SUPPLIER_ACCOUNT_NOT_LINKED");
+    const supplierAccount = (await tx.select().from(accounts).where(eq(accounts.id, supplier.accountId)).limit(1))[0];
+    if (!supplierAccount) throw new Error("SUPPLIER_ACCOUNT_NOT_FOUND");
+    const lines = await tx.select({ line: invoiceLines, item: items, balance: stockBalances }).from(invoiceLines).innerJoin(items, eq(invoiceLines.itemId, items.id)).leftJoin(stockBalances, and(eq(stockBalances.itemId, invoiceLines.itemId), eq(stockBalances.warehouseId, invoice.warehouseId))).where(eq(invoiceLines.invoiceId, invoiceId));
+    const periods = await tx.select().from(fiscalPeriods).where(and(eq(fiscalPeriods.companyId, 1), eq(fiscalPeriods.status, "OPEN"))).orderBy(desc(fiscalPeriods.startsOn));
+    const period = periods.find((candidate) => canPostToPeriod(candidate, invoice.createdAt).allowed);
+    const periodCheck = canPostToPeriod(period, invoice.createdAt);
+    if (!periodCheck.allowed) throw new Error(periodCheck.reason || "PERIOD_NOT_POSTABLE");
+    for (const row of lines) {
+      const quantity = Number(row.line.quantity); const unitCost = Number(row.line.unitPrice); const totalCost = quantity * unitCost;
+      if (!row.item.stockFlag) continue;
+      const beforeQty = Number(row.balance?.quantity ?? 0); const beforeCost = Number(row.balance?.totalCost ?? 0);
+      const afterQty = beforeQty + quantity; const afterCost = beforeCost + totalCost;
+      if (row.balance) await tx.update(stockBalances).set({ quantity: afterQty.toFixed(6), totalCost: afterCost.toFixed(6), unitCost: (afterCost / afterQty).toFixed(6), versionNo: row.balance.versionNo + 1 }).where(eq(stockBalances.id, row.balance.id));
+      else await tx.insert(stockBalances).values({ itemId: row.line.itemId, warehouseId: invoice.warehouseId, quantity: quantity.toFixed(6), totalCost: totalCost.toFixed(6), unitCost: unitCost.toFixed(6), versionNo: 1 });
+      await tx.insert(stockMovements).values({ itemId: row.line.itemId, warehouseId: invoice.warehouseId, sourceInvoiceId: invoiceId, movementType: "PURCHASE_RECEIPT", quantityIn: quantity.toFixed(6), unitCost: unitCost.toFixed(6), totalCost: totalCost.toFixed(6), balanceAfter: afterQty.toFixed(6), createdBy: actor });
+    }
+    const purchaseJournal = buildPurchaseJournal({ total: Number(invoice.grandTotal), subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), payableAccount: supplierAccount.code, inventoryAccount: lines[0]?.item.inventoryAccount || "1300" });
+    const insertedJournal = await tx.insert(journalEntries).values({ journalNo: `AP-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "AP_PURCHASE", totalDebit: purchaseJournal.totalDebit.toFixed(6), totalCredit: purchaseJournal.totalCredit.toFixed(6) }).$returningId();
+    const journalId = Number(insertedJournal[0]?.id); if (!journalId) throw new Error("JOURNAL_CREATE_FAILED");
+    await tx.insert(journalEntryLines).values(purchaseJournal.lines.map((line) => ({ journalEntryId: journalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) })));
+    await tx.update(invoices).set({ status: "POSTED", postedAt: new Date() }).where(eq(invoices.id, invoiceId));
+    await tx.insert(auditEvents).values({ actor, actionCode: "POST", entityType: "AP_DOC", entityId: String(invoiceId), requestId: `POST:${invoice.docNo}` });
+    return { invoiceId, status: "POSTED" as const };
+  });
+}
+
+export async function reversePurchaseInvoice(invoiceId: number, actor: string) {
+  const db = await getDb();
+  if (!db) {
+    const invoice = demoPurchaseInvoices.get(invoiceId);
+    if (!invoice || invoice.status !== "POSTED") throw new Error("ONLY_POSTED_PURCHASE_INVOICES_CAN_BE_REVERSED");
+    invoice.status = "REVERSED";
+    return { invoiceId, status: "REVERSED" as const };
+  }
+  return db.transaction(async (tx) => {
+    const invoice = (await tx.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.invoiceType, "PURCHASE"))).limit(1))[0];
+    if (!invoice || invoice.status !== "POSTED") throw new Error("ONLY_POSTED_PURCHASE_INVOICES_CAN_BE_REVERSED");
+    const lines = await tx.select({ line: invoiceLines, item: items, balance: stockBalances }).from(invoiceLines).innerJoin(items, eq(invoiceLines.itemId, items.id)).leftJoin(stockBalances, and(eq(stockBalances.itemId, invoiceLines.itemId), eq(stockBalances.warehouseId, invoice.warehouseId))).where(eq(invoiceLines.invoiceId, invoiceId));
+    for (const row of lines) {
+      if (!row.item.stockFlag || !row.balance) continue;
+      const quantity = Number(row.line.quantity); const beforeQty = Number(row.balance.quantity); const unitCost = Number(row.balance.unitCost); if (beforeQty < quantity) throw new Error(`INSUFFICIENT_STOCK_FOR_PURCHASE_REVERSAL:${row.item.code}`);
+      const afterQty = beforeQty - quantity; const totalCost = quantity * unitCost; const afterCost = Math.max(0, Number(row.balance.totalCost) - totalCost);
+      await tx.update(stockBalances).set({ quantity: afterQty.toFixed(6), totalCost: afterCost.toFixed(6), unitCost: afterQty ? (afterCost / afterQty).toFixed(6) : "0", versionNo: row.balance.versionNo + 1 }).where(eq(stockBalances.id, row.balance.id));
+      await tx.insert(stockMovements).values({ itemId: row.line.itemId, warehouseId: invoice.warehouseId, sourceInvoiceId: invoiceId, movementType: "PURCHASE_RETURN", quantityOut: quantity.toFixed(6), unitCost: unitCost.toFixed(6), totalCost: totalCost.toFixed(6), balanceAfter: afterQty.toFixed(6), createdBy: actor });
+    }
+    const originalJournal = (await tx.select().from(journalEntries).where(and(eq(journalEntries.sourceInvoiceId, invoiceId), eq(journalEntries.entryType, "AP_PURCHASE"))).limit(1))[0];
+    if (!originalJournal) throw new Error("ORIGINAL_PURCHASE_JOURNAL_NOT_FOUND");
+    const originalLines = await tx.select().from(journalEntryLines).where(eq(journalEntryLines.journalEntryId, originalJournal.id));
+    const reversal = validateJournal({ description: "عكس فاتورة مشتريات", source: "PURCHASE_INVOICE_REVERSAL", lines: originalLines.map((line) => ({ accountCode: line.accountCode, accountName: line.accountName || undefined, debit: Number(line.credit), credit: Number(line.debit), description: `عكس: ${line.description || ""}` })) });
+    const insertedJournal = await tx.insert(journalEntries).values({ journalNo: `AP-REV-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "AP_REVERSAL", totalDebit: reversal.totalDebit.toFixed(6), totalCredit: reversal.totalCredit.toFixed(6) }).$returningId();
+    const journalId = Number(insertedJournal[0]?.id); if (!journalId) throw new Error("REVERSAL_JOURNAL_CREATE_FAILED");
+    await tx.insert(journalEntryLines).values(reversal.lines.map((line) => ({ journalEntryId: journalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) })));
+    await tx.update(invoices).set({ status: "REVERSED" }).where(eq(invoices.id, invoiceId));
+    await tx.insert(auditEvents).values({ actor, actionCode: "REVERSE", entityType: "AP_DOC", entityId: String(invoiceId), requestId: `REV:${invoice.docNo}` });
+    return { invoiceId, status: "REVERSED" as const };
   });
 }
 
@@ -439,7 +560,15 @@ export async function postInvoice(invoiceId: number, actor: string) {
     const invoice = (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1))[0];
     if (!invoice) throw new Error("INVOICE_NOT_FOUND");
     if (invoice.status !== "DRAFT") throw new Error("INVOICE_ALREADY_POSTED_OR_REVERSED");
+    const customer = invoice.customerId ? (await tx.select().from(customers).where(eq(customers.id, invoice.customerId)).limit(1))[0] : undefined;
+    if (!customer?.accountId) throw new Error("CUSTOMER_ACCOUNT_NOT_LINKED");
+    const customerAccount = (await tx.select().from(accounts).where(eq(accounts.id, customer.accountId)).limit(1))[0];
+    if (!customerAccount) throw new Error("CUSTOMER_ACCOUNT_NOT_FOUND");
     const lines = await tx.select({ line: invoiceLines, item: items, balance: stockBalances }).from(invoiceLines).innerJoin(items, eq(invoiceLines.itemId, items.id)).leftJoin(stockBalances, and(eq(stockBalances.itemId, invoiceLines.itemId), eq(stockBalances.warehouseId, invoice.warehouseId))).where(eq(invoiceLines.invoiceId, invoiceId));
+    const periods = await tx.select().from(fiscalPeriods).where(and(eq(fiscalPeriods.companyId, 1), eq(fiscalPeriods.status, "OPEN"))).orderBy(desc(fiscalPeriods.startsOn));
+    const period = periods.find((candidate) => canPostToPeriod(candidate, invoice.createdAt).allowed);
+    const periodCheck = canPostToPeriod(period, invoice.createdAt);
+    if (!periodCheck.allowed) throw new Error(periodCheck.reason || "PERIOD_NOT_POSTABLE");
     let totalCogs = 0;
     for (const row of lines) {
       const quantity = Number(row.line.quantity);
@@ -457,7 +586,11 @@ export async function postInvoice(invoiceId: number, actor: string) {
       }
     }
     const total = Number(invoice.grandTotal);
-    await tx.insert(journalEntries).values([{ journalNo: `AR-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "AR_SALE", totalDebit: total.toFixed(6), totalCredit: total.toFixed(6) }, { journalNo: `COGS-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "COGS_INVENTORY", totalDebit: totalCogs.toFixed(6), totalCredit: totalCogs.toFixed(6) }]);
+    const saleJournal = buildSaleJournal({ total, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), totalCogs, receivableAccount: customerAccount.code, revenueAccount: lines[0]?.item.revenueAccount || "4100", cogsAccount: lines[0]?.item.cogsAccount || "5100", inventoryAccount: lines[0]?.item.inventoryAccount || "1300" });
+    const insertedJournal = await tx.insert(journalEntries).values({ journalNo: `AR-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "AR_SALE", totalDebit: saleJournal.totalDebit.toFixed(6), totalCredit: saleJournal.totalCredit.toFixed(6) }).$returningId();
+    const journalId = Number(insertedJournal[0]?.id);
+    if (!journalId) throw new Error("JOURNAL_CREATE_FAILED");
+    await tx.insert(journalEntryLines).values(saleJournal.lines.map((line) => ({ journalEntryId: journalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) })));
     await tx.update(invoices).set({ status: "POSTED", postedAt: new Date() }).where(eq(invoices.id, invoiceId));
     await tx.insert(auditEvents).values({ actor, actionCode: "POST", entityType: "AR_DOC", entityId: String(invoiceId), requestId: `POST:${invoice.docNo}` });
     return { invoiceId, status: "POSTED" as const, totalCogs };
@@ -476,6 +609,7 @@ export async function reverseInvoice(invoiceId: number, actor: string) {
     const invoice = (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1))[0];
     if (!invoice || invoice.status !== "POSTED") throw new Error("ONLY_POSTED_INVOICES_CAN_BE_REVERSED");
     const lines = await tx.select({ line: invoiceLines, item: items, balance: stockBalances }).from(invoiceLines).innerJoin(items, eq(invoiceLines.itemId, items.id)).leftJoin(stockBalances, and(eq(stockBalances.itemId, invoiceLines.itemId), eq(stockBalances.warehouseId, invoice.warehouseId))).where(eq(invoiceLines.invoiceId, invoiceId));
+    const originalJournal = (await tx.select().from(journalEntries).where(and(eq(journalEntries.sourceInvoiceId, invoiceId), eq(journalEntries.entryType, "AR_SALE"))).limit(1))[0];
     for (const row of lines) {
       if (!row.item.stockFlag || !row.balance) continue;
       const quantity = Number(row.line.quantity);
@@ -485,7 +619,14 @@ export async function reverseInvoice(invoiceId: number, actor: string) {
       await tx.update(stockBalances).set({ quantity: afterQty.toFixed(6), totalCost: afterCost.toFixed(6), unitCost: (afterCost / afterQty).toFixed(6), versionNo: row.balance.versionNo + 1 }).where(eq(stockBalances.id, row.balance.id));
       await tx.insert(stockMovements).values({ itemId: row.line.itemId, warehouseId: invoice.warehouseId, sourceInvoiceId: invoiceId, movementType: "SALES_RETURN", quantityIn: quantity.toFixed(6), unitCost: Number(row.balance.unitCost).toFixed(6), totalCost: cost.toFixed(6), balanceAfter: afterQty.toFixed(6), createdBy: actor });
     }
-    await tx.insert(journalEntries).values({ journalNo: `REV-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "REVERSAL", totalDebit: invoice.grandTotal, totalCredit: invoice.grandTotal });
+    if (!originalJournal) throw new Error("ORIGINAL_JOURNAL_NOT_FOUND");
+    const originalLines = await tx.select().from(journalEntryLines).where(eq(journalEntryLines.journalEntryId, originalJournal.id));
+    const totalCogs = Number(originalLines.find((line) => line.accountCode === "5100")?.debit || 0);
+    const reversal = validateJournal({ description: "عكس فاتورة مبيعات", source: "SALE_INVOICE_REVERSAL", lines: originalLines.map((line) => ({ accountCode: line.accountCode, accountName: line.accountName || undefined, debit: Number(line.credit), credit: Number(line.debit), description: `عكس: ${line.description || ""}` })) });
+    const insertedReversal = await tx.insert(journalEntries).values({ journalNo: `REV-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "REVERSAL", totalDebit: reversal.totalDebit.toFixed(6), totalCredit: reversal.totalCredit.toFixed(6) }).$returningId();
+    const reversalId = Number(insertedReversal[0]?.id);
+    if (!reversalId) throw new Error("REVERSAL_JOURNAL_CREATE_FAILED");
+    await tx.insert(journalEntryLines).values(reversal.lines.map((line) => ({ journalEntryId: reversalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) })));
     await tx.update(invoices).set({ status: "REVERSED" }).where(eq(invoices.id, invoiceId));
     await tx.insert(auditEvents).values({ actor, actionCode: "REVERSE", entityType: "AR_DOC", entityId: String(invoiceId), requestId: `REV:${invoice.docNo}` });
     return { invoiceId, status: "REVERSED" as const };

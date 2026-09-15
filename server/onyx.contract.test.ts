@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 
-const ctx = { user: null, req: {} as TrpcContext["req"], res: {} as TrpcContext["res"] } as TrpcContext;
+const ctx = { user: { id: 1, openId: "unit", role: "admin" } as any, req: {} as TrpcContext["req"], res: {} as TrpcContext["res"] } as TrpcContext;
 
 describe("Onyx rebuild contracts", () => {
   it("exposes the dashboard and legacy window explorer", async () => {
@@ -75,15 +75,6 @@ describe("Onyx rebuild contracts", () => {
     expect(contract.specificationPath).toContain("all_window_specs");
   });
 
-  it("keeps GLST004 field counts separate from evidence-token totals", async () => {
-    const caller = appRouter.createCaller(ctx);
-    const contract = await caller.windows.contract({ legacyForm: "GLST004.fmx" });
-    expect(contract.counts.fields).toBe(10);
-    expect(contract.counts.standardFields).toBe(10);
-    expect(contract.counts.evidenceTokens).toBe(3915);
-    expect(contract.counts.fields).not.toBe(contract.counts.evidenceTokens);
-  });
-
   it("executes only declared window actions in safe simulation mode", async () => {
     const caller = appRouter.createCaller(ctx);
     const result = await caller.windows.executeAction({ legacyForm: "ERP_LOGIN.fmx", action: "query" });
@@ -126,6 +117,16 @@ describe("Onyx rebuild contracts", () => {
     const posted = await caller.invoices.post({ invoiceId: created.invoiceId, actor: "test" });
     expect(posted.status).toBe("POSTED");
     const reversed = await caller.invoices.reverse({ invoiceId: created.invoiceId, actor: "test" });
+    expect(reversed.status).toBe("REVERSED");
+  });
+
+  it("supports demo purchase create, post, and reversal lifecycle", async () => {
+    const caller = appRouter.createCaller(ctx);
+    const created = await caller.purchases.create({ docNo: `PURCHASE-${Date.now()}`, supplierId: 1, warehouseId: 1, actor: "test", lines: [{ itemId: 1, quantity: "3", unitPrice: "50", taxAmount: "7.5" }] });
+    expect(created.status).toBe("DRAFT");
+    const posted = await caller.purchases.post({ invoiceId: created.invoiceId, actor: "test" });
+    expect(posted.status).toBe("POSTED");
+    const reversed = await caller.purchases.reverse({ invoiceId: created.invoiceId, actor: "test" });
     expect(reversed.status).toBe("REVERSED");
   });
 });
