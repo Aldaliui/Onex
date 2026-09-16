@@ -52,4 +52,11 @@ describe("ERP control and inventory flows", () => {
     expect(branchRows.some((row: any) => row.code === `BR-${suffix}`)).toBe(true);
     expect(warehouseRows.some((row: any) => row.code === `WH-${suffix}`)).toBe(true);
   });
+
+  it("exposes the complete inventory window catalog for the Workbench", async () => {
+    const windows = await appRouter.createCaller(ctx).windows.list({ domain: "inventory/stock", limit: 500 });
+    expect(windows).toHaveLength(298);
+    expect(windows.every((window) => window.domainCode === "inventory/stock")).toBe(true);
+    expect(windows.some((window) => window.legacyForm.toUpperCase() === "INVT003.FMX")).toBe(true);
+  });
 });

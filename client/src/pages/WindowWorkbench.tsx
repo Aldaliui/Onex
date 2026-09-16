@@ -45,6 +45,7 @@ function AuthenticatedWorkbench() {
   const [editing, setEditing] = useState(false);
   const [values, setValues] = useState<Record<string, string>>({});
   const windowCatalog = trpc.windows.list.useQuery({ search: query || undefined, limit: 80 });
+  const inventoryCatalog = trpc.windows.list.useQuery({ search: query || undefined, domain: "inventory/stock", limit: 500 });
   const activeContract = trpc.windows.contract.useQuery({ legacyForm: manager.activeId ?? "__none__" }, { enabled: Boolean(manager.activeId) });
   const records = trpc.windows.records.useQuery({ legacyForm: manager.activeId ?? "__none__", search: query || undefined, limit: 20 }, { enabled: Boolean(manager.activeId) });
   const masterData = trpc.masterData.useQuery();
@@ -58,7 +59,16 @@ function AuthenticatedWorkbench() {
   const saveBranch = trpc.windows.saveBranch.useMutation();
   const saveWarehouse = trpc.windows.saveWarehouse.useMutation();
   const executeWindowAction = trpc.windows.executeAction.useMutation();
-  const filteredModules = useMemo(() => modules.map((module) => ({ ...module, windows: module.windows.filter((window) => `${window.id} ${window.label}`.toLowerCase().includes(query.toLowerCase())) })).filter((module) => module.windows.length || module.label.includes(query)), [query]);
+  const inventoryWindows = useMemo<RuntimeWindow[]>(() => (inventoryCatalog.data || []).map((row: any) => {
+    const id = String(row.legacyForm || row.formName || "").replace(/\.fmx$/i, "");
+    const upper = id.toUpperCase();
+    const kind: RuntimeWindow["kind"] = upper.includes("REP") || upper.startsWith("MTXR") || upper.startsWith("MTXXR") ? "report" : upper.startsWith("MTXI") || upper.startsWith("MTXC") ? "inquiry" : "transaction";
+    return { id, label: row.screenName || id, module: "inventory", kind };
+  }), [inventoryCatalog.data]);
+  const filteredModules = useMemo(() => modules.map((module) => {
+    const sourceWindows = module.id === "inventory" && inventoryWindows.length ? inventoryWindows : module.windows;
+    return { ...module, windows: sourceWindows.filter((w) => `${w.id} ${w.label}`.toLowerCase().includes(query.toLowerCase())) };
+  }).filter((module) => module.windows.length || module.label.includes(query)), [query, inventoryWindows]);
   const active = manager.activeWindow;
   const activeRecords = (records.data || []) as GenericRecord[];
   const setField = (id: string, value: string) => { setValues((current) => ({ ...current, [id]: value })); if (active) manager.markDirty(active.id); };
