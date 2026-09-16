@@ -19,4 +19,11 @@ describe("ERP control and inventory flows", () => {
     const receipt = await api.inventory.receive({ itemId: 1, warehouseId: 1, quantity: "3", unitCost: "50", reference: `GRN-${Date.now()}` });
     expect(receipt.status).toBe("RECEIVED");
   });
+
+  it("exposes the complete inventory window catalog for the Workbench", async () => {
+    const windows = await appRouter.createCaller(ctx).windows.list({ domain: "inventory/stock", limit: 500 });
+    expect(windows).toHaveLength(298);
+    expect(windows.every((window) => window.domainCode === "inventory/stock")).toBe(true);
+    expect(windows.some((window) => window.legacyForm.toUpperCase() === "INVT003.FMX")).toBe(true);
+  });
 });
