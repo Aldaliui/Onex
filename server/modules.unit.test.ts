@@ -33,6 +33,13 @@ describe("ONEX module unit tests", () => {
     const result = await api.windows.executeAction({ legacyForm: forms.gl, action: "validate" });
     expect(result.mode).toBe("SAFE_SIMULATION");
   });
+  it("GL window API validates and saves balanced journals through the data layer", async () => {
+    const api = caller();
+    const result = await api.windows.glExecute({ legacyForm: "GLST002.fmx", action: "save", requestId: `gl-api-${Date.now()}`, journal: { journalNo: `GL-API-${Date.now()}`, entryType: "GENERAL_JOURNAL", actor: "unit.gl", lines: [{ accountCode: "1100", debit: "100", credit: "0" }, { accountCode: "4100", debit: "0", credit: "100" }] } });
+    expect(result.mode).toBe("DATABASE_CONTRACT");
+    expect((result.result as { status: string }).status).toBe("POSTED");
+    await expect(api.windows.glExecute({ legacyForm: "GLST002.fmx", action: "save", requestId: `gl-invalid-${Date.now()}`, journal: { journalNo: `GL-BAD-${Date.now()}`, entryType: "GENERAL_JOURNAL", actor: "unit.gl", lines: [{ accountCode: "1100", debit: "100", credit: "0" }, { accountCode: "4100", debit: "0", credit: "90" }] } })).rejects.toBeTruthy();
+  });
 
   it("AR: creates, posts, and reverses a receivable invoice atomically", async () => {
     const api = caller();

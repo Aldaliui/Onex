@@ -472,6 +472,36 @@ export async function saveJournal(input: { journalNo: string; entryType: string;
   return db.transaction(async (tx) => { const inserted = await tx.insert(journalEntries).values({ journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6) }).$returningId(); const id = Number(inserted[0]?.id); if (!id) throw new Error("JOURNAL_CREATE_FAILED"); await tx.insert(journalEntryLines).values(journal.lines.map((line) => ({ journalEntryId: id, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: line.debit.toFixed(6), credit: line.credit.toFixed(6) }))); await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE", entityType: "GL_JOURNAL", entityId: String(id), requestId: `JOURNAL:${input.journalNo}` }); return { id, journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6), status: "POSTED" as const }; });
 }
 
+export async function executeGlWindowAction(input: {
+  legacyForm: string; action: string; actor: string; requestId: string; journal?: Parameters<typeof saveJournal>[0]; search?: string; limit?: number; fiscalPeriodId?: number;
+}) {
+  const form = input.legacyForm.replace(/\.fmx$/i, "").toUpperCase();
+  const contract = await getWindowContract(`${form}.fmx`);
+  if (!contract.domain.toUpperCase().startsWith("GL")) throw new Error("GL_WINDOW_DOMAIN_REQUIRED");
+  const readOnly = form.startsWith("GLSI") || form.startsWith("GLSR") || ["GLST005", "GLST006"].includes(form);
+  const allowed = readOnly ? ["initialize", "query", "print", "export", "refresh", "exit"] : ["initialize", "query", "new", "validate", "save", "approve", "post", "print", "refresh", "exit"];
+  if (!allowed.includes(input.action) || !contract.actions.includes(input.action)) throw new Error("ACTION_NOT_ALLOWED_FOR_GL_WINDOW");
+  const db = await getDb();
+  const log = async (status: string, response: unknown) => { if (db) await db.insert(windowExecutions).values({ legacyForm: `${form}.fmx`, actionCode: input.action, requestId: input.requestId, actor: input.actor, status, responseJson: JSON.stringify(response) }); };
+  try {
+    let response: unknown;
+    if (["initialize", "validate", "refresh"].includes(input.action)) response = { legacyForm: `${form}.fmx`, action: input.action, status: "VALIDATED", mode: "DATABASE_CONTRACT" };
+    else if (["query", "print", "export"].includes(input.action)) response = { legacyForm: `${form}.fmx`, action: input.action, rows: await searchJournals(input.search, input.limit || 20), mode: "DATABASE_CONTRACT" };
+    else if (["new", "save", "approve", "post"].includes(input.action)) {
+      if (readOnly || !input.journal) throw new Error("GL_JOURNAL_PAYLOAD_REQUIRED");
+      if (db) {
+        const codes = input.journal.lines.map((line) => line.accountCode);
+        const activeAccounts = await db.select({ code: accounts.code }).from(accounts).where(and(or(...codes.map((code) => eq(accounts.code, code))), eq(accounts.active, 1)));
+        if (activeAccounts.length !== new Set(codes).size) throw new Error("GL_ACCOUNT_NOT_FOUND_OR_INACTIVE");
+        if (input.fiscalPeriodId) { const period = (await db.select().from(fiscalPeriods).where(eq(fiscalPeriods.id, input.fiscalPeriodId)).limit(1))[0]; if (!period || period.status !== "OPEN") throw new Error("GL_FISCAL_PERIOD_CLOSED"); }
+      }
+      response = await saveJournal(input.journal);
+    } else throw new Error("GL_ACTION_NOT_IMPLEMENTED");
+    await log("SUCCEEDED", response);
+    return { legacyForm: `${form}.fmx`, action: input.action, result: response, mode: "DATABASE_CONTRACT" as const };
+  } catch (error) { await log("FAILED", { error: error instanceof Error ? error.message : String(error) }); throw error; }
+}
+
 export async function createInvoice(input: { docNo: string; customerId: number; warehouseId: number; currencyCode?: string; exchangeRate?: string; paymentMethod?: string; paidAmount?: string; paymentReference?: string; lines: { itemId: number; quantity: string; unitPrice: string; taxAmount: string }[]; actor: string; }) {
   const db = await getDb();
   const calculated = calculateInvoice(input.lines, input.paidAmount || "0");
