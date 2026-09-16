@@ -56,6 +56,15 @@ describe("ONEX module unit tests", () => {
     expect(inquiry.actions).toEqual(expect.arrayContaining(["query", "print"]));
   });
 
+  it("Sales window API executes the AR contract against the active data layer", async () => {
+    const api = caller();
+    const created = await api.windows.salesExecute({ legacyForm: "ARST004.fmx", action: "new", requestId: `sales-api-${Date.now()}`, invoice: { docNo: `SALES-API-${Date.now()}`, customerId: 1, warehouseId: 1, lines: [{ itemId: 1, quantity: "1", unitPrice: "100", taxAmount: "15" }], actor: "contract.sales" } });
+    expect(created.mode).toBe("DATABASE_CONTRACT");
+    expect((created.result as { status: string }).status).toBe("DRAFT");
+    const queried = await api.windows.salesExecute({ legacyForm: "ARST023.fmx", action: "query", requestId: `sales-query-${Date.now()}`, search: "SALES-API" });
+    expect(queried.mode).toBe("DATABASE_CONTRACT");
+  });
+
   it("AP: exposes purchasing windows and save/update/delete actions", async () => {
     const api = caller();
     const contract = await api.windows.contract({ legacyForm: forms.ap });

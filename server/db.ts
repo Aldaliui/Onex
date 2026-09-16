@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ENV } from "./_core/env";
-import { accounts, adjustmentNoteLines, adjustmentNotes, auditEvents, banks, branches, cashBoxes, companies, customers, fiscalPeriods, inventoryCountLines, inventoryCounts, invoices, invoiceLines, items, journalEntries, journalEntryLines, suppliers, stockBalances, stockMovements, warehouses, windowRegistry, type InsertUser, users } from "../drizzle/schema";
+import { accounts, adjustmentNoteLines, adjustmentNotes, auditEvents, banks, branches, cashBoxes, companies, customers, fiscalPeriods, inventoryCountLines, inventoryCounts, invoices, invoiceLines, items, journalEntries, journalEntryLines, suppliers, stockBalances, stockMovements, warehouses, windowContracts, windowExecutions, windowRegistry, type InsertUser, users } from "../drizzle/schema";
 import { buildPurchaseJournal, buildReversalJournal, buildSaleJournal, calculateInvoice, canPostToPeriod, validateJournal } from "./accountingCore";
 import { getLegacyWindowContract } from "./legacyWindowContracts";
 
@@ -775,6 +775,45 @@ export async function reverseInvoice(invoiceId: number, actor: string) {
     await tx.insert(auditEvents).values({ actor, actionCode: "REVERSE", entityType: "AR_DOC", entityId: String(invoiceId), requestId: `REV:${invoice.docNo}` });
     return { invoiceId, status: "REVERSED" as const };
   });
+}
+
+export async function executeSalesWindowAction(input: {
+  legacyForm: string; action: string; actor: string; requestId: string; invoiceId?: number;
+  invoice?: Parameters<typeof createInvoice>[0]; search?: string; limit?: number;
+}) {
+  const form = input.legacyForm.replace(/\.fmx$/i, "").toUpperCase();
+  const contract = await getWindowContract(`${form}.fmx`);
+  if (!contract.domain.toUpperCase().startsWith("AR")) throw new Error("SALES_WINDOW_DOMAIN_REQUIRED");
+  if (!contract.actions.includes(input.action)) throw new Error("ACTION_NOT_ALLOWED_FOR_SALES_WINDOW");
+  const db = await getDb();
+  if (db) {
+    await db.insert(windowContracts).values({ legacyForm: contract.legacyForm, domainCode: contract.domain, coreApi: contract.coreApi, actionsJson: JSON.stringify(contract.actions), evidenceJson: JSON.stringify(contract.evidence), rebuildLevel: "catalog_specification", verificationStatus: "CATALOG_ONLY", active: 1 }).onDuplicateKeyUpdate({ set: { domainCode: contract.domain, coreApi: contract.coreApi, actionsJson: JSON.stringify(contract.actions), evidenceJson: JSON.stringify(contract.evidence), updatedAt: new Date() } });
+  }
+  const log = async (status: string, response: unknown, invoiceId?: number) => {
+    if (!db) return;
+    await db.insert(windowExecutions).values({ legacyForm: `${form}.fmx`, actionCode: input.action, invoiceId, requestId: input.requestId, actor: input.actor, status, responseJson: JSON.stringify(response) });
+  };
+  try {
+    let response: unknown;
+    if (["initialize", "validate", "refresh"].includes(input.action)) response = { legacyForm: `${form}.fmx`, action: input.action, status: "VALIDATED", mode: "DATABASE_CONTRACT" };
+    else if (input.action === "query") response = { legacyForm: `${form}.fmx`, action: input.action, rows: await searchInvoices(input.search, input.limit || 20), mode: "DATABASE_CONTRACT" };
+    else if (["new", "save"].includes(input.action)) {
+      if (!input.invoice) throw new Error("SALES_INVOICE_PAYLOAD_REQUIRED");
+      response = await createInvoice(input.invoice);
+    } else if (input.action === "post") {
+      if (!input.invoiceId) throw new Error("SALES_INVOICE_ID_REQUIRED");
+      response = await postInvoice(input.invoiceId, input.actor);
+    } else if (input.action === "reverse") {
+      if (!input.invoiceId) throw new Error("SALES_INVOICE_ID_REQUIRED");
+      response = await reverseInvoice(input.invoiceId, input.actor);
+    } else if (input.action === "print") response = { rows: await searchInvoices(input.search, input.limit || 20), mode: "DATABASE_CONTRACT" };
+    else throw new Error("SALES_ACTION_NOT_IMPLEMENTED");
+    await log("SUCCEEDED", response, input.invoiceId);
+    return { legacyForm: `${form}.fmx`, action: input.action, result: response, mode: "DATABASE_CONTRACT" as const };
+  } catch (error) {
+    await log("FAILED", { error: error instanceof Error ? error.message : String(error) }, input.invoiceId);
+    throw error;
+  }
 }
 
 export function getFinancialReportCatalog() {

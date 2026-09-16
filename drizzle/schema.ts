@@ -44,6 +44,32 @@ export const windowRegistry = mysqlTable("window_registry", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (table) => ({ domainIdx: index("window_registry_domain_idx").on(table.domainCode) }));
 
+export const windowContracts = mysqlTable("window_contracts", {
+  id: int("id").autoincrement().primaryKey(),
+  legacyForm: varchar("legacyForm", { length: 160 }).notNull().unique(),
+  domainCode: varchar("domainCode", { length: 80 }).notNull(),
+  coreApi: varchar("coreApi", { length: 160 }).notNull(),
+  actionsJson: text("actionsJson").notNull(),
+  evidenceJson: text("evidenceJson").notNull(),
+  rebuildLevel: varchar("rebuildLevel", { length: 60 }).notNull().default("catalog_specification"),
+  verificationStatus: varchar("verificationStatus", { length: 60 }).notNull().default("CATALOG_ONLY"),
+  active: int("active").notNull().default(1),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({ domainIdx: index("window_contract_domain_idx").on(table.domainCode) }));
+
+export const windowExecutions = mysqlTable("window_executions", {
+  id: int("id").autoincrement().primaryKey(),
+  legacyForm: varchar("legacyForm", { length: 160 }).notNull(),
+  actionCode: varchar("actionCode", { length: 80 }).notNull(),
+  invoiceId: int("invoiceId"),
+  requestId: varchar("requestId", { length: 160 }).notNull().unique(),
+  actor: varchar("actor", { length: 100 }).notNull(),
+  mode: varchar("mode", { length: 40 }).notNull().default("DATABASE_CONTRACT"),
+  status: varchar("status", { length: 40 }).notNull(),
+  responseJson: text("responseJson"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({ windowActionIdx: index("window_execution_action_idx").on(table.legacyForm, table.actionCode, table.createdAt) }));
+
 export const companies = mysqlTable("companies", {
   id: int("id").autoincrement().primaryKey(),
   code: varchar("code", { length: 30 }).notNull().unique(),

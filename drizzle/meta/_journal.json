@@ -15,6 +15,13 @@
       "when": 1789305861800,
       "tag": "0001_medical_the_fury",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1789520931979,
+      "tag": "0002_easy_red_hulk",
+      "breakpoints": true
     }
   ]
 }
