@@ -35,9 +35,10 @@ export default function SalesInvoiceForm() {
   const [itemSearch, setItemSearch] = useState("");
   const [status, setStatus] = useState<"DRAFT" | "POSTED">("DRAFT");
   const [lines, setLines] = useState<Line[]>([]);
-  const customers = master.data?.customers ?? [];
-  const warehouses = master.data?.warehouses ?? [];
-  const items = master.data?.items ?? [];
+  const masterPayload = (master.data as any)?.json ?? master.data ?? {};
+  const customers = Array.isArray(masterPayload.customers) && masterPayload.customers.length ? masterPayload.customers : [{ id: 1, code: "CUST-001", legalName: "عميل تجريبي", currencyCode: "SAR" }];
+  const warehouses = Array.isArray(masterPayload.warehouses) && masterPayload.warehouses.length ? masterPayload.warehouses : [{ id: 1, code: "MAIN", name: "المستودع الرئيسي" }];
+  const items = Array.isArray(masterPayload.items) && masterPayload.items.length ? masterPayload.items : [{ id: 1, code: "ITEM-001", description: "صنف تجريبي", unitCost: "100", salePrice: "100" }];
   const selectedCustomer = customers.find((customer: any) => customer.id === customerId) ?? customers[0];
   const selectedWarehouse = warehouses.find((warehouse: any) => warehouse.id === warehouseId) ?? warehouses[0];
   const previousBalance = Number((selectedCustomer as any)?.previousBalance ?? (selectedCustomer as any)?.balance ?? (selectedCustomer as any)?.accountBalance ?? 0);

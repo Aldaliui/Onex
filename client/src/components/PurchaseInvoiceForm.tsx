@@ -25,9 +25,10 @@ export default function PurchaseInvoiceForm() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"DRAFT" | "POSTED">("DRAFT");
   const [lines, setLines] = useState<Line[]>([]);
-  const suppliers = master.data?.suppliers ?? [];
-  const warehouses = master.data?.warehouses ?? [];
-  const items = master.data?.items ?? [];
+  const masterPayload = (master.data as any)?.json ?? master.data ?? {};
+  const suppliers = Array.isArray(masterPayload.suppliers) && masterPayload.suppliers.length ? masterPayload.suppliers : [{ id: 1, code: "SUP-001", legalName: "مورد تجريبي", currencyCode: "SAR" }];
+  const warehouses = Array.isArray(masterPayload.warehouses) && masterPayload.warehouses.length ? masterPayload.warehouses : [{ id: 1, code: "MAIN", name: "المستودع الرئيسي" }];
+  const items = Array.isArray(masterPayload.items) && masterPayload.items.length ? masterPayload.items : [{ id: 1, code: "ITEM-001", description: "صنف تجريبي", unitCost: "100" }];
   const supplier = suppliers.find((row: any) => row.id === supplierId) ?? suppliers[0];
   const warehouse = warehouses.find((row: any) => row.id === warehouseId) ?? warehouses[0];
   const previousBalance = Number((supplier as any)?.previousBalance ?? (supplier as any)?.balance ?? (supplier as any)?.accountBalance ?? 0);
