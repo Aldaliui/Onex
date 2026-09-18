@@ -6,6 +6,7 @@ import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { invokeLLM } from "./_core/llm";
 import { LOCAL_COOKIE } from "./_core/localAuth";
 import { executeOracleAction, getOracleBridgeStatus } from "./_core/oracleBridge";
+import { createBackupSnapshot, getBackupDownloadUrl, restoreBackupSnapshot, uploadBackupSnapshot } from "./backup";
 import { createAdjustmentNote, createInventoryCount, createInvoice, createPurchaseInvoice, executeGlWindowAction, executeSalesWindowAction, getCatalogSources, getDashboard, getErpControlData, getFinancialReportCatalog, getMasterData, getSystemTree, getWindowCatalog, getWindowContract, getWindowDomains, listWarehouses, postAdjustmentNote, postInventoryCount, postInvoice, postPurchaseInvoice, receiveStock, reverseInvoice, reversePurchaseInvoice, runFinancialReport, saveAccount, saveBank, saveBranch, saveCashBox, saveCustomer, saveItem, saveJournal, saveSupplier, saveSystemUser, saveWarehouse, searchBranches, searchCustomers, searchInvoices, searchItems, searchJournals, searchSuppliers, searchSystemUsers, searchWarehouses } from "./db";
 
 const invoiceLine = z.object({ itemId: z.number().int().positive(), quantity: z.string().min(1), unitPrice: z.string().min(1), taxAmount: z.string().default("0") });
@@ -28,6 +29,12 @@ export const appRouter = router({
   reports: router({
     catalog: publicProcedure.query(() => getFinancialReportCatalog()),
     run: publicProcedure.input(z.object({ reportCode: z.enum(["GLSR001", "ARSR041", "MRPREP001"]), search: z.string().optional(), limit: z.number().int().min(1).max(500).default(100) })).query(({ input }) => runFinancialReport(input)),
+  }),
+  backups: router({
+    create: protectedProcedure.input(z.object({ offlineOperations: z.array(z.unknown()).default([]) })).mutation(({ input }) => createBackupSnapshot(input.offlineOperations)),
+    upload: protectedProcedure.input(z.object({ offlineOperations: z.array(z.unknown()).default([]) })).mutation(({ input }) => uploadBackupSnapshot(input.offlineOperations)),
+    downloadUrl: protectedProcedure.input(z.object({ key: z.string().min(1).max(500) })).query(({ input }) => getBackupDownloadUrl(input.key)),
+    validate: protectedProcedure.input(z.object({ backup: z.unknown() })).mutation(({ input }) => restoreBackupSnapshot(input.backup)),
   }),
   windows: router({
     list: publicProcedure.input(z.object({ search: z.string().optional(), domain: z.string().optional(), limit: z.number().int().min(1).max(500).default(80) }).optional()).query(({ input }) => getWindowCatalog(input?.search, input?.domain, input?.limit ?? 80)),
