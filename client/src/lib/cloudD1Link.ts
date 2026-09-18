@@ -35,6 +35,7 @@ const mapOperation = (op: Operation) => {
     case "windows.saveCustomer": return ["/customers", "POST"] as const;
     case "windows.saveSupplier": return ["/suppliers", "POST"] as const;
     case "windows.saveItem": return ["/items", "POST"] as const;
+    case "windows.saveAccount": return ["/accounts", "POST"] as const;
     case "windows.saveJournal": return ["/journals", "POST"] as const;
     case "windows.saveSystemUser": return ["/users", "POST"] as const;
     case "windows.saveBranch": return ["/branches", "POST"] as const;

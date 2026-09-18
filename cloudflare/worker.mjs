@@ -1265,11 +1265,11 @@ async function api(request, env, url) {
     return cloudJson({ ok: true, service: "onex-d1-api", database: "onex-production", tables: result.results?.map((row) => row.name) ?? [] });
   }
   if (url.pathname === "/api/cloud/master-data") {
-    const [companies, branches, warehouses, roles, periods, customers, suppliers, items] = await Promise.all([
+    const [companies, branches, warehouses, roles, periods, customers, suppliers, items, accounts] = await Promise.all([
       env.ONEX_DB.prepare("SELECT * FROM companies ORDER BY id").all(), env.ONEX_DB.prepare("SELECT * FROM branches WHERE active=1 ORDER BY code").all(), env.ONEX_DB.prepare("SELECT * FROM warehouses WHERE active=1 ORDER BY code").all(), env.ONEX_DB.prepare("SELECT * FROM roles WHERE active=1 ORDER BY code").all(), env.ONEX_DB.prepare("SELECT * FROM fiscal_periods ORDER BY startsOn DESC").all(),
-      env.ONEX_DB.prepare("SELECT * FROM customers ORDER BY code").all(), env.ONEX_DB.prepare("SELECT * FROM suppliers ORDER BY code").all(), env.ONEX_DB.prepare("SELECT * FROM items ORDER BY code").all(),
+      env.ONEX_DB.prepare("SELECT * FROM customers ORDER BY code").all(), env.ONEX_DB.prepare("SELECT * FROM suppliers ORDER BY code").all(), env.ONEX_DB.prepare("SELECT * FROM items ORDER BY code").all(), env.ONEX_DB.prepare("SELECT * FROM accounts ORDER BY code").all(),
     ]);
-    return cloudJson({ companies: companies.results, branches: branches.results, warehouses: warehouses.results, roles: roles.results, fiscalPeriods: periods.results, customers: customers.results, suppliers: suppliers.results, items: items.results });
+    return cloudJson({ companies: companies.results, branches: branches.results, warehouses: warehouses.results, roles: roles.results, fiscalPeriods: periods.results, customers: customers.results, suppliers: suppliers.results, items: items.results, accounts: accounts.results });
   }
   if (url.pathname === "/api/cloud/auth/me") return cloudJson({ id: 1, openId: "cloud-user", name: "مدير النظام", email: "admin@onex.local", role: "admin" });
   if (url.pathname === "/api/cloud/auth/logout") return cloudJson({ ok: true });
@@ -1283,7 +1283,11 @@ async function api(request, env, url) {
   }
   if (url.pathname === "/api/cloud/windows") return cloudJson([]);
   if (url.pathname === "/api/cloud/windows/tree") return cloudJson([]);
-  if (url.pathname.startsWith("/api/cloud/windows/contract/")) return cloudJson({ legacyForm: decodeURIComponent(url.pathname.split("/").pop() || ""), fields: [], triggers: [], procedures: [], notes: "Cloud D1 runtime contract" });
+  if (url.pathname.startsWith("/api/cloud/windows/contract/")) {
+    const legacyForm = decodeURIComponent(url.pathname.split("/").pop() || "").replace(/\.fmx$/i, "").toUpperCase();
+    const liveCrud = { ARST003: "customers", APSI002: "suppliers", INVT003: "items", GLST001: "accounts" }[legacyForm];
+    return cloudJson({ legacyForm: `${legacyForm}.fmx`, coreApi: liveCrud ? `ONEX_${liveCrud.toUpperCase()}_D1_API` : "ONEX_WINDOW_API", status: liveCrud ? "IMPLEMENTED_WITH_CLOUD_CORE" : "CLOUD_D1_RUNTIME", actions: liveCrud ? ["initialize", "query", "new", "validate", "save", "update", "refresh", "exit"] : ["initialize", "query", "refresh", "exit"], fields: [], triggers: [], procedures: [], notes: liveCrud ? `Live Cloudflare D1 CRUD for ${liveCrud}` : "Cloud D1 runtime contract" });
+  }
   if (url.pathname === "/api/cloud/windows/records") {
     const form = (url.searchParams.get("legacyForm") || "").replace(/\.fmx$/i, "").toUpperCase();
     const search = (url.searchParams.get("search") || "").trim();
@@ -1309,11 +1313,20 @@ async function api(request, env, url) {
     } else if (form.startsWith("ARST") || form.startsWith("ARSR")) {
       sql = "SELECT id, companyId, code, legalName, currencyCode, status FROM customers WHERE (? = '' OR code LIKE ? OR legalName LIKE ?) ORDER BY code LIMIT ?";
       binds = [search, like, like, limit];
+    } else if (form === "APSI002") {
+      sql = "SELECT id, companyId, code, legalName, currencyCode, status FROM suppliers WHERE (? = '' OR code LIKE ? OR legalName LIKE ?) ORDER BY code LIMIT ?";
+      binds = [search, like, like, limit];
+    } else if (form === "APST003") {
+      sql = "SELECT id, docNo, supplierId, warehouseId, subtotal, taxTotal, grandTotal, status, createdAt FROM purchase_invoices WHERE (? = '' OR docNo LIKE ?) ORDER BY createdAt DESC, id DESC LIMIT ?";
+      binds = [search, like, limit];
     } else if (form.startsWith("APST") || form.startsWith("APSR")) {
       sql = "SELECT id, companyId, code, legalName, currencyCode, status FROM suppliers WHERE (? = '' OR code LIKE ? OR legalName LIKE ?) ORDER BY code LIMIT ?";
       binds = [search, like, like, limit];
     } else if (form.startsWith("INVT") || form.startsWith("INVI")) {
-      sql = "SELECT id, companyId, code, name, itemType, unitCode, active FROM items WHERE (? = '' OR code LIKE ? OR name LIKE ?) ORDER BY code LIMIT ?";
+      sql = "SELECT id, companyId, code, name, description, itemType, unitCode, stockFlag, unitCost, revenueAccount, inventoryAccount, cogsAccount, active FROM items WHERE (? = '' OR code LIKE ? OR name LIKE ? OR description LIKE ?) ORDER BY code LIMIT ?";
+      binds = [search, like, like, like, limit];
+    } else if (form === "GLST001") {
+      sql = "SELECT id, companyId, code, name, accountType, parentCode, currencyCode, active FROM accounts WHERE (? = '' OR code LIKE ? OR name LIKE ?) ORDER BY code LIMIT ?";
       binds = [search, like, like, limit];
     } else if (form.startsWith("GLST") || form.startsWith("GLSI") || form.startsWith("GLSR")) {
       sql = "SELECT id, journalNo, entryType, totalDebit, totalCredit, status, createdAt, createdBy FROM journal_entries WHERE (? = '' OR journalNo LIKE ? OR entryType LIKE ?) ORDER BY createdAt DESC, id DESC LIMIT ?";
@@ -1398,8 +1411,8 @@ async function api(request, env, url) {
     }
     if (url.pathname === `/api/cloud/${route}` && request.method === "POST") {
       const x = await readBody(request); if (!x.code || !x[nameField]) return cloudJson({ error: `code and ${nameField} are required` }, 400);
-      const sql = table === "items" ? "INSERT INTO items(companyId,code,name,itemType,unitCode,active) VALUES(?,?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,itemType=excluded.itemType,unitCode=excluded.unitCode,active=excluded.active" : `INSERT INTO ${table}(companyId,code,legalName,currencyCode,status) VALUES(?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET legalName=excluded.legalName,currencyCode=excluded.currencyCode,status=excluded.status`;
-      const values = table === "items" ? [x.companyId || 1, x.code, x[nameField], x.itemType || "STOCK", x.unitCode || "EA", x.active ?? 1] : [x.companyId || 1, x.code, x[nameField], x.currencyCode || "SAR", x.status || "ACTIVE"];
+      const sql = table === "items" ? "INSERT INTO items(companyId,code,name,description,itemType,unitCode,stockFlag,unitCost,revenueAccount,inventoryAccount,cogsAccount,active) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,description=excluded.description,itemType=excluded.itemType,unitCode=excluded.unitCode,stockFlag=excluded.stockFlag,unitCost=excluded.unitCost,revenueAccount=excluded.revenueAccount,inventoryAccount=excluded.inventoryAccount,cogsAccount=excluded.cogsAccount,active=excluded.active" : `INSERT INTO ${table}(companyId,code,legalName,currencyCode,status) VALUES(?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET legalName=excluded.legalName,currencyCode=excluded.currencyCode,status=excluded.status`;
+      const values = table === "items" ? [x.companyId || 1, x.code, x.name || x.description, x.description || x.name, x.itemType || "STOCK", x.unitCode || "EA", x.stockFlag ?? 1, x.unitCost || "0", x.revenueAccount || "4100", x.inventoryAccount || "1300", x.cogsAccount || "5100", x.active ?? 1] : [x.companyId || 1, x.code, x[nameField], x.currencyCode || "SAR", x.status || "ACTIVE"];
       return cloudJson({ ok: true, result: await env.ONEX_DB.prepare(sql).bind(...values).run() });
     }
   }
