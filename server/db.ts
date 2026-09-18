@@ -355,6 +355,31 @@ export async function searchInvoices(search?: string, limit = 20) {
   return db.select().from(invoices).where(filters).orderBy(desc(invoices.createdAt)).limit(limit);
 }
 
+export async function getInvoiceReturnSource(invoiceId: number, invoiceType: "SALE" | "PURCHASE") {
+  const db = await getDb();
+  if (!db) {
+    const invoice = Array.from(invoiceType === "SALE" ? demoInvoices.values() : demoPurchaseInvoices.values()).find((row) => row.invoiceId === invoiceId);
+    if (!invoice) throw new Error("INVOICE_NOT_FOUND");
+    return { invoice, lines: [{ itemId: 1, itemCode: "ITEM-001", description: "صنف تجريبي", unit: "وحدة", quantity: 1, unitPrice: invoice.subtotal, taxAmount: invoice.taxTotal, lineTotal: invoice.grandTotal }], previousBalance: 0 };
+  }
+  const invoice = (await db.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.invoiceType, invoiceType))).limit(1))[0];
+  if (!invoice) throw new Error("INVOICE_NOT_FOUND");
+  const lines = await db.select({ id: invoiceLines.id, itemId: invoiceLines.itemId, itemCode: items.code, description: items.description, unit: sql<string>`'وحدة'`, quantity: invoiceLines.quantity, unitPrice: invoiceLines.unitPrice, taxAmount: invoiceLines.taxAmount, lineTotal: invoiceLines.lineTotal }).from(invoiceLines).leftJoin(items, eq(items.id, invoiceLines.itemId)).where(eq(invoiceLines.invoiceId, invoiceId));
+  const partyFilter = invoiceType === "SALE" ? (invoice.customerId === null ? sql`1 = 0` : eq(invoices.customerId, invoice.customerId)) : (invoice.supplierId === null ? sql`1 = 0` : eq(invoices.supplierId, invoice.supplierId));
+  const balanceRows = await db.select({ balance: sql<string>`COALESCE(SUM(${invoices.remainingAmount}), 0)` }).from(invoices).where(and(partyFilter, eq(invoices.invoiceType, invoiceType), eq(invoices.status, "POSTED")));
+  return { invoice, lines, previousBalance: balanceRows[0]?.balance || "0" };
+}
+
+export async function nextAdjustmentNumber(documentKind: "SALES_RETURN" | "PURCHASE_RETURN") {
+  const prefix = documentKind === "SALES_RETURN" ? "SR" : "PR";
+  const year = new Date().getFullYear();
+  const db = await getDb();
+  if (!db) return `${prefix}-${year}-000001`;
+  const rows = await db.select({ docNo: adjustmentNotes.docNo }).from(adjustmentNotes).where(like(adjustmentNotes.docNo, `${prefix}-${year}-%`));
+  const max = rows.reduce((value, row) => Math.max(value, Number(String(row.docNo).split("-").at(-1) || 0)), 0);
+  return `${prefix}-${year}-${String(max + 1).padStart(6, "0")}`;
+}
+
 export async function searchCustomers(search?: string, limit = 20) {
   const db = await getDb(); const query = (search || "").trim();
   if (!db) return demoCustomers.filter((row) => !query || `${row.code} ${row.legalName}`.toLowerCase().includes(query.toLowerCase())).slice(0, limit);
