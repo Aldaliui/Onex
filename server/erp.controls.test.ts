@@ -90,8 +90,14 @@ describe("ERP control and inventory flows", () => {
     expect(warehouse?.code).toBe(`WH-${suffix}`);
     const branchRows = await api.windows.records({ legacyForm: "ERP_DBA_DFLT_DATA", search: `BR-${suffix}`, limit: 10 });
     const warehouseRows = await api.windows.records({ legacyForm: "MRPACS004", search: `WH-${suffix}`, limit: 10 });
+    const userRows = await api.windows.records({ legacyForm: "ERP_DBA", search: `window-user-${suffix}`, limit: 10 });
     expect(branchRows.some((row: any) => row.code === `BR-${suffix}`)).toBe(true);
     expect(warehouseRows.some((row: any) => row.code === `WH-${suffix}`)).toBe(true);
+    expect(userRows.some((row: any) => row.openId === `window-user-${suffix}`)).toBe(true);
+    await api.windows.deleteRecord({ legacyForm: "ERP_DBA", id: user!.id });
+    await api.windows.deleteRecord({ legacyForm: "ERP_DBA_DFLT_DATA", id: branch!.id });
+    await api.windows.deleteRecord({ legacyForm: "MRPACS004", id: warehouse!.id });
+    expect((await api.windows.records({ legacyForm: "ERP_DBA", search: `window-user-${suffix}`, limit: 10 })).some((row: any) => row.id === user!.id)).toBe(false);
   });
 
   it("exposes the complete inventory window catalog for the Workbench", async () => {

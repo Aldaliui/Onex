@@ -20,6 +20,8 @@ const request = async (path: string, method: "GET" | "POST" | "DELETE", input?: 
 
 export const updateCloudWindowRecord = (input: { legacyForm: string; id: number; fields: Record<string, unknown> }) =>
   request("/windows/records/update", "POST", input);
+export const deleteCloudWindowRecord = (input: { legacyForm: string; id: number; actor?: string }) =>
+  request("/windows/records/delete", "POST", input);
 
 const mapOperation = (op: Operation) => {
   const input = op.input as Record<string, unknown> | undefined;
@@ -40,6 +42,7 @@ const mapOperation = (op: Operation) => {
     case "windows.deleteItem": return [`/items/${encodeURIComponent(String(input?.id || ""))}`, "DELETE"] as const;
     case "windows.saveAccount": return ["/accounts", "POST"] as const;
     case "windows.deleteAccount": return [`/accounts/${encodeURIComponent(String(input?.id || ""))}`, "DELETE"] as const;
+    case "windows.deleteRecord": return ["/windows/records/delete", "POST"] as const;
     case "windows.saveJournal": return ["/journals", "POST"] as const;
     case "windows.saveSystemUser": return ["/users", "POST"] as const;
     case "windows.saveBranch": return ["/branches", "POST"] as const;

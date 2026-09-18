@@ -7,7 +7,7 @@ import { invokeLLM } from "./_core/llm";
 import { LOCAL_COOKIE } from "./_core/localAuth";
 import { executeOracleAction, getOracleBridgeStatus } from "./_core/oracleBridge";
 import { createBackupSnapshot, getBackupDownloadUrl, restoreBackupSnapshot, uploadBackupSnapshot } from "./backup";
-import { createAdjustmentNote, createInventoryCount, createInvoice, createPurchaseInvoice, deleteAccount, deleteCustomer, deleteItem, deleteSupplier, executeGlWindowAction, executeSalesWindowAction, getCatalogSources, getDashboard, getErpControlData, getFinancialReportCatalog, getInvoiceReturnSource, getMasterData, getSystemTree, getWindowCatalog, getWindowContract, getWindowDomains, listWarehouses, nextAdjustmentNumber, postAdjustmentNote, postInventoryCount, postInvoice, postPurchaseInvoice, receiveStock, reverseInvoice, reversePurchaseInvoice, runFinancialReport, saveAccount, saveBank, saveBranch, saveCashBox, saveCustomer, saveItem, saveJournal, saveSupplier, saveSystemUser, saveWarehouse, searchAccounts, searchBranches, searchCustomers, searchInvoices, searchItems, searchJournals, searchSuppliers, searchSystemUsers, searchWarehouses } from "./db";
+import { createAdjustmentNote, createInventoryCount, createInvoice, createPurchaseInvoice, deleteAccount, deleteCustomer, deleteItem, deleteSupplier, deleteWindowRecord, executeGlWindowAction, executeSalesWindowAction, getCatalogSources, getDashboard, getErpControlData, getFinancialReportCatalog, getInvoiceReturnSource, getMasterData, getSystemTree, getWindowCatalog, getWindowContract, getWindowDomains, listWarehouses, nextAdjustmentNumber, postAdjustmentNote, postInventoryCount, postInvoice, postPurchaseInvoice, receiveStock, reverseInvoice, reversePurchaseInvoice, runFinancialReport, saveAccount, saveBank, saveBranch, saveCashBox, saveCustomer, saveItem, saveJournal, saveSupplier, saveSystemUser, saveWarehouse, searchAccounts, searchAuditEvents, searchBranches, searchCustomers, searchInvoices, searchItems, searchJournals, searchSuppliers, searchSystemUsers, searchWarehouses, searchWindowExecutions } from "./db";
 
 const invoiceLine = z.object({ itemId: z.number().int().positive(), quantity: z.string().min(1), unitPrice: z.string().min(1), taxAmount: z.string().default("0") });
 const partyInput = z.object({ id: z.number().int().positive().optional(), companyId: z.number().int().positive().default(1), code: z.string().min(1).max(50), legalName: z.string().min(1).max(250), currencyCode: z.string().length(3).default("SAR"), status: z.enum(["ACTIVE", "BLOCKED", "CLOSED"]).default("ACTIVE") });
@@ -52,6 +52,7 @@ export const appRouter = router({
       if (form === "ERP_DBA") return searchSystemUsers(input.search, input.limit);
       if (form === "ERP_DBA_DFLT_DATA") return searchBranches(input.search, input.limit);
       if (form === "MRPACS004") return searchWarehouses(input.search, input.limit);
+      if (form === "ERP_JOURNAL") return searchAuditEvents(input.search, input.limit);
       if (form.startsWith("ARST004") || form.startsWith("APST003")) return searchInvoices(input.search, input.limit);
       if (form.startsWith("ARST") || form.startsWith("ARSR")) return searchCustomers(input.search, input.limit);
       if (form === "APSI002") return searchSuppliers(input.search, input.limit);
@@ -60,7 +61,7 @@ export const appRouter = router({
       if (form.startsWith("POST")) return searchInvoices(input.search, input.limit);
       if (form === "GLST001") return searchAccounts(input.search, input.limit);
       if (form.startsWith("GLST") || form.startsWith("GLSI") || form.startsWith("GLSR")) return searchJournals(input.search, input.limit);
-      return Promise.resolve([]);
+      return searchWindowExecutions(form, input.search, input.limit);
     }),
     saveCustomer: protectedProcedure.input(partyInput).mutation(({ input }) => saveCustomer(input)),
     deleteCustomer: protectedProcedure.input(z.object({ id: z.number().int().positive(), actor: z.string().max(100).default("workbench.user") })).mutation(({ input }) => deleteCustomer(input)),
@@ -76,6 +77,7 @@ export const appRouter = router({
     saveWarehouse: protectedProcedure.input(z.object({ id: z.number().int().positive().optional(), companyId: z.number().int().positive().default(1), code: z.string().min(1).max(30), name: z.string().min(1).max(200), active: z.number().int().min(0).max(1).default(1) })).mutation(({ input }) => saveWarehouse(input)),
     saveAccount: protectedProcedure.input(z.object({ id: z.number().int().positive().optional(), companyId: z.number().int().positive().default(1), code: z.string().min(1).max(80), name: z.string().min(1).max(240), accountType: z.string().min(1).max(30), parentCode: z.string().max(80).optional(), currencyCode: z.string().length(3).default("SAR"), active: z.number().int().min(0).max(1).default(1) })).mutation(({ input }) => saveAccount(input)),
     deleteAccount: protectedProcedure.input(z.object({ id: z.number().int().positive(), actor: z.string().max(100).default("workbench.user") })).mutation(({ input }) => deleteAccount(input)),
+    deleteRecord: protectedProcedure.input(z.object({ legacyForm: z.string().min(1).max(160), id: z.number().int().positive(), actor: z.string().max(100).default("workbench.user") })).mutation(({ input }) => deleteWindowRecord(input)),
     executeAction: publicProcedure.input(z.object({ legacyForm: z.string().min(1).max(160), action: z.string().min(1).max(80) })).mutation(async ({ input }) => {
       const contract = await getWindowContract(input.legacyForm);
       if (!contract.actions.includes(input.action)) throw new Error("ACTION_NOT_ALLOWED_FOR_WINDOW");

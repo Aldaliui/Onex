@@ -76,6 +76,7 @@ function AuthenticatedWorkbench() {
   const deleteSupplier = trpc.windows.deleteSupplier.useMutation();
   const saveItem = trpc.windows.saveItem.useMutation();
   const deleteItem = trpc.windows.deleteItem.useMutation();
+  const deleteRecord = trpc.windows.deleteRecord.useMutation();
   const saveJournal = trpc.windows.saveJournal.useMutation();
   const saveSystemUser = trpc.windows.saveSystemUser.useMutation();
   const saveBranch = trpc.windows.saveBranch.useMutation();
@@ -152,7 +153,7 @@ function AuthenticatedWorkbench() {
       if (id === "ARST003") return deleteCustomer.mutate({ id: recordId, actor: "workbench.user" }, { onSuccess, onError });
       if (id === "APSI002") return deleteSupplier.mutate({ id: recordId, actor: "workbench.user" }, { onSuccess, onError });
       if (id === "INVT003") return deleteItem.mutate({ id: recordId, actor: "workbench.user" }, { onSuccess, onError });
-      return toast.info("الحذف متاح لنوافذ العملاء والموردين والحسابات والأصناف فقط");
+      return deleteRecord.mutate({ legacyForm: `${id}.fmx`, id: recordId, actor: "workbench.user" }, { onSuccess, onError });
     }
     if (action === "post") { try { if (id.startsWith("GLST")) { const requestId = `GL:${id}:POST:${Date.now()}`; if (!offline.online) { await offline.enqueue("GL_WINDOW_ACTION", { legacyForm: `${id}.fmx`, action: "post", actor: "workbench.user", requestId }, requestId); toast.info("تم وضع ترحيل القيد في طابور المزامنة"); return; } await glExecute.mutateAsync({ legacyForm: `${id}.fmx`, action: "post", actor: "workbench.user", requestId }); } else { await executeWindowAction.mutateAsync({ legacyForm: `${id}.fmx`, action: "post" }); } toast.success(`تم ترحيل ${id}`); manager.markClean(id); } catch (error) { toast.error(error instanceof Error ? error.message : `تعذر ترحيل ${id}`); } return; }
     if (action === "print") return toast.info(`تجهيز تقرير ${id}`);

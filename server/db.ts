@@ -20,6 +20,7 @@ const demoBanks: Array<{ id: number; companyId: number; accountId?: number; code
 const demoItems = [{ id: 1, companyId: 1, code: "ITEM-001", description: "صنف تجريبي", stockFlag: 1, unitCost: "100", revenueAccount: "4100", inventoryAccount: "1300", cogsAccount: "5100", active: 1 }];
 const demoJournals: Array<{ id: number; journalNo: string; entryType: string; totalDebit: string; totalCredit: string; status: "POSTED" }> = [];
 const demoWindowExecutions = new Map<string, { status: string; response: unknown }>();
+const demoUsers: Array<{ id: number; openId: string; name: string | null; email: string | null; loginMethod: string; role: "user" | "admin"; lastSignedIn: Date }> = [];
 const demoBranches = [{ id: 1, companyId: 1, code: "MAIN", name: "الفرع الرئيسي", active: 1 }];
 const demoWarehouses = [{ id: 1, companyId: 1, code: "MAIN", name: "المستودع الرئيسي", active: 1 }];
 const demoAccounts: Array<{ id: number; companyId: number; code: string; name: string; accountType: string; parentCode?: string; currencyCode: string; active: number }> = [{ id: 1, companyId: 1, code: "1100", name: "النقدية", accountType: "ASSET", currencyCode: "SAR", active: 1 }, { id: 2, companyId: 1, code: "4100", name: "إيرادات المبيعات", accountType: "REVENUE", currencyCode: "SAR", active: 1 }, { id: 3, companyId: 1, code: "5100", name: "تكلفة المبيعات", accountType: "EXPENSE", currencyCode: "SAR", active: 1 }, { id: 4, companyId: 1, code: "2100-0001", name: "مورد تجريبي", accountType: "LIABILITY", parentCode: "2100", currencyCode: "SAR", active: 1 }, { id: 5, companyId: 1, code: "1200-0001", name: "عميل تجريبي", accountType: "ASSET", parentCode: "1200", currencyCode: "SAR", active: 1 }];
@@ -390,7 +391,7 @@ export async function searchCustomers(search?: string, limit = 20) {
 
 export async function searchSystemUsers(search?: string, limit = 20) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) { const query = (search || "").trim().toLowerCase(); return demoUsers.filter((row) => !query || `${row.openId} ${row.email || ""} ${row.name || ""}`.toLowerCase().includes(query)).slice(0, limit); }
   const query = (search || "").trim();
   const filters = query ? or(like(users.openId, `%${query}%`), like(users.email, `%${query}%`), like(users.name, `%${query}%`)) : undefined;
   return db.select({ id: users.id, openId: users.openId, name: users.name, email: users.email, role: users.role, lastSignedIn: users.lastSignedIn }).from(users).where(filters).orderBy(users.id).limit(limit);
@@ -399,13 +400,20 @@ export async function searchSystemUsers(search?: string, limit = 20) {
 export async function saveSystemUser(input: { id?: number; openId: string; name?: string; email?: string; role?: "user" | "admin"; loginMethod?: string }) {
   const db = await getDb();
   const values = { openId: input.openId, name: input.name || null, email: input.email || null, loginMethod: input.loginMethod || "workbench", role: input.role || "user" as const };
-  if (!db) return { id: input.id || 1, ...values, lastSignedIn: new Date() };
+  if (!db) { const existing = demoUsers.find((row) => row.id === input.id || row.openId === input.openId); if (existing) { Object.assign(existing, values, { lastSignedIn: new Date() }); return existing; } const row = { id: Math.max(...demoUsers.map((item) => item.id), 0) + 1, ...values, lastSignedIn: new Date() }; demoUsers.push(row); return row; }
   if (input.id) {
     await db.update(users).set(values).where(eq(users.id, input.id));
     return (await db.select({ id: users.id, openId: users.openId, name: users.name, email: users.email, role: users.role, loginMethod: users.loginMethod, lastSignedIn: users.lastSignedIn }).from(users).where(eq(users.id, input.id)).limit(1))[0];
   }
   const inserted = await db.insert(users).values(values).$returningId();
   return (await db.select({ id: users.id, openId: users.openId, name: users.name, email: users.email, role: users.role, loginMethod: users.loginMethod, lastSignedIn: users.lastSignedIn }).from(users).where(eq(users.id, Number(inserted[0]?.id))).limit(1))[0];
+}
+
+export async function searchAuditEvents(search?: string, limit = 20) {
+  const db = await getDb(); const query = (search || "").trim();
+  if (!db) return Array.from(demoWindowExecutions.entries()).map(([requestId, value], index) => ({ id: index + 1, actor: "workbench.user", actionCode: "EXECUTION", entityType: "WINDOW", entityId: requestId, requestId, createdAt: new Date(), status: value.status })).filter((row) => !query || `${row.actionCode} ${row.entityType} ${row.entityId} ${row.requestId}`.toLowerCase().includes(query.toLowerCase())).slice(0, limit);
+  const filters = query ? or(like(auditEvents.actionCode, `%${query}%`), like(auditEvents.entityType, `%${query}%`), like(auditEvents.entityId, `%${query}%`), like(auditEvents.requestId, `%${query}%`)) : undefined;
+  return db.select().from(auditEvents).where(filters).orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(limit);
 }
 
 export async function searchBranches(search?: string, limit = 20) {
@@ -1011,5 +1019,68 @@ export async function deleteAccount(input: { id: number; actor?: string }) {
     await tx.delete(accounts).where(eq(accounts.id, input.id));
     await tx.insert(auditEvents).values({ actor: input.actor || "workbench.user", actionCode: "DELETE", entityType: "ACCOUNT", entityId: String(input.id), requestId: `ACCOUNT:DELETE:${input.id}` });
     return { id: input.id, deleted: true as const };
+  });
+}
+
+export async function searchWindowExecutions(legacyForm: string, search?: string, limit = 20) {
+  const form = legacyForm.replace(/\.fmx$/i, "").toUpperCase();
+  const query = (search || "").trim();
+  const db = await getDb();
+  if (!db) {
+    return Array.from(demoWindowExecutions.entries()).map(([requestId, value], index) => ({ id: index + 1, legacyForm: form, actionCode: "EXECUTION", requestId, status: value.status, response: value.response })).filter((row) => !query || `${row.requestId} ${row.status}`.toLowerCase().includes(query.toLowerCase())).slice(0, limit);
+  }
+  const filters = [eq(windowExecutions.legacyForm, `${form}.fmx`)];
+  if (query) filters.push(or(like(windowExecutions.actionCode, `%${query}%`), like(windowExecutions.requestId, `%${query}%`), like(windowExecutions.status, `%${query}%`))!);
+  return db.select().from(windowExecutions).where(and(...filters)).orderBy(desc(windowExecutions.createdAt)).limit(limit);
+}
+
+export async function deleteWindowRecord(input: { legacyForm: string; id: number; actor?: string }) {
+  const form = input.legacyForm.replace(/\.fmx$/i, "").toUpperCase();
+  if (form === "ARST003") return deleteCustomer({ id: input.id, actor: input.actor });
+  if (form === "APSI002") return deleteSupplier({ id: input.id, actor: input.actor });
+  if (form === "INVT003") return deleteItem({ id: input.id, actor: input.actor });
+  if (form === "GLST001") return deleteAccount({ id: input.id, actor: input.actor });
+  const db = await getDb();
+  if (!db) {
+    if (form === "ERP_DBA" || form === "ADMT027") { const index = demoUsers.findIndex((row) => row.id === input.id); if (index < 0) throw new Error("USER_NOT_FOUND"); demoUsers.splice(index, 1); return { id: input.id, deleted: true as const }; }
+    if (form === "ERP_DBA_DFLT_DATA") { const index = demoBranches.findIndex((row) => row.id === input.id); if (index < 0) throw new Error("BRANCH_NOT_FOUND"); demoBranches.splice(index, 1); return { id: input.id, deleted: true as const }; }
+    if (form === "MRPACS004") { const index = demoWarehouses.findIndex((row) => row.id === input.id); if (index < 0) throw new Error("WAREHOUSE_NOT_FOUND"); demoWarehouses.splice(index, 1); return { id: input.id, deleted: true as const }; }
+    throw new Error("WINDOW_DELETE_NOT_SUPPORTED");
+  }
+  return db.transaction(async (tx) => {
+    if (form === "ERP_DBA" || form === "ADMT027") {
+      const current = (await tx.select({ id: users.id }).from(users).where(eq(users.id, input.id)).limit(1))[0];
+      if (!current) throw new Error("USER_NOT_FOUND");
+      await tx.delete(users).where(eq(users.id, input.id));
+      await tx.insert(auditEvents).values({ actor: input.actor || "workbench.user", actionCode: "DELETE", entityType: "USER", entityId: String(input.id), requestId: `USER:DELETE:${input.id}` });
+      return { id: input.id, deleted: true as const };
+    }
+    if (form === "ERP_DBA_DFLT_DATA") {
+      const current = (await tx.select({ id: branches.id }).from(branches).where(eq(branches.id, input.id)).limit(1))[0];
+      if (!current) throw new Error("BRANCH_NOT_FOUND");
+      await tx.delete(branches).where(eq(branches.id, input.id));
+      await tx.insert(auditEvents).values({ actor: input.actor || "workbench.user", actionCode: "DELETE", entityType: "BRANCH", entityId: String(input.id), requestId: `BRANCH:DELETE:${input.id}` });
+      return { id: input.id, deleted: true as const };
+    }
+    if (form === "MRPACS004") {
+      const current = (await tx.select({ id: warehouses.id }).from(warehouses).where(eq(warehouses.id, input.id)).limit(1))[0];
+      if (!current) throw new Error("WAREHOUSE_NOT_FOUND");
+      const invoice = (await tx.select({ id: invoices.id }).from(invoices).where(eq(invoices.warehouseId, input.id)).limit(1))[0];
+      const balance = (await tx.select({ id: stockBalances.id }).from(stockBalances).where(eq(stockBalances.warehouseId, input.id)).limit(1))[0];
+      if (invoice || balance) throw new Error("WAREHOUSE_HAS_TRANSACTIONS");
+      await tx.delete(warehouses).where(eq(warehouses.id, input.id));
+      await tx.insert(auditEvents).values({ actor: input.actor || "workbench.user", actionCode: "DELETE", entityType: "WAREHOUSE", entityId: String(input.id), requestId: `WAREHOUSE:DELETE:${input.id}` });
+      return { id: input.id, deleted: true as const };
+    }
+    if (form === "ARST004" || form.startsWith("POST") || form === "APST003") {
+      const current = (await tx.select({ id: invoices.id, status: invoices.status }).from(invoices).where(eq(invoices.id, input.id)).limit(1))[0];
+      if (!current) throw new Error("DOCUMENT_NOT_FOUND");
+      if (current.status !== "DRAFT") throw new Error("POSTED_DOCUMENT_CANNOT_BE_DELETED");
+      await tx.delete(invoiceLines).where(eq(invoiceLines.invoiceId, input.id));
+      await tx.delete(invoices).where(eq(invoices.id, input.id));
+      await tx.insert(auditEvents).values({ actor: input.actor || "workbench.user", actionCode: "DELETE", entityType: "ERP_DOCUMENT", entityId: String(input.id), requestId: `DOCUMENT:DELETE:${input.id}` });
+      return { id: input.id, deleted: true as const };
+    }
+    throw new Error("WINDOW_DELETE_NOT_SUPPORTED");
   });
 }

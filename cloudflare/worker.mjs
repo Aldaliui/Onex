@@ -1281,8 +1281,19 @@ async function api(request, env, url) {
     ]);
     return cloudJson({ windows: 1490, domains: Number(domains?.count || 0), invoices: Number(invoices?.count || 0), stockValue: "0.00", journals: Number(journals?.count || 0) });
   }
-  if (url.pathname === "/api/cloud/windows") return cloudJson([]);
-  if (url.pathname === "/api/cloud/windows/tree") return cloudJson([]);
+  if (url.pathname === "/api/cloud/windows" && request.method === "GET") {
+    const q = (url.searchParams.get("search") || "").trim(); const domain = (url.searchParams.get("domain") || "").trim(); const lim = limitOf(url); const like = `%${q}%`;
+    const exists = await env.ONEX_DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='window_registry' LIMIT 1").first();
+    if (!exists) return cloudJson([]);
+    const result = await env.ONEX_DB.prepare("SELECT * FROM window_registry WHERE (? = '' OR legacyForm LIKE ? OR screenName LIKE ? OR capability LIKE ?) AND (? = '' OR domainCode = ?) ORDER BY displayOrder, legacyForm LIMIT ?").bind(q, like, like, like, domain, domain, lim).all();
+    return cloudJson(result.results ?? []);
+  }
+  if (url.pathname === "/api/cloud/windows/tree" && request.method === "GET") {
+    const exists = await env.ONEX_DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='window_registry' LIMIT 1").first();
+    if (!exists) return cloudJson([]);
+    const result = await env.ONEX_DB.prepare("SELECT id, screenNo, screenName, parentId, legacyForm, domainCode, capability, displayOrder, itemType, formName FROM window_registry ORDER BY domainCode, displayOrder, legacyForm LIMIT ?").bind(limitOf(url, 100)).all();
+    return cloudJson(result.results ?? []);
+  }
   if (url.pathname.startsWith("/api/cloud/windows/contract/")) {
     const legacyForm = decodeURIComponent(url.pathname.split("/").pop() || "").replace(/\.fmx$/i, "").toUpperCase();
     const liveCrud = { ARST003: "customers", APSI002: "suppliers", INVT003: "items", GLST001: "accounts" }[legacyForm];
@@ -1332,7 +1343,13 @@ async function api(request, env, url) {
       sql = "SELECT id, journalNo, entryType, totalDebit, totalCredit, status, createdAt, createdBy FROM journal_entries WHERE (? = '' OR journalNo LIKE ? OR entryType LIKE ?) ORDER BY createdAt DESC, id DESC LIMIT ?";
       binds = [search, like, like, limit];
     } else {
-      return cloudJson([]);
+      const executionTable = await env.ONEX_DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='window_executions' LIMIT 1").first();
+      if (executionTable) {
+        const result = await env.ONEX_DB.prepare("SELECT id, legacyForm, actionCode, requestId, actor, status, responseJson, createdAt FROM window_executions WHERE legacyForm=? AND (? = '' OR actionCode LIKE ? OR requestId LIKE ? OR status LIKE ?) ORDER BY createdAt DESC, id DESC LIMIT ?").bind(`${form}.fmx`, search, like, like, like, limit).all();
+        return cloudJson(result.results ?? []);
+      }
+      const result = await env.ONEX_DB.prepare("SELECT id, actor, actionCode, entityType, entityId, requestId, createdAt FROM audit_events WHERE (? = '' OR actionCode LIKE ? OR entityType LIKE ? OR entityId LIKE ? OR requestId LIKE ?) ORDER BY createdAt DESC, id DESC LIMIT ?").bind(search, like, like, like, like, limit).all();
+      return cloudJson(result.results ?? []);
     }
     const rows = await env.ONEX_DB.prepare(sql).bind(...binds).all();
     return cloudJson(rows.results ?? []);
@@ -1361,6 +1378,54 @@ async function api(request, env, url) {
     values.push(id);
     const result = await env.ONEX_DB.prepare(`UPDATE ${configs.table} SET ${updates.join(", ")} WHERE id = ?`).bind(...values).run();
     return cloudJson({ ok: true, table: configs.table, id, result });
+  }
+  if (url.pathname === "/api/cloud/windows/records/delete" && request.method === "POST") {
+    const x = await readBody(request); const form = String(x.legacyForm || "").replace(/\.fmx$/i, "").toUpperCase(); const id = Number(x.id);
+    if (!form || !positiveInteger(id)) return cloudJson({ error: "legacyForm and id are required" }, 400);
+    const directTable = { ARST003: "customers", APSI002: "suppliers", INVT003: "items", GLST001: "accounts" }[form];
+    if (directTable) {
+      const target = new URL(`/api/cloud/${directTable}/${id}`, request.url);
+      const forwarded = new Request(target, { method: "DELETE", headers: request.headers });
+      return api(forwarded, env, target);
+    }
+    if (form === "ERP_DBA" || form === "ADMT027") {
+      const current = await env.ONEX_DB.prepare("SELECT id FROM users WHERE id=? LIMIT 1").bind(id).first();
+      if (!current) return cloudJson({ error: "USER_NOT_FOUND" }, 404);
+      const result = await env.ONEX_DB.batch([env.ONEX_DB.prepare("DELETE FROM users WHERE id=?").bind(id), env.ONEX_DB.prepare("INSERT INTO audit_events(actor,actionCode,entityType,entityId,requestId) VALUES(?,?,?,?,?)").bind("cloud-user", "DELETE", "USER", String(id), `USER:DELETE:${id}`)]);
+      return cloudJson({ ok: true, id, deleted: true, result });
+    }
+    if (form === "ERP_DBA_DFLT_DATA") {
+      const current = await env.ONEX_DB.prepare("SELECT id FROM branches WHERE id=? LIMIT 1").bind(id).first();
+      if (!current) return cloudJson({ error: "BRANCH_NOT_FOUND" }, 404);
+      const result = await env.ONEX_DB.batch([env.ONEX_DB.prepare("DELETE FROM branches WHERE id=?").bind(id), env.ONEX_DB.prepare("INSERT INTO audit_events(actor,actionCode,entityType,entityId,requestId) VALUES(?,?,?,?,?)").bind("cloud-user", "DELETE", "BRANCH", String(id), `BRANCH:DELETE:${id}`)]);
+      return cloudJson({ ok: true, id, deleted: true, result });
+    }
+    if (form === "MRPACS004") {
+      const current = await env.ONEX_DB.prepare("SELECT id FROM warehouses WHERE id=? LIMIT 1").bind(id).first();
+      if (!current) return cloudJson({ error: "WAREHOUSE_NOT_FOUND" }, 404);
+      const invoice = await env.ONEX_DB.prepare("SELECT id FROM invoices WHERE warehouseId=? LIMIT 1").bind(id).first();
+      const balance = await env.ONEX_DB.prepare("SELECT id FROM stock_balances WHERE warehouseId=? LIMIT 1").bind(id).first();
+      if (invoice || balance) return cloudJson({ error: "WAREHOUSE_HAS_TRANSACTIONS" }, 409);
+      const result = await env.ONEX_DB.batch([env.ONEX_DB.prepare("DELETE FROM warehouses WHERE id=?").bind(id), env.ONEX_DB.prepare("INSERT INTO audit_events(actor,actionCode,entityType,entityId,requestId) VALUES(?,?,?,?,?)").bind("cloud-user", "DELETE", "WAREHOUSE", String(id), `WAREHOUSE:DELETE:${id}`)]);
+      return cloudJson({ ok: true, id, deleted: true, result });
+    }
+    if (form === "ARST004" || form.startsWith("POST")) {
+      const current = await env.ONEX_DB.prepare("SELECT id, status FROM invoices WHERE id=? LIMIT 1").bind(id).first();
+      if (!current) return cloudJson({ error: "DOCUMENT_NOT_FOUND" }, 404);
+      if (current.status !== "DRAFT") return cloudJson({ error: "POSTED_DOCUMENT_CANNOT_BE_DELETED" }, 409);
+      const result = await env.ONEX_DB.batch([env.ONEX_DB.prepare("DELETE FROM invoice_lines WHERE invoiceId=?").bind(id), env.ONEX_DB.prepare("DELETE FROM invoices WHERE id=?").bind(id), env.ONEX_DB.prepare("INSERT INTO audit_events(actor,actionCode,entityType,entityId,requestId) VALUES(?,?,?,?,?)").bind("cloud-user", "DELETE", "AR_DOCUMENT", String(id), `DOCUMENT:DELETE:${id}`)]);
+      return cloudJson({ ok: true, id, deleted: true, result });
+    }
+    if (form === "APST003") {
+      const exists = await env.ONEX_DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='purchase_invoices' LIMIT 1").first();
+      if (!exists) return cloudJson({ error: "PURCHASE_DOCUMENT_TABLE_NOT_FOUND" }, 404);
+      const current = await env.ONEX_DB.prepare("SELECT id, status FROM purchase_invoices WHERE id=? LIMIT 1").bind(id).first();
+      if (!current) return cloudJson({ error: "DOCUMENT_NOT_FOUND" }, 404);
+      if (current.status !== "DRAFT") return cloudJson({ error: "POSTED_DOCUMENT_CANNOT_BE_DELETED" }, 409);
+      const result = await env.ONEX_DB.batch([env.ONEX_DB.prepare("DELETE FROM purchase_lines WHERE purchaseInvoiceId=?").bind(id), env.ONEX_DB.prepare("DELETE FROM purchase_invoices WHERE id=?").bind(id), env.ONEX_DB.prepare("INSERT INTO audit_events(actor,actionCode,entityType,entityId,requestId) VALUES(?,?,?,?,?)").bind("cloud-user", "DELETE", "AP_DOCUMENT", String(id), `DOCUMENT:DELETE:${id}`)]);
+      return cloudJson({ ok: true, id, deleted: true, result });
+    }
+    return cloudJson({ error: "WINDOW_DELETE_NOT_SUPPORTED" }, 400);
   }
   if (url.pathname === "/api/cloud/windows/action" && request.method === "POST") return cloudJson({ ok: true, status: "SIMULATED", source: "cloud-d1" });
   if (url.pathname === "/api/cloud/ai/assist" && request.method === "POST") return cloudJson({ answer: "تم تحويل الطلب إلى طبقة Cloudflare D1. هذه إجابة تشغيلية أولية من Worker، ويمكن ربط نموذج الذكاء الاصطناعي لاحقًا." });
