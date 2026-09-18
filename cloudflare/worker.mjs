@@ -1281,6 +1281,15 @@ async function api(request, env, url) {
     ]);
     return cloudJson({ windows: 1490, domains: Number(domains?.count || 0), invoices: Number(invoices?.count || 0), stockValue: "0.00", journals: Number(journals?.count || 0) });
   }
+  if (url.pathname === "/api/cloud/system-settings" && request.method === "GET") {
+    const row = await env.ONEX_DB.prepare("SELECT companyId,engine,host,port,databaseName,ssl,updatedBy,updatedAt FROM system_settings WHERE companyId=1 LIMIT 1").first();
+    return cloudJson(row || { companyId: 1, engine: "mysql", host: "", port: 3306, databaseName: "", ssl: 1, updatedBy: "system" });
+  }
+  if (url.pathname === "/api/cloud/system-settings" && request.method === "POST") {
+    const body = await request.json();
+    await env.ONEX_DB.prepare("INSERT INTO system_settings(companyId,engine,host,port,databaseName,ssl,updatedBy,updatedAt) VALUES(1,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(companyId) DO UPDATE SET engine=excluded.engine,host=excluded.host,port=excluded.port,databaseName=excluded.databaseName,ssl=excluded.ssl,updatedBy=excluded.updatedBy,updatedAt=CURRENT_TIMESTAMP").bind(body.engine, body.host || null, Number(body.port || 3306), body.databaseName || null, Number(body.ssl ? 1 : 0), body.updatedBy || "cloud-user").run();
+    return cloudJson({ ...(await env.ONEX_DB.prepare("SELECT companyId,engine,host,port,databaseName,ssl,updatedBy,updatedAt FROM system_settings WHERE companyId=1 LIMIT 1").first()), saved: true, secretPolicy: "DATABASE_URL remains a server secret" });
+  }
   if (url.pathname === "/api/cloud/windows" && request.method === "GET") {
     const q = (url.searchParams.get("search") || "").trim(); const domain = (url.searchParams.get("domain") || "").trim(); const lim = limitOf(url); const like = `%${q}%`;
     const exists = await env.ONEX_DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='window_registry' LIMIT 1").first();

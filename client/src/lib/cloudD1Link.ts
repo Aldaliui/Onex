@@ -29,10 +29,13 @@ const mapOperation = (op: Operation) => {
     case "auth.me": return ["/auth/me", "GET"] as const;
     case "auth.logout": return ["/auth/logout", "POST"] as const;
     case "dashboard": return ["/dashboard", "GET"] as const;
+    case "systemSettings.get": return ["/system-settings", "GET"] as const;
+    case "systemSettings.save": return ["/system-settings", "POST"] as const;
     case "masterData": return ["/master-data", "GET"] as const;
     case "windows.list": return ["/windows", "GET"] as const;
     case "windows.tree": return ["/windows/tree", "GET"] as const;
     case "windows.contract": return [`/windows/contract/${encodeURIComponent(String(input?.legacyForm || ""))}`, "GET"] as const;
+    case "windows.records": return ["/windows/records", "GET"] as const;
     case "windows.records": return ["/windows/records", "GET"] as const;
     case "windows.saveCustomer": return ["/customers", "POST"] as const;
     case "windows.deleteCustomer": return [`/customers/${encodeURIComponent(String(input?.id || ""))}`, "DELETE"] as const;

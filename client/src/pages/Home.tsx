@@ -43,6 +43,7 @@ export default function Home() {
   const [aiMessages, setAiMessages] = useState<Message[]>([{ role: "system", content: "ONEX neural assistant" }]);
   const dashboard = trpc.dashboard.useQuery();
   const master = trpc.masterData.useQuery();
+  const systemSettings = trpc.systemSettings.get.useQuery();
   const windows = trpc.windows.list.useQuery({ search: windowSearch || undefined, domain, limit: 80 });
   const systemTree = trpc.windows.tree.useQuery();
   const windowContract = trpc.windows.contract.useQuery({ legacyForm: selectedWindow?.legacyForm || "__none__.fmx" }, { enabled: Boolean(selectedWindow?.legacyForm) });
@@ -52,6 +53,7 @@ export default function Home() {
   const executeWindowAction = trpc.windows.executeAction.useMutation();
   const invoiceTotal = useMemo(() => (Number(quantity || 0) * Number(unitPrice || 0) + Number(tax || 0)).toFixed(2), [quantity, unitPrice, tax]);
   const dbReady = Boolean(master.data?.items?.length);
+  const setupLabel = systemSettings.data?.databaseName ? `قاعدة: ${systemSettings.data.databaseName}` : "تهيئة النظام";
   const stats = dashboard.data ?? { windows: 1490, domains: 12, invoices: 0, stockValue: "0.00", journals: 0 };
   const visibleWindows = windows.data?.length ? windows.data : sampleWindows.filter(([name, d, cap]) => `${name} ${d} ${cap}`.toLowerCase().includes(windowSearch.toLowerCase()) && (domain === "ALL" || d === domain));
   const customers = master.data?.customers ?? [];
@@ -78,7 +80,7 @@ export default function Home() {
         <button className={section === "windows" ? "nav-item active" : "nav-item"} onClick={() => setSection("windows")}><PanelLeft size={17} />دليل النوافذ <em>1,490</em></button>
         <button className={section === "ar" ? "nav-item active" : "nav-item"} onClick={() => setSection("ar")}><FileText size={17} />ARST004 <em>تجريبي</em></button>
         <button className="nav-item" onClick={() => setLocation("/workbench")}><Boxes size={17} />مساحة تشغيل النوافذ <em>فتح</em></button>
-        <button className="nav-item" onClick={() => setLocation("/setup")}><Settings2 size={17} />تهيئة النظام <em>إعداد</em></button>
+        <button className="nav-item" onClick={() => setLocation("/setup")}><Settings2 size={17} />{setupLabel} <em>إعداد</em></button>
         <button className="nav-item" onClick={() => setLocation("/showcase")}><Sparkles size={17} />معرض الواجهة <em>QA</em></button>
         <button className="nav-item muted" onClick={() => toast.info("ستُفعّل في المرحلة التالية")}><Warehouse size={17} />المخزون <em>قريبًا</em></button>
         <button className="nav-item muted" onClick={() => toast.info("ستُفعّل في المرحلة التالية")}><CircleDollarSign size={17} />الحسابات العامة <em>قريبًا</em></button>

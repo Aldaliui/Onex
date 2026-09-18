@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ENV } from "./_core/env";
-import { accounts, adjustmentNoteLines, adjustmentNotes, auditEvents, banks, branches, cashBoxes, companies, customers, documentEvents, fiscalPeriods, inventoryCountLines, inventoryCounts, inventoryTransferLines, inventoryTransfers, invoices, invoiceLines, items, journalEntries, journalEntryLines, paymentAllocations, paymentVouchers, receiptAllocations, receiptVouchers, stockBalances, stockMovements, suppliers, warehouses, windowContracts, windowExecutions, windowRegistry, type InsertUser, users } from "../drizzle/schema";
+import { accounts, adjustmentNoteLines, adjustmentNotes, auditEvents, banks, branches, cashBoxes, companies, customers, documentEvents, fiscalPeriods, inventoryBatches, inventoryCountLines, inventoryCounts, inventorySerials, inventoryTransferLines, inventoryTransfers, invoices, invoiceLines, items, journalEntries, journalEntryLines, paymentAllocations, paymentVouchers, receiptAllocations, receiptVouchers, stockBalances, stockLocationBalances, stockMovements, suppliers, systemSettings, warehouseLocations, warehouses, windowContracts, windowExecutions, windowRegistry, type InsertUser, users } from "../drizzle/schema";
 import { buildPurchaseJournal, buildReversalJournal, buildSaleJournal, calculateInvoice, canPostToPeriod, validateJournal } from "./accountingCore";
 import { getLegacyWindowContract } from "./legacyWindowContracts";
 import { assertStockRule, calculateMovingAverage } from "./inventoryKernel";
@@ -24,6 +24,10 @@ const demoWindowExecutions = new Map<string, { status: string; response: unknown
 const demoUsers: Array<{ id: number; openId: string; name: string | null; email: string | null; loginMethod: string; role: "user" | "admin"; lastSignedIn: Date }> = [];
 const demoInventoryBalances = new Map<string, { quantity: number; totalCost: number; unitCost: number }>();
 const demoInventoryTransfers = new Map<number, { id: number; transferNo: string; sourceWarehouseId: number; destinationWarehouseId: number; status: "DRAFT" | "POSTED"; lines: { itemId: number; quantity: number; unitCost: number }[] }>();
+const demoInvoiceLines = new Map<number, LinkedInvoiceLine[]>();
+const demoBatchBalances = new Map<string, { quantity: number; unitCost: number }>();
+const demoLocationBalances = new Map<string, number>();
+const demoSerialStatuses = new Map<string, { warehouseId: number; status: "AVAILABLE" | "SOLD" }>();
 const demoBranches = [{ id: 1, companyId: 1, code: "MAIN", name: "الفرع الرئيسي", active: 1 }];
 const demoWarehouses = [{ id: 1, companyId: 1, code: "MAIN", name: "المستودع الرئيسي", active: 1 }];
 const demoAccounts: Array<{ id: number; companyId: number; code: string; name: string; accountType: string; parentCode?: string; currencyCode: string; active: number }> = [{ id: 1, companyId: 1, code: "1100", name: "النقدية", accountType: "ASSET", currencyCode: "SAR", active: 1 }, { id: 2, companyId: 1, code: "4100", name: "إيرادات المبيعات", accountType: "REVENUE", currencyCode: "SAR", active: 1 }, { id: 3, companyId: 1, code: "5100", name: "تكلفة المبيعات", accountType: "EXPENSE", currencyCode: "SAR", active: 1 }, { id: 4, companyId: 1, code: "2100-0001", name: "مورد تجريبي", accountType: "LIABILITY", parentCode: "2100", currencyCode: "SAR", active: 1 }, { id: 5, companyId: 1, code: "1200-0001", name: "عميل تجريبي", accountType: "ASSET", parentCode: "1200", currencyCode: "SAR", active: 1 }];
@@ -556,8 +560,13 @@ export async function executeGlWindowAction(input: {
   } catch (error) { await log("FAILED", { error: error instanceof Error ? error.message : String(error) }); throw error; }
 }
 
-export async function createInvoice(input: { docNo: string; customerId: number; warehouseId: number; currencyCode?: string; exchangeRate?: string; paymentMethod?: string; paidAmount?: string; paymentReference?: string; lines: { itemId: number; quantity: string; unitPrice: string; taxAmount: string }[]; actor: string; }) {
+type LinkedInvoiceLine = { itemId: number; quantity: string; unitPrice: string; taxAmount: string; unitCode?: string; batchNo?: string; expireDate?: string; locationId?: number; serials?: string[] };
+function validateLinkedInvoiceLines(lines: LinkedInvoiceLine[]) { for (const line of lines) { const quantity = Number(line.quantity); if (line.expireDate && !Number.isFinite(new Date(line.expireDate).getTime())) throw new Error("INVALID_EXPIRY_DATE"); if (line.serials?.length && (!Number.isInteger(quantity) || line.serials.length !== quantity)) throw new Error("SERIAL_COUNT_MISMATCH"); if (line.serials?.length && new Set(line.serials).size !== line.serials.length) throw new Error("DUPLICATE_SERIAL_NUMBER"); } }
+function applyDemoInvoiceTrace(lines: LinkedInvoiceLine[], warehouseId: number, direction: "IN" | "OUT") { for (const line of lines) { const quantity = Number(line.quantity); if (line.batchNo) { const key = `${line.itemId}:${warehouseId}:${line.batchNo}`; const batch = demoBatchBalances.get(key) || { quantity: 0, unitCost: Number(line.unitPrice) }; const after = direction === "IN" ? batch.quantity + quantity : batch.quantity - quantity; if (after < -0.000001) throw new Error("INSUFFICIENT_BATCH_STOCK"); demoBatchBalances.set(key, { quantity: after, unitCost: Number(line.unitPrice) || batch.unitCost }); } if (line.locationId) { const key = `${line.itemId}:${warehouseId}:${line.locationId}`; const before = demoLocationBalances.get(key) || 0; const after = direction === "IN" ? before + quantity : before - quantity; if (after < -0.000001) throw new Error("INSUFFICIENT_LOCATION_STOCK"); demoLocationBalances.set(key, after); } for (const serialNo of line.serials || []) { const key = `${line.itemId}:${serialNo}`; if (direction === "IN") { if (demoSerialStatuses.has(key)) throw new Error("DUPLICATE_SERIAL_NUMBER"); demoSerialStatuses.set(key, { warehouseId, status: "AVAILABLE" }); } else { const serial = demoSerialStatuses.get(key); if (!serial || serial.warehouseId !== warehouseId || serial.status !== "AVAILABLE") throw new Error("SERIAL_NOT_AVAILABLE"); serial.status = "SOLD"; } } } }
+
+export async function createInvoice(input: { docNo: string; customerId: number; warehouseId: number; currencyCode?: string; exchangeRate?: string; paymentMethod?: string; paidAmount?: string; paymentReference?: string; lines: LinkedInvoiceLine[]; actor: string; }) {
   const db = await getDb();
+  validateLinkedInvoiceLines(input.lines);
   const calculated = calculateInvoice(input.lines, input.paidAmount || "0");
   const { subtotal, taxTotal, grandTotal } = calculated;
   const idempotencyKey = `ARST004:${input.docNo}`;
@@ -567,6 +576,7 @@ export async function createInvoice(input: { docNo: string; customerId: number; 
     const paidAmount = Number(input.paidAmount || 0);
     const result = { invoiceId, docNo: input.docNo, currencyCode: input.currencyCode || "SAR", exchangeRate: Number(input.exchangeRate || 1), paymentMethod: input.paymentMethod || "CASH", paidAmount, remainingAmount: grandTotal - paidAmount, subtotal, taxTotal, grandTotal, status: "DRAFT" as const };
     demoInvoices.set(invoiceId, result);
+    demoInvoiceLines.set(invoiceId, input.lines);
     return result;
   }
   return db.transaction(async (tx) => {
@@ -574,13 +584,14 @@ export async function createInvoice(input: { docNo: string; customerId: number; 
     const inserted = await tx.insert(invoices).values({ docNo: input.docNo, customerId: input.customerId, warehouseId: input.warehouseId, currencyCode: input.currencyCode || "SAR", exchangeRate: input.exchangeRate || "1", subtotal: subtotal.toFixed(6), taxTotal: taxTotal.toFixed(6), grandTotal: grandTotal.toFixed(6), paymentMethod: input.paymentMethod || "CASH", paidAmount: paidAmount.toFixed(6), remainingAmount: (grandTotal - paidAmount).toFixed(6), paymentReference: input.paymentReference || null, idempotencyKey, createdBy: input.actor }).$returningId();
     const invoiceId = Number(inserted[0]?.id);
     if (!invoiceId) throw new Error("INVOICE_CREATE_FAILED");
-    await tx.insert(invoiceLines).values(input.lines.map((line) => ({ invoiceId, itemId: line.itemId, quantity: line.quantity, unitPrice: line.unitPrice, taxAmount: line.taxAmount, lineTotal: (Number(line.quantity) * Number(line.unitPrice) + Number(line.taxAmount)).toFixed(6) })));
+    await tx.insert(invoiceLines).values(input.lines.map((line) => ({ invoiceId, itemId: line.itemId, quantity: line.quantity, unitPrice: line.unitPrice, taxAmount: line.taxAmount, lineTotal: (Number(line.quantity) * Number(line.unitPrice) + Number(line.taxAmount)).toFixed(6), unitCode: line.unitCode || "EA", batchNo: line.batchNo || null, expireDate: line.expireDate ? new Date(line.expireDate) : null, locationId: line.locationId || null, serialsJson: line.serials?.length ? JSON.stringify(line.serials) : null })));
     await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE", entityType: "AR_DOC", entityId: String(invoiceId), requestId: idempotencyKey });
     return { invoiceId, docNo: input.docNo, subtotal, taxTotal, grandTotal, status: "DRAFT" as const };
   });
 }
 
-export async function createPurchaseInvoice(input: { docNo: string; supplierId: number; warehouseId: number; currencyCode?: string; exchangeRate?: string; paymentMethod?: string; paidAmount?: string; paymentReference?: string; lines: { itemId: number; quantity: string; unitPrice: string; taxAmount: string }[]; actor: string; }) {
+export async function createPurchaseInvoice(input: { docNo: string; supplierId: number; warehouseId: number; currencyCode?: string; exchangeRate?: string; paymentMethod?: string; paidAmount?: string; paymentReference?: string; lines: LinkedInvoiceLine[]; actor: string; }) {
+  validateLinkedInvoiceLines(input.lines);
   const calculated = calculateInvoice(input.lines, input.paidAmount || "0");
   const { subtotal, taxTotal, grandTotal } = calculated;
   const idempotencyKey = `APST003:${input.docNo}`;
@@ -590,6 +601,7 @@ export async function createPurchaseInvoice(input: { docNo: string; supplierId: 
     const invoiceId = ++demoInvoiceSequence;
     const result = { invoiceId, docNo: input.docNo, subtotal, taxTotal, grandTotal, status: "DRAFT" as const };
     demoPurchaseInvoices.set(invoiceId, result);
+    demoInvoiceLines.set(invoiceId, input.lines);
     return result;
   }
   return db.transaction(async (tx) => {
@@ -597,7 +609,7 @@ export async function createPurchaseInvoice(input: { docNo: string; supplierId: 
     const inserted = await tx.insert(invoices).values({ invoiceType: "PURCHASE", docNo: input.docNo, customerId: null, supplierId: input.supplierId, warehouseId: input.warehouseId, currencyCode: input.currencyCode || "SAR", exchangeRate: input.exchangeRate || "1", subtotal: subtotal.toFixed(6), taxTotal: taxTotal.toFixed(6), grandTotal: grandTotal.toFixed(6), paymentMethod: input.paymentMethod || "CREDIT", paidAmount: paidAmount.toFixed(6), remainingAmount: (grandTotal - paidAmount).toFixed(6), paymentReference: input.paymentReference || null, idempotencyKey, sourceForm: "APST003", createdBy: input.actor }).$returningId();
     const invoiceId = Number(inserted[0]?.id);
     if (!invoiceId) throw new Error("PURCHASE_INVOICE_CREATE_FAILED");
-    await tx.insert(invoiceLines).values(input.lines.map((line) => ({ invoiceId, itemId: line.itemId, quantity: line.quantity, unitPrice: line.unitPrice, taxAmount: line.taxAmount, lineTotal: (Number(line.quantity) * Number(line.unitPrice) + Number(line.taxAmount)).toFixed(6) })));
+    await tx.insert(invoiceLines).values(input.lines.map((line) => ({ invoiceId, itemId: line.itemId, quantity: line.quantity, unitPrice: line.unitPrice, taxAmount: line.taxAmount, lineTotal: (Number(line.quantity) * Number(line.unitPrice) + Number(line.taxAmount)).toFixed(6), unitCode: line.unitCode || "EA", batchNo: line.batchNo || null, expireDate: line.expireDate ? new Date(line.expireDate) : null, locationId: line.locationId || null, serialsJson: line.serials?.length ? JSON.stringify(line.serials) : null })));
     await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE", entityType: "AP_DOC", entityId: String(invoiceId), requestId: idempotencyKey });
     return { invoiceId, docNo: input.docNo, subtotal, taxTotal, grandTotal, status: "DRAFT" as const };
   });
@@ -609,6 +621,7 @@ export async function postPurchaseInvoice(invoiceId: number, actor: string) {
     const invoice = demoPurchaseInvoices.get(invoiceId);
     if (!invoice) throw new Error("PURCHASE_INVOICE_NOT_FOUND");
     if (invoice.status !== "DRAFT") throw new Error("PURCHASE_INVOICE_ALREADY_POSTED_OR_REVERSED");
+    applyDemoInvoiceTrace(demoInvoiceLines.get(invoiceId) || [], 1, "IN");
     invoice.status = "POSTED";
     return { invoiceId, status: "POSTED" as const };
   }
@@ -633,6 +646,7 @@ export async function postPurchaseInvoice(invoiceId: number, actor: string) {
       if (row.balance) await tx.update(stockBalances).set({ quantity: afterQty.toFixed(6), totalCost: afterCost.toFixed(6), unitCost: (afterCost / afterQty).toFixed(6), versionNo: row.balance.versionNo + 1 }).where(eq(stockBalances.id, row.balance.id));
       else await tx.insert(stockBalances).values({ itemId: row.line.itemId, warehouseId: invoice.warehouseId, quantity: quantity.toFixed(6), totalCost: totalCost.toFixed(6), unitCost: unitCost.toFixed(6), versionNo: 1 });
       await tx.insert(stockMovements).values({ itemId: row.line.itemId, warehouseId: invoice.warehouseId, sourceInvoiceId: invoiceId, movementType: "PURCHASE_RECEIPT", quantityIn: quantity.toFixed(6), unitCost: unitCost.toFixed(6), totalCost: totalCost.toFixed(6), balanceAfter: afterQty.toFixed(6), createdBy: actor });
+      await applyInvoiceInventoryTrace(tx, row, invoice.warehouseId, quantity, unitCost, "IN", actor);
     }
     const purchaseJournal = buildPurchaseJournal({ total: Number(invoice.grandTotal), subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), payableAccount: supplierAccount.code, inventoryAccount: lines[0]?.item.inventoryAccount || "1300" });
     const insertedJournal = await tx.insert(journalEntries).values({ journalNo: `AP-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "AP_PURCHASE", totalDebit: purchaseJournal.totalDebit.toFixed(6), totalCredit: purchaseJournal.totalCredit.toFixed(6) }).$returningId();
@@ -781,6 +795,7 @@ export async function postInvoice(invoiceId: number, actor: string) {
     const invoice = demoInvoices.get(invoiceId);
     if (!invoice) throw new Error("INVOICE_NOT_FOUND");
     if (invoice.status !== "DRAFT") throw new Error("INVOICE_ALREADY_POSTED_OR_REVERSED");
+    applyDemoInvoiceTrace(demoInvoiceLines.get(invoiceId) || [], 1, "OUT");
     invoice.status = "POSTED";
     return { invoiceId, status: "POSTED" as const, totalCogs: 0 };
   }
@@ -811,6 +826,7 @@ export async function postInvoice(invoiceId: number, actor: string) {
         const afterCost = Math.max(0, Number(balance.totalCost) - cost);
         await tx.update(stockBalances).set({ quantity: afterQty.toFixed(6), totalCost: afterCost.toFixed(6), unitCost: afterQty ? (afterCost / afterQty).toFixed(6) : "0", versionNo: balance.versionNo + 1 }).where(eq(stockBalances.id, balance.id));
         await tx.insert(stockMovements).values({ itemId: row.line.itemId, warehouseId: invoice.warehouseId, sourceInvoiceId: invoiceId, movementType: "SALES_ISSUE", quantityOut: quantity.toFixed(6), unitCost: unitCost.toFixed(6), totalCost: cost.toFixed(6), balanceAfter: afterQty.toFixed(6), createdBy: actor });
+        await applyInvoiceInventoryTrace(tx, row, invoice.warehouseId, quantity, unitCost, "OUT", actor);
       }
     }
     const total = Number(invoice.grandTotal);
@@ -1153,4 +1169,26 @@ export async function postInventoryTransfer(transferId: number, actor: string) {
     for (const line of lines) { const source = (await tx.select().from(stockBalances).where(and(eq(stockBalances.itemId, line.itemId), eq(stockBalances.warehouseId, transfer.sourceWarehouseId))).limit(1))[0]; const quantity = Number(line.quantity); if (!source) throw new Error("INSUFFICIENT_STOCK"); const afterSource = assertStockRule({ beforeQuantity: Number(source.quantity), movementQuantity: quantity, direction: "OUT" }); const movedCost = quantity * Number(source.unitCost); const destination = (await tx.select().from(stockBalances).where(and(eq(stockBalances.itemId, line.itemId), eq(stockBalances.warehouseId, transfer.destinationWarehouseId))).limit(1))[0]; const nextDestination = destination ? calculateMovingAverage(Number(destination.quantity), Number(destination.totalCost), quantity, Number(source.unitCost)) : { quantity, totalCost: movedCost, unitCost: Number(source.unitCost) }; await tx.update(stockBalances).set({ quantity: afterSource.toFixed(6), totalCost: Math.max(0, Number(source.totalCost) - movedCost).toFixed(6), unitCost: afterSource ? (Math.max(0, Number(source.totalCost) - movedCost) / afterSource).toFixed(6) : "0", versionNo: source.versionNo + 1 }).where(eq(stockBalances.id, source.id)); if (destination) await tx.update(stockBalances).set({ quantity: nextDestination.quantity.toFixed(6), totalCost: nextDestination.totalCost.toFixed(6), unitCost: nextDestination.unitCost.toFixed(6), versionNo: destination.versionNo + 1 }).where(eq(stockBalances.id, destination.id)); else await tx.insert(stockBalances).values({ itemId: line.itemId, warehouseId: transfer.destinationWarehouseId, quantity: nextDestination.quantity.toFixed(6), totalCost: nextDestination.totalCost.toFixed(6), unitCost: nextDestination.unitCost.toFixed(6), versionNo: 1 }); await tx.insert(stockMovements).values([{ itemId: line.itemId, warehouseId: transfer.sourceWarehouseId, movementType: "TRANSFER_OUT", quantityOut: quantity.toFixed(6), unitCost: Number(source.unitCost).toFixed(6), totalCost: movedCost.toFixed(6), balanceAfter: afterSource.toFixed(6), createdBy: actor }, { itemId: line.itemId, warehouseId: transfer.destinationWarehouseId, movementType: "TRANSFER_IN", quantityIn: quantity.toFixed(6), unitCost: Number(source.unitCost).toFixed(6), totalCost: movedCost.toFixed(6), balanceAfter: nextDestination.quantity.toFixed(6), createdBy: actor }]); }
     await tx.update(inventoryTransfers).set({ status: "POSTED", postedAt: new Date() }).where(eq(inventoryTransfers.id, transferId)); await tx.insert(auditEvents).values({ actor, actionCode: "POST", entityType: "INVENTORY_TRANSFER", entityId: String(transferId), requestId: `TRANSFER:POST:${transferId}` }); return { transferId, status: "POSTED" as const };
   });
+}
+
+async function applyInvoiceInventoryTrace(tx: any, line: any, warehouseId: number, quantity: number, unitCost: number, direction: "IN" | "OUT", actor: string) {
+  const metadata = line.line; const serials: string[] = metadata.serialsJson ? JSON.parse(metadata.serialsJson) : [];
+  if (metadata.locationId) { const location = (await tx.select().from(warehouseLocations).where(and(eq(warehouseLocations.id, metadata.locationId), eq(warehouseLocations.warehouseId, warehouseId))).limit(1))[0]; if (!location || location.active !== 1) throw new Error("STORAGE_LOCATION_NOT_ACTIVE"); const locationBalance = (await tx.select().from(stockLocationBalances).where(and(eq(stockLocationBalances.itemId, metadata.itemId), eq(stockLocationBalances.warehouseId, warehouseId), eq(stockLocationBalances.locationId, metadata.locationId))).limit(1))[0]; const before = Number(locationBalance?.quantity || 0); const after = direction === "IN" ? before + quantity : before - quantity; if (after < -0.000001) throw new Error("INSUFFICIENT_LOCATION_STOCK"); const totalCost = direction === "IN" ? Number(locationBalance?.totalCost || 0) + quantity * unitCost : Math.max(0, Number(locationBalance?.totalCost || 0) - quantity * unitCost); if (locationBalance) await tx.update(stockLocationBalances).set({ quantity: after.toFixed(6), totalCost: totalCost.toFixed(6), unitCost: after ? (totalCost / after).toFixed(6) : "0", versionNo: locationBalance.versionNo + 1 }).where(eq(stockLocationBalances.id, locationBalance.id)); else await tx.insert(stockLocationBalances).values({ itemId: metadata.itemId, warehouseId, locationId: metadata.locationId, quantity: quantity.toFixed(6), totalCost: (quantity * unitCost).toFixed(6), unitCost: unitCost.toFixed(6), versionNo: 1 }); }
+  if (metadata.batchNo) { const batch = (await tx.select().from(inventoryBatches).where(and(eq(inventoryBatches.itemId, metadata.itemId), eq(inventoryBatches.warehouseId, warehouseId), eq(inventoryBatches.batchNo, metadata.batchNo))).limit(1))[0]; const before = Number(batch?.quantity || 0); const after = direction === "IN" ? before + quantity : before - quantity; if (after < -0.000001) throw new Error("INSUFFICIENT_BATCH_STOCK"); if (batch) await tx.update(inventoryBatches).set({ quantity: after.toFixed(6), unitCost: unitCost.toFixed(6), expireDate: metadata.expireDate ? new Date(metadata.expireDate) : batch.expireDate, locationId: metadata.locationId || batch.locationId }).where(eq(inventoryBatches.id, batch.id)); else if (direction === "IN") await tx.insert(inventoryBatches).values({ itemId: metadata.itemId, warehouseId, batchNo: metadata.batchNo, quantity: quantity.toFixed(6), unitCost: unitCost.toFixed(6), expireDate: metadata.expireDate ? new Date(metadata.expireDate) : null, locationId: metadata.locationId || null }); }
+  if (serials.length) { if (direction === "IN") { for (const serialNo of serials) await tx.insert(inventorySerials).values({ itemId: metadata.itemId, warehouseId, serialNo, status: "AVAILABLE" }); } else { for (const serialNo of serials) { const serial = (await tx.select().from(inventorySerials).where(and(eq(inventorySerials.itemId, metadata.itemId), eq(inventorySerials.serialNo, serialNo))).limit(1))[0]; if (!serial || serial.status !== "AVAILABLE" || serial.warehouseId !== warehouseId) throw new Error("SERIAL_NOT_AVAILABLE"); await tx.update(inventorySerials).set({ status: "SOLD" }).where(eq(inventorySerials.id, serial.id)); } } }
+  await tx.insert(auditEvents).values({ actor, actionCode: direction === "IN" ? "TRACE_IN" : "TRACE_OUT", entityType: "INVOICE_INVENTORY_TRACE", entityId: `${metadata.itemId}:${warehouseId}`, requestId: `TRACE:${direction}:${metadata.itemId}:${warehouseId}:${metadata.batchNo || ""}:${metadata.locationId || ""}` });
+}
+
+export async function getSystemSettings() {
+  const db = await getDb();
+  if (!db) return { companyId: 1, engine: "mysql", host: "", port: 3306, databaseName: "", ssl: 1, updatedBy: "local" };
+  const row = (await db.select().from(systemSettings).where(eq(systemSettings.companyId, 1)).limit(1))[0];
+  return row || { companyId: 1, engine: "mysql", host: "", port: 3306, databaseName: "", ssl: 1, updatedBy: "system" };
+}
+
+export async function saveSystemSettings(input: { engine: string; host?: string; port: number; databaseName?: string; ssl: number; updatedBy: string }) {
+  const db = await getDb();
+  if (!db) return { companyId: 1, ...input, saved: true, secretPolicy: "DATABASE_URL remains a server secret" };
+  await db.insert(systemSettings).values({ companyId: 1, engine: input.engine, host: input.host || null, port: input.port, databaseName: input.databaseName || null, ssl: input.ssl, updatedBy: input.updatedBy }).onDuplicateKeyUpdate({ set: { engine: input.engine, host: input.host || null, port: input.port, databaseName: input.databaseName || null, ssl: input.ssl, updatedBy: input.updatedBy, updatedAt: new Date() } });
+  return { ...(await getSystemSettings()), saved: true, secretPolicy: "DATABASE_URL remains a server secret" };
 }

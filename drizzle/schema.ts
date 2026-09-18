@@ -12,6 +12,18 @@ export const users = mysqlTable("users", {
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
 });
 
+export const systemSettings = mysqlTable("system_settings", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull().unique(),
+  engine: varchar("engine", { length: 30 }).notNull().default("mysql"),
+  host: varchar("host", { length: 255 }),
+  port: int("port").default(3306),
+  databaseName: varchar("databaseName", { length: 160 }),
+  ssl: int("ssl").notNull().default(1),
+  updatedBy: varchar("updatedBy", { length: 100 }).notNull().default("system"),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
 export const windowRegistry = mysqlTable("window_registry", {
   id: int("id").autoincrement().primaryKey(),
   screenNo: varchar("screenNo", { length: 40 }).notNull().default("SYS-0000"),
@@ -184,6 +196,11 @@ export const invoiceLines = mysqlTable("invoice_lines", {
   unitPrice: decimal("unitPrice", { precision: 20, scale: 6 }).notNull(),
   taxAmount: decimal("taxAmount", { precision: 20, scale: 6 }).notNull().default("0"),
   lineTotal: decimal("lineTotal", { precision: 20, scale: 6 }).notNull(),
+  unitCode: varchar("unitCode", { length: 30 }).notNull().default("EA"),
+  batchNo: varchar("batchNo", { length: 100 }),
+  expireDate: timestamp("expireDate"),
+  locationId: int("locationId"),
+  serialsJson: text("serialsJson"),
 });
 
 export const adjustmentNotes = mysqlTable("adjustment_notes", {
@@ -237,6 +254,17 @@ export const stockMovements = mysqlTable("stock_movements", {
   createdBy: varchar("createdBy", { length: 100 }).notNull().default("demo.user"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
+
+export const stockLocationBalances = mysqlTable("stock_location_balances", {
+  id: int("id").autoincrement().primaryKey(),
+  itemId: int("itemId").notNull(),
+  warehouseId: int("warehouseId").notNull(),
+  locationId: int("locationId").notNull(),
+  quantity: decimal("quantity", { precision: 20, scale: 6 }).notNull().default("0"),
+  totalCost: decimal("totalCost", { precision: 20, scale: 6 }).notNull().default("0"),
+  unitCost: decimal("unitCost", { precision: 20, scale: 6 }).notNull().default("0"),
+  versionNo: int("versionNo").notNull().default(1),
+}, (table) => ({ itemWarehouseLocation: unique("stock_item_warehouse_location").on(table.itemId, table.warehouseId, table.locationId) }));
 
 export const journalEntries = mysqlTable("journal_entries", {
   id: int("id").autoincrement().primaryKey(),
