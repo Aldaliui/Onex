@@ -40,6 +40,11 @@ describe("ONEX module unit tests", () => {
     expect((result.result as { status: string }).status).toBe("POSTED");
     await expect(api.windows.glExecute({ legacyForm: "GLST002.fmx", action: "save", requestId: `gl-invalid-${Date.now()}`, journal: { journalNo: `GL-BAD-${Date.now()}`, entryType: "GENERAL_JOURNAL", actor: "unit.gl", lines: [{ accountCode: "1100", debit: "100", credit: "0" }, { accountCode: "4100", debit: "0", credit: "90" }] } })).rejects.toBeTruthy();
   });
+  it("GL window API returns the original result for a repeated requestId", async () => {
+    const api = caller(); const requestId = `gl-idempotent-${Date.now()}`; const journal = { journalNo: `GL-IDEMP-${Date.now()}`, entryType: "GENERAL_JOURNAL", actor: "unit.gl", lines: [{ accountCode: "1100", debit: "55", credit: "0" }, { accountCode: "4100", debit: "0", credit: "55" }] };
+    const first = await api.windows.glExecute({ legacyForm: "GLST002.fmx", action: "save", requestId, journal }); const second = await api.windows.glExecute({ legacyForm: "GLST002.fmx", action: "save", requestId, journal: { ...journal, journalNo: `${journal.journalNo}-CHANGED` } });
+    expect(second.idempotent).toBe(true); expect(second.result).toEqual(first.result);
+  });
 
   it("AR: creates, posts, and reverses a receivable invoice atomically", async () => {
     const api = caller();
@@ -70,6 +75,11 @@ describe("ONEX module unit tests", () => {
     expect((created.result as { status: string }).status).toBe("DRAFT");
     const queried = await api.windows.salesExecute({ legacyForm: "ARST023.fmx", action: "query", requestId: `sales-query-${Date.now()}`, search: "SALES-API" });
     expect(queried.mode).toBe("DATABASE_CONTRACT");
+  });
+  it("Sales window API returns the original invoice for a repeated requestId", async () => {
+    const api = caller(); const requestId = `sales-idempotent-${Date.now()}`; const invoice = { docNo: `SALES-IDEMP-${Date.now()}`, customerId: 1, warehouseId: 1, lines: [{ itemId: 1, quantity: "1", unitPrice: "20", taxAmount: "3" }], actor: "contract.sales" };
+    const first = await api.windows.salesExecute({ legacyForm: "ARST004.fmx", action: "new", requestId, invoice }); const second = await api.windows.salesExecute({ legacyForm: "ARST004.fmx", action: "new", requestId, invoice: { ...invoice, docNo: `${invoice.docNo}-CHANGED` } });
+    expect(second.idempotent).toBe(true); expect(second.result).toEqual(first.result);
   });
 
   it("AP: exposes purchasing windows and save/update/delete actions", async () => {

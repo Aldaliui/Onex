@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { CircleDollarSign, Package, Pencil, Plus, RotateCcw, Search, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
+import { useOfflineSync } from "@/hooks/useOfflineSync";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -21,6 +22,7 @@ export default function SalesInvoiceForm() {
   const master = trpc.masterData.useQuery();
   const createInvoice = trpc.invoices.create.useMutation();
   const postInvoice = trpc.invoices.post.useMutation();
+  const offline = useOfflineSync(async (operation) => { if (operation.type !== "SALES_INVOICE_CREATE") return "CONFLICT"; const payload = operation.payload as { invoice: Parameters<typeof createInvoice.mutateAsync>[0]; postNow: boolean }; const created = await createInvoice.mutateAsync(payload.invoice); if (payload.postNow) await postInvoice.mutateAsync({ invoiceId: created.invoiceId, actor: payload.invoice.actor }); return "SYNCED"; });
   const [docNo, setDocNo] = useState(`INV-${new Date().getFullYear()}-0001`);
   const [customerId, setCustomerId] = useState(0);
   const [warehouseId, setWarehouseId] = useState(0);
@@ -57,8 +59,10 @@ export default function SalesInvoiceForm() {
     if (!selectedCustomer || !selectedWarehouse || !lines.length) return toast.error("اختر العميل والمستودع وأضف صنفاً واحداً على الأقل");
     if (Number(paidAmount) > totals.total) return toast.error("المبلغ المدفوع لا يمكن أن يتجاوز إجمالي الفاتورة");
     if (["CHECK", "WALLET", "BANK_TRANSFER"].includes(paymentMethod) && Number(paidAmount) > 0 && !paymentReference.trim()) return toast.error("أدخل مرجع الشيك أو عملية الدفع");
+    const invoice = { docNo, customerId: selectedCustomer.id, warehouseId: selectedWarehouse.id, currencyCode, exchangeRate, paymentMethod: paymentMethod as "CASH" | "CREDIT" | "CHECK" | "WALLET" | "BANK_TRANSFER", paidAmount, paymentReference: paymentReference || undefined, actor: "workbench.user", lines: lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitPrice: line.unitPrice, taxAmount: line.taxAmount })) };
     try {
-      const created = await createInvoice.mutateAsync({ docNo, customerId: selectedCustomer.id, warehouseId: selectedWarehouse.id, currencyCode, exchangeRate, paymentMethod: paymentMethod as "CASH" | "CREDIT" | "CHECK" | "WALLET" | "BANK_TRANSFER", paidAmount, paymentReference: paymentReference || undefined, actor: "workbench.user", lines: lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitPrice: line.unitPrice, taxAmount: line.taxAmount })) });
+      if (!offline.online) { await offline.enqueue("SALES_INVOICE_CREATE", { invoice, postNow }, `SALES_INVOICE:${docNo}`); toast.info("تم حفظ فاتورة المبيعات محليًا وستتم مزامنتها عند عودة الاتصال"); return; }
+      const created = await createInvoice.mutateAsync(invoice);
       if (postNow) {
         await postInvoice.mutateAsync({ invoiceId: created.invoiceId, actor: "workbench.user" });
         setStatus("POSTED");
@@ -66,7 +70,7 @@ export default function SalesInvoiceForm() {
       } else {
         toast.success(`تم حفظ ${created.docNo} كمسودة`);
       }
-    } catch (error) { toast.error(error instanceof Error ? error.message : "تعذر حفظ الفاتورة"); }
+    } catch (error) { if (!offline.online) { await offline.enqueue("SALES_INVOICE_CREATE", { invoice, postNow }, `SALES_INVOICE:${docNo}`); toast.info("تعذر الاتصال؛ تم وضع فاتورة المبيعات في طابور المزامنة"); } else toast.error(error instanceof Error ? error.message : "تعذر حفظ الفاتورة"); }
   };
 
   return <section className="ar-workspace">

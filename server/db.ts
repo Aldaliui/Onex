@@ -19,6 +19,7 @@ const demoCashBoxes: Array<{ id: number; companyId: number; accountId?: number; 
 const demoBanks: Array<{ id: number; companyId: number; accountId?: number; code: string; name: string; accountNumber: string; currencyCode: string; status: "ACTIVE" | "BLOCKED" | "CLOSED" }> = [{ id: 1, companyId: 1, accountId: 1, code: "BANK-001", name: "البنك الرئيسي", accountNumber: "", currencyCode: "SAR", status: "ACTIVE" }];
 const demoItems = [{ id: 1, companyId: 1, code: "ITEM-001", description: "صنف تجريبي", stockFlag: 1, unitCost: "100", revenueAccount: "4100", inventoryAccount: "1300", cogsAccount: "5100", active: 1 }];
 const demoJournals: Array<{ id: number; journalNo: string; entryType: string; totalDebit: string; totalCredit: string; status: "POSTED" }> = [];
+const demoWindowExecutions = new Map<string, { status: string; response: unknown }>();
 const demoBranches = [{ id: 1, companyId: 1, code: "MAIN", name: "الفرع الرئيسي", active: 1 }];
 const demoWarehouses = [{ id: 1, companyId: 1, code: "MAIN", name: "المستودع الرئيسي", active: 1 }];
 const demoAccounts: Array<{ id: number; companyId: number; code: string; name: string; accountType: string; parentCode?: string; currencyCode: string; active: number }> = [{ id: 1, companyId: 1, code: "1100", name: "النقدية", accountType: "ASSET", currencyCode: "SAR", active: 1 }, { id: 2, companyId: 1, code: "4100", name: "إيرادات المبيعات", accountType: "REVENUE", currencyCode: "SAR", active: 1 }, { id: 3, companyId: 1, code: "5100", name: "تكلفة المبيعات", accountType: "EXPENSE", currencyCode: "SAR", active: 1 }, { id: 4, companyId: 1, code: "2100-0001", name: "مورد تجريبي", accountType: "LIABILITY", parentCode: "2100", currencyCode: "SAR", active: 1 }, { id: 5, companyId: 1, code: "1200-0001", name: "عميل تجريبي", accountType: "ASSET", parentCode: "1200", currencyCode: "SAR", active: 1 }];
@@ -39,6 +40,13 @@ type FallbackWindow = {
 let fallbackWindows: FallbackWindow[] | null = null;
 let hierarchyByFile: Map<string, { parentNo: string; sysNo: string; formNo: string; nameAr: string; nameEn: string; orderNo: number; inactive: number }> | null = null;
 let cloneManifestByForm: Map<string, any> | null = null;
+async function getIdempotentWindowResult(db: any, requestId: string) {
+  if (!requestId) return undefined;
+  if (!db) { const cached = demoWindowExecutions.get(requestId); return cached?.status === "SUCCEEDED" ? cached.response : undefined; }
+  const existing = (await db.select({ status: windowExecutions.status, responseJson: windowExecutions.responseJson }).from(windowExecutions).where(eq(windowExecutions.requestId, requestId)).limit(1))[0];
+  if (existing?.status === "SUCCEEDED" && existing.responseJson) { try { return JSON.parse(existing.responseJson); } catch { return undefined; } }
+  return undefined;
+}
 function loadCloneManifest() {
   if (cloneManifestByForm) return cloneManifestByForm;
   cloneManifestByForm = new Map();
@@ -482,6 +490,8 @@ export async function executeGlWindowAction(input: {
   const allowed = readOnly ? ["initialize", "query", "print", "export", "refresh", "exit"] : ["initialize", "query", "new", "validate", "save", "approve", "post", "print", "refresh", "exit"];
   if (!allowed.includes(input.action) || !contract.actions.includes(input.action)) throw new Error("ACTION_NOT_ALLOWED_FOR_GL_WINDOW");
   const db = await getDb();
+  const cached = await getIdempotentWindowResult(db, input.requestId);
+  if (cached) return { legacyForm: `${form}.fmx`, action: input.action, result: cached, mode: "DATABASE_CONTRACT" as const, idempotent: true };
   const log = async (status: string, response: unknown) => { if (db) await db.insert(windowExecutions).values({ legacyForm: `${form}.fmx`, actionCode: input.action, requestId: input.requestId, actor: input.actor, status, responseJson: JSON.stringify(response) }); };
   try {
     let response: unknown;
@@ -497,7 +507,7 @@ export async function executeGlWindowAction(input: {
       }
       response = await saveJournal(input.journal);
     } else throw new Error("GL_ACTION_NOT_IMPLEMENTED");
-    await log("SUCCEEDED", response);
+    await log("SUCCEEDED", response); if (!db) demoWindowExecutions.set(input.requestId, { status: "SUCCEEDED", response });
     return { legacyForm: `${form}.fmx`, action: input.action, result: response, mode: "DATABASE_CONTRACT" as const };
   } catch (error) { await log("FAILED", { error: error instanceof Error ? error.message : String(error) }); throw error; }
 }
@@ -816,6 +826,8 @@ export async function executeSalesWindowAction(input: {
   if (!contract.domain.toUpperCase().startsWith("AR")) throw new Error("SALES_WINDOW_DOMAIN_REQUIRED");
   if (!contract.actions.includes(input.action)) throw new Error("ACTION_NOT_ALLOWED_FOR_SALES_WINDOW");
   const db = await getDb();
+  const cached = await getIdempotentWindowResult(db, input.requestId);
+  if (cached) return { legacyForm: `${form}.fmx`, action: input.action, result: cached, mode: "DATABASE_CONTRACT" as const, idempotent: true };
   if (db) {
     await db.insert(windowContracts).values({ legacyForm: contract.legacyForm, domainCode: contract.domain, coreApi: contract.coreApi, actionsJson: JSON.stringify(contract.actions), evidenceJson: JSON.stringify(contract.evidence), rebuildLevel: "catalog_specification", verificationStatus: "CATALOG_ONLY", active: 1 }).onDuplicateKeyUpdate({ set: { domainCode: contract.domain, coreApi: contract.coreApi, actionsJson: JSON.stringify(contract.actions), evidenceJson: JSON.stringify(contract.evidence), updatedAt: new Date() } });
   }
@@ -838,7 +850,7 @@ export async function executeSalesWindowAction(input: {
       response = await reverseInvoice(input.invoiceId, input.actor);
     } else if (input.action === "print") response = { rows: await searchInvoices(input.search, input.limit || 20), mode: "DATABASE_CONTRACT" };
     else throw new Error("SALES_ACTION_NOT_IMPLEMENTED");
-    await log("SUCCEEDED", response, input.invoiceId);
+    await log("SUCCEEDED", response, input.invoiceId); if (!db) demoWindowExecutions.set(input.requestId, { status: "SUCCEEDED", response });
     return { legacyForm: `${form}.fmx`, action: input.action, result: response, mode: "DATABASE_CONTRACT" as const };
   } catch (error) {
     await log("FAILED", { error: error instanceof Error ? error.message : String(error) }, input.invoiceId);
