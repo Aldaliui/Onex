@@ -281,6 +281,7 @@ export async function getWindowContract(legacyForm: string) {
   const actions = priorityActions[form.toUpperCase()] || clone?.actions || unified?.actions?.split("|").filter(Boolean) || defaultActions;
   const evidence = (value?: string) => (value || "").split(/[;|]/).map((item) => item.trim()).filter(Boolean).slice(0, 40);
   const count = (...values: unknown[]) => { for (const value of values) { const parsed = Number(value); if (Number.isFinite(parsed)) return parsed; } return 0; };
+  const cloudCoreCrudForms = new Set(["ARST003", "APSI002", "INVT003", "GLST001"]);
   return {
     legacyForm: `${form}.fmx`, screenName: row?.screenName || form, domain, parentId: row?.parentId || "ROOT",
     source: { manifest: Boolean(manifest), runtime: Boolean(runtime), fields: Boolean(fields), unified: Boolean(unified), specification: `legacy-source/all_window_specs/${form}.rebuild.md` },
@@ -289,7 +290,7 @@ export async function getWindowContract(legacyForm: string) {
     actions: legacyContract?.actions || actions, coreApi: legacyContract?.coreApi || unified?.core_api || runtime?.core_api || `ONEX_${domain.replace(/[^A-Z]/gi, "_")}_WINDOW_API`,
     midoModules: moduleByDomain[domain.split("/")[0].toUpperCase()] || ["business-operations-core.js", "document-cycle-core.js"],
     legacyContract,
-    status: legacyContract?.implementationStatus === "IMPLEMENTED" ? "IMPLEMENTED_WITH_CLOUD_CORE" : unified?.production_status || "NOT_READY_FOR_PRODUCTION", specificationPath: `legacy-source/all_window_specs/${form}.rebuild.md`,
+    status: cloudCoreCrudForms.has(form.toUpperCase()) || legacyContract?.implementationStatus === "IMPLEMENTED" ? "IMPLEMENTED_WITH_CLOUD_CORE" : unified?.production_status || "NOT_READY_FOR_PRODUCTION", specificationPath: `legacy-source/all_window_specs/${form}.rebuild.md`,
     clone: clone?.rebuild || (priorityActions[form.toUpperCase()] ? { mode: "COMPATIBILITY_CLONE", sourceForm: `${form}.fmx`, sourceAvailable: false, updateTrack: "AR_CORE_PHASE1" } : undefined),
   };
 }
@@ -480,6 +481,13 @@ export async function searchItems(search?: string, limit = 20) {
   if (!db) return demoItems.filter((row) => !query || `${row.code} ${row.description}`.toLowerCase().includes(query.toLowerCase())).slice(0, limit);
   const filters = query ? or(like(items.code, `%${query}%`), like(items.description, `%${query}%`)) : undefined;
   return db.select().from(items).where(filters).orderBy(items.code).limit(limit);
+}
+
+export async function searchAccounts(search?: string, limit = 20) {
+  const db = await getDb(); const query = (search || "").trim();
+  if (!db) return demoAccounts.filter((row) => !query || `${row.code} ${row.name}`.toLowerCase().includes(query.toLowerCase())).slice(0, limit);
+  const filters = query ? or(like(accounts.code, `%${query}%`), like(accounts.name, `%${query}%`)) : undefined;
+  return db.select().from(accounts).where(filters).orderBy(accounts.code).limit(limit);
 }
 
 export async function saveItem(input: { id?: number; companyId: number; code: string; description: string; stockFlag?: number; unitCost?: string; revenueAccount?: string; inventoryAccount?: string; cogsAccount?: string; active?: number }) {

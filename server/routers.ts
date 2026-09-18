@@ -7,7 +7,7 @@ import { invokeLLM } from "./_core/llm";
 import { LOCAL_COOKIE } from "./_core/localAuth";
 import { executeOracleAction, getOracleBridgeStatus } from "./_core/oracleBridge";
 import { createBackupSnapshot, getBackupDownloadUrl, restoreBackupSnapshot, uploadBackupSnapshot } from "./backup";
-import { createAdjustmentNote, createInventoryCount, createInvoice, createPurchaseInvoice, executeGlWindowAction, executeSalesWindowAction, getCatalogSources, getDashboard, getErpControlData, getFinancialReportCatalog, getInvoiceReturnSource, getMasterData, getSystemTree, getWindowCatalog, getWindowContract, getWindowDomains, listWarehouses, nextAdjustmentNumber, postAdjustmentNote, postInventoryCount, postInvoice, postPurchaseInvoice, receiveStock, reverseInvoice, reversePurchaseInvoice, runFinancialReport, saveAccount, saveBank, saveBranch, saveCashBox, saveCustomer, saveItem, saveJournal, saveSupplier, saveSystemUser, saveWarehouse, searchBranches, searchCustomers, searchInvoices, searchItems, searchJournals, searchSuppliers, searchSystemUsers, searchWarehouses } from "./db";
+import { createAdjustmentNote, createInventoryCount, createInvoice, createPurchaseInvoice, executeGlWindowAction, executeSalesWindowAction, getCatalogSources, getDashboard, getErpControlData, getFinancialReportCatalog, getInvoiceReturnSource, getMasterData, getSystemTree, getWindowCatalog, getWindowContract, getWindowDomains, listWarehouses, nextAdjustmentNumber, postAdjustmentNote, postInventoryCount, postInvoice, postPurchaseInvoice, receiveStock, reverseInvoice, reversePurchaseInvoice, runFinancialReport, saveAccount, saveBank, saveBranch, saveCashBox, saveCustomer, saveItem, saveJournal, saveSupplier, saveSystemUser, saveWarehouse, searchAccounts, searchBranches, searchCustomers, searchInvoices, searchItems, searchJournals, searchSuppliers, searchSystemUsers, searchWarehouses } from "./db";
 
 const invoiceLine = z.object({ itemId: z.number().int().positive(), quantity: z.string().min(1), unitPrice: z.string().min(1), taxAmount: z.string().default("0") });
 const partyInput = z.object({ id: z.number().int().positive().optional(), companyId: z.number().int().positive().default(1), code: z.string().min(1).max(50), legalName: z.string().min(1).max(250), currencyCode: z.string().length(3).default("SAR"), status: z.enum(["ACTIVE", "BLOCKED", "CLOSED"]).default("ACTIVE") });
@@ -52,11 +52,13 @@ export const appRouter = router({
       if (form === "ERP_DBA") return searchSystemUsers(input.search, input.limit);
       if (form === "ERP_DBA_DFLT_DATA") return searchBranches(input.search, input.limit);
       if (form === "MRPACS004") return searchWarehouses(input.search, input.limit);
-      if (form.startsWith("ARST004")) return searchInvoices(input.search, input.limit);
+      if (form.startsWith("ARST004") || form.startsWith("APST003")) return searchInvoices(input.search, input.limit);
       if (form.startsWith("ARST") || form.startsWith("ARSR")) return searchCustomers(input.search, input.limit);
+      if (form === "APSI002") return searchSuppliers(input.search, input.limit);
       if (form.startsWith("APST") || form.startsWith("APSR")) return searchSuppliers(input.search, input.limit);
       if (form.startsWith("INVT") || form.startsWith("INVI")) return searchItems(input.search, input.limit);
       if (form.startsWith("POST")) return searchInvoices(input.search, input.limit);
+      if (form === "GLST001") return searchAccounts(input.search, input.limit);
       if (form.startsWith("GLST") || form.startsWith("GLSI") || form.startsWith("GLSR")) return searchJournals(input.search, input.limit);
       return Promise.resolve([]);
     }),
