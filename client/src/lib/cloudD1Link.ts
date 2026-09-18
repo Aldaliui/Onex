@@ -4,7 +4,7 @@ import type { AppRouter } from "../../../server/routers";
 
 type CloudResponse = { data?: unknown; error?: { message?: string } };
 
-const request = async (path: string, method: "GET" | "POST", input?: unknown) => {
+const request = async (path: string, method: "GET" | "POST" | "DELETE", input?: unknown) => {
   const url = new URL(`/api/cloud${path}`, window.location.origin);
   let body: BodyInit | undefined;
   if (method === "GET" && input && typeof input === "object") {
@@ -33,9 +33,13 @@ const mapOperation = (op: Operation) => {
     case "windows.contract": return [`/windows/contract/${encodeURIComponent(String(input?.legacyForm || ""))}`, "GET"] as const;
     case "windows.records": return ["/windows/records", "GET"] as const;
     case "windows.saveCustomer": return ["/customers", "POST"] as const;
+    case "windows.deleteCustomer": return [`/customers/${encodeURIComponent(String(input?.id || ""))}`, "DELETE"] as const;
     case "windows.saveSupplier": return ["/suppliers", "POST"] as const;
+    case "windows.deleteSupplier": return [`/suppliers/${encodeURIComponent(String(input?.id || ""))}`, "DELETE"] as const;
     case "windows.saveItem": return ["/items", "POST"] as const;
+    case "windows.deleteItem": return [`/items/${encodeURIComponent(String(input?.id || ""))}`, "DELETE"] as const;
     case "windows.saveAccount": return ["/accounts", "POST"] as const;
+    case "windows.deleteAccount": return [`/accounts/${encodeURIComponent(String(input?.id || ""))}`, "DELETE"] as const;
     case "windows.saveJournal": return ["/journals", "POST"] as const;
     case "windows.saveSystemUser": return ["/users", "POST"] as const;
     case "windows.saveBranch": return ["/branches", "POST"] as const;

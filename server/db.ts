@@ -914,3 +914,102 @@ export async function runFinancialReport(input: { reportCode: string; search?: s
   const filters = query ? like(journalEntries.journalNo, `%${query}%`) : undefined;
   return { reportCode: input.reportCode, title: "ملخص القيود المحاسبية", columns: ["journalNo", "entryType", "totalDebit", "totalCredit", "status", "createdAt"], rows: await db.select({ journalNo: journalEntries.journalNo, entryType: journalEntries.entryType, totalDebit: journalEntries.totalDebit, totalCredit: journalEntries.totalCredit, status: journalEntries.status, createdAt: journalEntries.createdAt }).from(journalEntries).where(filters).orderBy(desc(journalEntries.createdAt)).limit(limit) };
 }
+
+export async function deleteCustomer(input: { id: number; actor?: string }) {
+  const db = await getDb();
+  if (!db) {
+    const index = demoCustomers.findIndex((row) => row.id === input.id);
+    if (index < 0) throw new Error("CUSTOMER_NOT_FOUND");
+    const [removed] = demoCustomers.splice(index, 1);
+    if (removed?.accountId) {
+      const accountIndex = demoAccounts.findIndex((row) => row.id === removed.accountId);
+      if (accountIndex >= 0) demoAccounts.splice(accountIndex, 1);
+    }
+    return { id: input.id, deleted: true as const };
+  }
+  return db.transaction(async (tx) => {
+    const current = (await tx.select().from(customers).where(eq(customers.id, input.id)).limit(1))[0];
+    if (!current) throw new Error("CUSTOMER_NOT_FOUND");
+    const invoice = (await tx.select({ id: invoices.id }).from(invoices).where(and(eq(invoices.customerId, input.id), eq(invoices.invoiceType, "SALE"))).limit(1))[0];
+    if (invoice) throw new Error("CUSTOMER_HAS_TRANSACTIONS");
+    const adjustment = (await tx.select({ id: adjustmentNotes.id }).from(adjustmentNotes).where(eq(adjustmentNotes.customerId, input.id)).limit(1))[0];
+    if (adjustment) throw new Error("CUSTOMER_HAS_TRANSACTIONS");
+    await tx.delete(customers).where(eq(customers.id, input.id));
+    if (current.accountId) await tx.delete(accounts).where(eq(accounts.id, current.accountId));
+    await tx.insert(auditEvents).values({ actor: input.actor || "workbench.user", actionCode: "DELETE", entityType: "CUSTOMER", entityId: String(input.id), requestId: `CUSTOMER:DELETE:${input.id}` });
+    return { id: input.id, deleted: true as const };
+  });
+}
+
+export async function deleteSupplier(input: { id: number; actor?: string }) {
+  const db = await getDb();
+  if (!db) {
+    const index = demoSuppliers.findIndex((row) => row.id === input.id);
+    if (index < 0) throw new Error("SUPPLIER_NOT_FOUND");
+    const [removed] = demoSuppliers.splice(index, 1);
+    if (removed?.accountId) {
+      const accountIndex = demoAccounts.findIndex((row) => row.id === removed.accountId);
+      if (accountIndex >= 0) demoAccounts.splice(accountIndex, 1);
+    }
+    return { id: input.id, deleted: true as const };
+  }
+  return db.transaction(async (tx) => {
+    const current = (await tx.select().from(suppliers).where(eq(suppliers.id, input.id)).limit(1))[0];
+    if (!current) throw new Error("SUPPLIER_NOT_FOUND");
+    const invoice = (await tx.select({ id: invoices.id }).from(invoices).where(and(eq(invoices.supplierId, input.id), eq(invoices.invoiceType, "PURCHASE"))).limit(1))[0];
+    if (invoice) throw new Error("SUPPLIER_HAS_TRANSACTIONS");
+    const adjustment = (await tx.select({ id: adjustmentNotes.id }).from(adjustmentNotes).where(eq(adjustmentNotes.supplierId, input.id)).limit(1))[0];
+    if (adjustment) throw new Error("SUPPLIER_HAS_TRANSACTIONS");
+    await tx.delete(suppliers).where(eq(suppliers.id, input.id));
+    if (current.accountId) await tx.delete(accounts).where(eq(accounts.id, current.accountId));
+    await tx.insert(auditEvents).values({ actor: input.actor || "workbench.user", actionCode: "DELETE", entityType: "SUPPLIER", entityId: String(input.id), requestId: `SUPPLIER:DELETE:${input.id}` });
+    return { id: input.id, deleted: true as const };
+  });
+}
+
+export async function deleteItem(input: { id: number; actor?: string }) {
+  const db = await getDb();
+  if (!db) {
+    const index = demoItems.findIndex((row) => row.id === input.id);
+    if (index < 0) throw new Error("ITEM_NOT_FOUND");
+    demoItems.splice(index, 1);
+    return { id: input.id, deleted: true as const };
+  }
+  return db.transaction(async (tx) => {
+    const current = (await tx.select({ id: items.id }).from(items).where(eq(items.id, input.id)).limit(1))[0];
+    if (!current) throw new Error("ITEM_NOT_FOUND");
+    const invoiceLine = (await tx.select({ id: invoiceLines.id }).from(invoiceLines).where(eq(invoiceLines.itemId, input.id)).limit(1))[0];
+    const balance = (await tx.select({ id: stockBalances.id }).from(stockBalances).where(eq(stockBalances.itemId, input.id)).limit(1))[0];
+    const movement = (await tx.select({ id: stockMovements.id }).from(stockMovements).where(eq(stockMovements.itemId, input.id)).limit(1))[0];
+    const adjustmentLine = (await tx.select({ id: adjustmentNoteLines.id }).from(adjustmentNoteLines).where(eq(adjustmentNoteLines.itemId, input.id)).limit(1))[0];
+    const countLine = (await tx.select({ id: inventoryCountLines.id }).from(inventoryCountLines).where(eq(inventoryCountLines.itemId, input.id)).limit(1))[0];
+    if (invoiceLine || balance || movement || adjustmentLine || countLine) throw new Error("ITEM_HAS_TRANSACTIONS");
+    await tx.delete(items).where(eq(items.id, input.id));
+    await tx.insert(auditEvents).values({ actor: input.actor || "workbench.user", actionCode: "DELETE", entityType: "ITEM", entityId: String(input.id), requestId: `ITEM:DELETE:${input.id}` });
+    return { id: input.id, deleted: true as const };
+  });
+}
+
+export async function deleteAccount(input: { id: number; actor?: string }) {
+  const db = await getDb();
+  if (!db) {
+    const index = demoAccounts.findIndex((row) => row.id === input.id);
+    if (index < 0) throw new Error("ACCOUNT_NOT_FOUND");
+    demoAccounts.splice(index, 1);
+    return { id: input.id, deleted: true as const };
+  }
+  return db.transaction(async (tx) => {
+    const current = (await tx.select().from(accounts).where(eq(accounts.id, input.id)).limit(1))[0];
+    if (!current) throw new Error("ACCOUNT_NOT_FOUND");
+    const journalLine = (await tx.select({ id: journalEntryLines.id }).from(journalEntryLines).where(eq(journalEntryLines.accountCode, current.code)).limit(1))[0];
+    const customer = (await tx.select({ id: customers.id }).from(customers).where(eq(customers.accountId, input.id)).limit(1))[0];
+    const supplier = (await tx.select({ id: suppliers.id }).from(suppliers).where(eq(suppliers.accountId, input.id)).limit(1))[0];
+    const item = (await tx.select({ id: items.id }).from(items).where(or(eq(items.revenueAccount, current.code), eq(items.inventoryAccount, current.code), eq(items.cogsAccount, current.code))).limit(1))[0];
+    const cashBox = (await tx.select({ id: cashBoxes.id }).from(cashBoxes).where(eq(cashBoxes.accountId, input.id)).limit(1))[0];
+    const bank = (await tx.select({ id: banks.id }).from(banks).where(eq(banks.accountId, input.id)).limit(1))[0];
+    if (journalLine || customer || supplier || item || cashBox || bank) throw new Error("ACCOUNT_HAS_REFERENCES");
+    await tx.delete(accounts).where(eq(accounts.id, input.id));
+    await tx.insert(auditEvents).values({ actor: input.actor || "workbench.user", actionCode: "DELETE", entityType: "ACCOUNT", entityId: String(input.id), requestId: `ACCOUNT:DELETE:${input.id}` });
+    return { id: input.id, deleted: true as const };
+  });
+}

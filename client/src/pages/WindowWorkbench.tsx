@@ -69,9 +69,13 @@ function AuthenticatedWorkbench() {
   const masterData = trpc.masterData.useQuery();
   const createInvoice = trpc.invoices.create.useMutation();
   const saveAccount = trpc.windows.saveAccount.useMutation();
+  const deleteAccount = trpc.windows.deleteAccount.useMutation();
   const saveCustomer = trpc.windows.saveCustomer.useMutation();
+  const deleteCustomer = trpc.windows.deleteCustomer.useMutation();
   const saveSupplier = trpc.windows.saveSupplier.useMutation();
+  const deleteSupplier = trpc.windows.deleteSupplier.useMutation();
   const saveItem = trpc.windows.saveItem.useMutation();
+  const deleteItem = trpc.windows.deleteItem.useMutation();
   const saveJournal = trpc.windows.saveJournal.useMutation();
   const saveSystemUser = trpc.windows.saveSystemUser.useMutation();
   const saveBranch = trpc.windows.saveBranch.useMutation();
@@ -118,10 +122,10 @@ function AuthenticatedWorkbench() {
     if (active.kind !== "transaction") return toast.info("هذه النافذة للقراءة والاستعلام فقط");
     const v = values; const companyId = Number(v.COMPANYID || v.CMP_NO || 1); const done = () => { setEditing(false); void manager.commitWindow(active.id); void records.refetch(); };
     const onError = (error: { message?: string }) => { toast.error(error.message || "تعذر الحفظ"); };
-    if (active.id === "GLST001") return saveAccount.mutate({ id: v.ID ? Number(v.ID) : undefined, companyId, code: v.A_CODE || v.CODE || `ACC-${Date.now()}`, name: v.A_NAME || v.NAME || "حساب جديد", accountType: v.A_TYPE || "GENERAL", parentCode: v.CC_CODE, currencyCode: v.A_CY || "SAR", active: v.ACTIVE === "0" ? 0 : 1 }, { onSuccess: done, onError });
-    if (active.id === "ARST003") return saveCustomer.mutate({ id: v.ID ? Number(v.ID) : undefined, companyId, code: v.C_CODE || v.CODE || `CUST-${Date.now()}`, legalName: v.C_NAME || v.LEGALNAME || "عميل جديد", currencyCode: v.A_CY || "SAR", status: "ACTIVE" }, { onSuccess: done, onError });
-    if (["APSI002", "APST003"].includes(active.id)) return saveSupplier.mutate({ id: v.ID ? Number(v.ID) : undefined, companyId, code: v.V_CODE || v.CODE || `SUP-${Date.now()}`, legalName: v.V_NAME || v.C_NAME || "مورد جديد", currencyCode: v.A_CY || "SAR", status: "ACTIVE" }, { onSuccess: done, onError });
-    if (active.id === "INVT003") return saveItem.mutate({ id: v.ID ? Number(v.ID) : undefined, companyId, code: v.I_CODE || v.CODE || `ITEM-${Date.now()}`, description: v.I_DESC || v.I_NAME || "صنف جديد", stockFlag: 1, unitCost: v.NEW_COST || "0", revenueAccount: "4100", inventoryAccount: "1300", cogsAccount: "5100", active: v.ACTIVE === "0" ? 0 : 1 }, { onSuccess: done, onError });
+    if (active.id === "GLST001") return saveAccount.mutate({ id: v.ID ? Number(v.ID) : undefined, companyId, code: v.A_CODE || v.CODE || `ACC-${Date.now()}`, name: v.A_NAME || v.NAME || "حساب جديد", accountType: v.A_TYPE || v.ACCOUNTTYPE || "GENERAL", parentCode: v.CC_CODE || v.PARENTCODE, currencyCode: v.A_CY || v.CURRENCYCODE || "SAR", active: v.ACTIVE === "0" ? 0 : 1 }, { onSuccess: done, onError });
+    if (active.id === "ARST003") return saveCustomer.mutate({ id: v.ID ? Number(v.ID) : undefined, companyId, code: v.C_CODE || v.CODE || `CUST-${Date.now()}`, legalName: v.C_NAME || v.LEGALNAME || "عميل جديد", currencyCode: v.A_CY || v.CURRENCYCODE || "SAR", status: v.STATUS === "BLOCKED" || v.STATUS === "CLOSED" ? v.STATUS : "ACTIVE" }, { onSuccess: done, onError });
+    if (["APSI002", "APST003"].includes(active.id)) return saveSupplier.mutate({ id: v.ID ? Number(v.ID) : undefined, companyId, code: v.V_CODE || v.CODE || `SUP-${Date.now()}`, legalName: v.V_NAME || v.LEGALNAME || v.C_NAME || "مورد جديد", currencyCode: v.A_CY || v.CURRENCYCODE || "SAR", status: v.STATUS === "BLOCKED" || v.STATUS === "CLOSED" ? v.STATUS : "ACTIVE" }, { onSuccess: done, onError });
+    if (active.id === "INVT003") return saveItem.mutate({ id: v.ID ? Number(v.ID) : undefined, companyId, code: v.I_CODE || v.CODE || `ITEM-${Date.now()}`, description: v.I_DESC || v.DESCRIPTION || v.I_NAME || v.NAME || "صنف جديد", stockFlag: v.STOCKFLAG === "0" ? 0 : 1, unitCost: v.NEW_COST || v.UNITCOST || "0", revenueAccount: v.REVENUEACCOUNT || "4100", inventoryAccount: v.INVENTORYACCOUNT || "1300", cogsAccount: v.COGSACCOUNT || "5100", active: v.ACTIVE === "0" ? 0 : 1 }, { onSuccess: done, onError });
     if (["ERP_DBA", "ADMT027", "HRSI002", "POSLGN"].includes(active.id)) return saveSystemUser.mutate({ id: v.ID ? Number(v.ID) : undefined, openId: v.USR || v.OPENID || v.EMAIL || `local-${Date.now()}`, name: v.USR_NAME || v.NAME || v.C_NAME || "مستخدم جديد", email: v.EMAIL || undefined, role: v.ROLE === "admin" || v.PRIVILEGE === "admin" ? "admin" : "user", loginMethod: v.LOGINMETHOD || "workbench" }, { onSuccess: done, onError });
     if (active.id === "ERP_DBA_DFLT_DATA") return saveBranch.mutate({ id: v.ID ? Number(v.ID) : undefined, companyId, code: v.BRN_NO || v.CODE || `BR-${Date.now()}`, name: v.BRN_NAME || v.NAME || "فرع جديد", active: v.ACTIVE === "0" ? 0 : 1 }, { onSuccess: done, onError });
     if (active.id === "MRPACS004") return saveWarehouse.mutate({ id: v.ID ? Number(v.ID) : undefined, companyId, code: v.W_CODE || v.CODE || `WH-${Date.now()}`, name: v.W_NAME || v.NAME || "مستودع جديد", active: v.ACTIVE === "0" ? 0 : 1 }, { onSuccess: done, onError });
@@ -137,7 +141,19 @@ function AuthenticatedWorkbench() {
     if (action === "save") return saveDraft();
     if (action === "query") { await records.refetch(); return toast.success(`تم البحث وتحديث سجلات ${id}`); }
     if (action === "undo" || action === "cancel") { setEditing(false); setValues({}); manager.markClean(id); return; }
-    if (action === "delete") return toast.info("الحذف غير مفعّل افتراضيًا لحماية السجلات؛ استخدم عكس المستند عند الحاجة");
+    if (action === "delete") {
+      if (!active || active.kind !== "transaction") return toast.info("هذه النافذة للقراءة والاستعلام فقط");
+      const recordId = Number(values.ID);
+      if (!Number.isInteger(recordId) || recordId <= 0) return toast.info("اختر سجلًا موجودًا أولًا قبل الحذف");
+      if (!window.confirm("سيتم حذف السجل من قاعدة البيانات. هل تريد المتابعة؟")) return;
+      const onSuccess = () => { setValues({}); setEditing(false); manager.markClean(id); void records.refetch(); toast.success("تم حذف السجل من قاعدة البيانات"); };
+      const onError = (error: { message?: string }) => toast.error(error.message || "تعذر حذف السجل");
+      if (id === "GLST001") return deleteAccount.mutate({ id: recordId, actor: "workbench.user" }, { onSuccess, onError });
+      if (id === "ARST003") return deleteCustomer.mutate({ id: recordId, actor: "workbench.user" }, { onSuccess, onError });
+      if (id === "APSI002") return deleteSupplier.mutate({ id: recordId, actor: "workbench.user" }, { onSuccess, onError });
+      if (id === "INVT003") return deleteItem.mutate({ id: recordId, actor: "workbench.user" }, { onSuccess, onError });
+      return toast.info("الحذف متاح لنوافذ العملاء والموردين والحسابات والأصناف فقط");
+    }
     if (action === "post") { try { if (id.startsWith("GLST")) { const requestId = `GL:${id}:POST:${Date.now()}`; if (!offline.online) { await offline.enqueue("GL_WINDOW_ACTION", { legacyForm: `${id}.fmx`, action: "post", actor: "workbench.user", requestId }, requestId); toast.info("تم وضع ترحيل القيد في طابور المزامنة"); return; } await glExecute.mutateAsync({ legacyForm: `${id}.fmx`, action: "post", actor: "workbench.user", requestId }); } else { await executeWindowAction.mutateAsync({ legacyForm: `${id}.fmx`, action: "post" }); } toast.success(`تم ترحيل ${id}`); manager.markClean(id); } catch (error) { toast.error(error instanceof Error ? error.message : `تعذر ترحيل ${id}`); } return; }
     if (action === "print") return toast.info(`تجهيز تقرير ${id}`);
     return toast.info(`مساعدة ${id}: الإدراج F6، التعديل F2، البحث F7، الحفظ F10`);

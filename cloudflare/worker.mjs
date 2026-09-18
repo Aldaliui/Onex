@@ -7,7 +7,7 @@ const JSON_HEADERS = {
 };
 
 const ORIGIN = "https://onexdash-oyedvqsk.manus.space";
-const ALLOWED_METHODS = "GET,POST,PATCH,OPTIONS";
+const ALLOWED_METHODS = "GET,POST,PATCH,DELETE,OPTIONS";
 const MAX_LIMIT = 100;
 
 function responseHeaders(request) {
@@ -1286,7 +1286,7 @@ async function api(request, env, url) {
   if (url.pathname.startsWith("/api/cloud/windows/contract/")) {
     const legacyForm = decodeURIComponent(url.pathname.split("/").pop() || "").replace(/\.fmx$/i, "").toUpperCase();
     const liveCrud = { ARST003: "customers", APSI002: "suppliers", INVT003: "items", GLST001: "accounts" }[legacyForm];
-    return cloudJson({ legacyForm: `${legacyForm}.fmx`, coreApi: liveCrud ? `ONEX_${liveCrud.toUpperCase()}_D1_API` : "ONEX_WINDOW_API", status: liveCrud ? "IMPLEMENTED_WITH_CLOUD_CORE" : "CLOUD_D1_RUNTIME", actions: liveCrud ? ["initialize", "query", "new", "validate", "save", "update", "refresh", "exit"] : ["initialize", "query", "refresh", "exit"], fields: [], triggers: [], procedures: [], notes: liveCrud ? `Live Cloudflare D1 CRUD for ${liveCrud}` : "Cloud D1 runtime contract" });
+    return cloudJson({ legacyForm: `${legacyForm}.fmx`, coreApi: liveCrud ? `ONEX_${liveCrud.toUpperCase()}_D1_API` : "ONEX_WINDOW_API", status: liveCrud ? "IMPLEMENTED_WITH_CLOUD_CORE" : "CLOUD_D1_RUNTIME", actions: liveCrud ? ["initialize", "query", "new", "validate", "save", "update", "delete", "refresh", "exit"] : ["initialize", "query", "refresh", "exit"], fields: [], triggers: [], procedures: [], notes: liveCrud ? `Live Cloudflare D1 CRUD for ${liveCrud}` : "Cloud D1 runtime contract" });
   }
   if (url.pathname === "/api/cloud/windows/records") {
     const form = (url.searchParams.get("legacyForm") || "").replace(/\.fmx$/i, "").toUpperCase();
@@ -1401,16 +1401,61 @@ async function api(request, env, url) {
   }
   if (url.pathname === "/api/cloud/accounts" && request.method === "POST") {
     const x = await readBody(request); if (!x.code || !x.name || !x.accountType) return cloudJson({ error: "code, name, and accountType are required" }, 400);
+    if (positiveInteger(Number(x.id))) {
+      const result = await env.ONEX_DB.prepare("UPDATE accounts SET companyId=?,code=?,name=?,accountType=?,parentCode=?,currencyCode=?,active=? WHERE id=?").bind(x.companyId || 1, x.code, x.name, x.accountType, x.parentCode || null, x.currencyCode || "SAR", x.active ?? 1, Number(x.id)).run();
+      return cloudJson({ ok: true, result, updated: true });
+    }
     const r = await env.ONEX_DB.prepare("INSERT INTO accounts(companyId,code,name,accountType,parentCode,currencyCode,active) VALUES(?,?,?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,accountType=excluded.accountType,parentCode=excluded.parentCode,currencyCode=excluded.currencyCode,active=excluded.active").bind(x.companyId || 1, x.code, x.name, x.accountType, x.parentCode || null, x.currencyCode || "SAR", x.active ?? 1).run(); return cloudJson({ ok: true, result: r });
+  }
+  if (url.pathname.startsWith("/api/cloud/accounts/") && request.method === "DELETE") {
+    const id = Number(url.pathname.split("/").pop());
+    if (!positiveInteger(id)) return cloudJson({ error: "ACCOUNT_ID_REQUIRED" }, 400);
+    const current = await env.ONEX_DB.prepare("SELECT id, code FROM accounts WHERE id=? LIMIT 1").bind(id).first();
+    if (!current) return cloudJson({ error: "ACCOUNT_NOT_FOUND" }, 404);
+    const journalLine = await env.ONEX_DB.prepare("SELECT id FROM journal_entry_lines WHERE accountCode=? LIMIT 1").bind(current.code).first();
+    const itemReference = await env.ONEX_DB.prepare("SELECT id FROM items WHERE revenueAccount=? OR inventoryAccount=? OR cogsAccount=? LIMIT 1").bind(current.code, current.code, current.code).first();
+    if (journalLine || itemReference) return cloudJson({ error: "ACCOUNT_HAS_REFERENCES" }, 409);
+    const result = await env.ONEX_DB.batch([
+      env.ONEX_DB.prepare("DELETE FROM accounts WHERE id=?").bind(id),
+      env.ONEX_DB.prepare("INSERT INTO audit_events(actor,actionCode,entityType,entityId,requestId) VALUES(?,?,?,?,?)").bind("cloud-user", "DELETE", "ACCOUNT", String(id), `ACCOUNT:DELETE:${id}`),
+    ]);
+    return cloudJson({ ok: true, id, deleted: true, result });
   }
   const collection = { items: ["items", "code", "name"], customers: ["customers", "code", "legalName"], suppliers: ["suppliers", "code", "legalName"] };
   for (const [route, [table, codeField, nameField]] of Object.entries(collection)) {
+    if (url.pathname.startsWith(`/api/cloud/${route}/`) && request.method === "DELETE") {
+      const id = Number(url.pathname.split("/").pop());
+      if (!positiveInteger(id)) return cloudJson({ error: `${route.toUpperCase()}_ID_REQUIRED` }, 400);
+      const current = await env.ONEX_DB.prepare(`SELECT id, code FROM ${table} WHERE id=? LIMIT 1`).bind(id).first();
+      if (!current) return cloudJson({ error: `${route.toUpperCase().slice(0, -1)}_NOT_FOUND` }, 404);
+      const referenceTables = table === "customers"
+        ? [["invoices", "customerId"]]
+        : table === "suppliers"
+          ? [["purchase_invoices", "supplierId"]]
+          : [["invoice_lines", "itemId"], ["purchase_lines", "itemId"], ["stock_balances", "itemId"], ["stock_movements", "itemId"], ["inventory_count_lines", "itemId"], ["inventory_document_lines", "itemId"]];
+      for (const [referenceTable, referenceColumn] of referenceTables) {
+        const tableExists = await env.ONEX_DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=? LIMIT 1").bind(referenceTable).first();
+        if (!tableExists) continue;
+        const reference = await env.ONEX_DB.prepare(`SELECT id FROM ${referenceTable} WHERE ${referenceColumn}=? LIMIT 1`).bind(id).first();
+        if (reference) return cloudJson({ error: `${route.toUpperCase().slice(0, -1)}_HAS_TRANSACTIONS` }, 409);
+      }
+      const result = await env.ONEX_DB.batch([
+        env.ONEX_DB.prepare(`DELETE FROM ${table} WHERE id=?`).bind(id),
+        env.ONEX_DB.prepare("INSERT INTO audit_events(actor,actionCode,entityType,entityId,requestId) VALUES(?,?,?,?,?)").bind("cloud-user", "DELETE", route.slice(0, -1).toUpperCase(), String(id), `${route.toUpperCase()}:DELETE:${id}`),
+      ]);
+      return cloudJson({ ok: true, id, deleted: true, result });
+    }
     if (url.pathname === `/api/cloud/${route}` && request.method === "GET") {
       const q = (url.searchParams.get("search") || "").trim(); const lim = limitOf(url); const sql = q ? `SELECT * FROM ${table} WHERE code LIKE ? OR ${nameField} LIKE ? ORDER BY code LIMIT ?` : `SELECT * FROM ${table} ORDER BY code LIMIT ?`;
       const r = q ? await env.ONEX_DB.prepare(sql).bind(`%${q}%`, `%${q}%`, lim).all() : await env.ONEX_DB.prepare(sql).bind(lim).all(); return cloudJson(r.results);
     }
     if (url.pathname === `/api/cloud/${route}` && request.method === "POST") {
       const x = await readBody(request); if (!x.code || !x[nameField]) return cloudJson({ error: `code and ${nameField} are required` }, 400);
+      if (positiveInteger(Number(x.id))) {
+        const sql = table === "items" ? "UPDATE items SET companyId=?,code=?,name=?,description=?,itemType=?,unitCode=?,stockFlag=?,unitCost=?,revenueAccount=?,inventoryAccount=?,cogsAccount=?,active=? WHERE id=?" : `UPDATE ${table} SET companyId=?,code=?,legalName=?,currencyCode=?,status=? WHERE id=?`;
+        const values = table === "items" ? [x.companyId || 1, x.code, x.name || x.description, x.description || x.name, x.itemType || "STOCK", x.unitCode || "EA", x.stockFlag ?? 1, x.unitCost || "0", x.revenueAccount || "4100", x.inventoryAccount || "1300", x.cogsAccount || "5100", x.active ?? 1, Number(x.id)] : [x.companyId || 1, x.code, x[nameField], x.currencyCode || "SAR", x.status || "ACTIVE", Number(x.id)];
+        return cloudJson({ ok: true, result: await env.ONEX_DB.prepare(sql).bind(...values).run(), updated: true });
+      }
       const sql = table === "items" ? "INSERT INTO items(companyId,code,name,description,itemType,unitCode,stockFlag,unitCost,revenueAccount,inventoryAccount,cogsAccount,active) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,description=excluded.description,itemType=excluded.itemType,unitCode=excluded.unitCode,stockFlag=excluded.stockFlag,unitCost=excluded.unitCost,revenueAccount=excluded.revenueAccount,inventoryAccount=excluded.inventoryAccount,cogsAccount=excluded.cogsAccount,active=excluded.active" : `INSERT INTO ${table}(companyId,code,legalName,currencyCode,status) VALUES(?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET legalName=excluded.legalName,currencyCode=excluded.currencyCode,status=excluded.status`;
       const values = table === "items" ? [x.companyId || 1, x.code, x.name || x.description, x.description || x.name, x.itemType || "STOCK", x.unitCode || "EA", x.stockFlag ?? 1, x.unitCost || "0", x.revenueAccount || "4100", x.inventoryAccount || "1300", x.cogsAccount || "5100", x.active ?? 1] : [x.companyId || 1, x.code, x[nameField], x.currencyCode || "SAR", x.status || "ACTIVE"];
       return cloudJson({ ok: true, result: await env.ONEX_DB.prepare(sql).bind(...values).run() });
