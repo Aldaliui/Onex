@@ -393,3 +393,49 @@ export const outboxEvents = mysqlTable("outbox_events", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   publishedAt: timestamp("publishedAt"),
 }, (table) => ({ pendingIdx: index("outbox_pending_idx").on(table.status, table.createdAt) }));
+
+export const receiptVouchers = mysqlTable("receipt_vouchers", {
+  id: int("id").autoincrement().primaryKey(),
+  voucherNo: varchar("voucherNo", { length: 80 }).notNull().unique(),
+  companyId: int("companyId").notNull(),
+  customerId: int("customerId").notNull(),
+  cashAccountCode: varchar("cashAccountCode", { length: 80 }).notNull(),
+  currencyCode: varchar("currencyCode", { length: 3 }).notNull().default("SAR"),
+  amount: decimal("amount", { precision: 20, scale: 6 }).notNull(),
+  status: mysqlEnum("status", ["DRAFT", "POSTED", "REVERSED"]).notNull().default("DRAFT"),
+  idempotencyKey: varchar("idempotencyKey", { length: 200 }).notNull().unique(),
+  reference: varchar("reference", { length: 160 }),
+  actor: varchar("actor", { length: 100 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  postedAt: timestamp("postedAt"),
+});
+
+export const receiptAllocations = mysqlTable("receipt_allocations", {
+  id: int("id").autoincrement().primaryKey(),
+  receiptId: int("receiptId").notNull(),
+  invoiceId: int("invoiceId").notNull(),
+  amount: decimal("amount", { precision: 20, scale: 6 }).notNull(),
+}, (table) => ({ receiptInvoice: unique("receipt_invoice_allocation").on(table.receiptId, table.invoiceId) }));
+
+export const paymentVouchers = mysqlTable("payment_vouchers", {
+  id: int("id").autoincrement().primaryKey(),
+  voucherNo: varchar("voucherNo", { length: 80 }).notNull().unique(),
+  companyId: int("companyId").notNull(),
+  supplierId: int("supplierId").notNull(),
+  cashAccountCode: varchar("cashAccountCode", { length: 80 }).notNull(),
+  currencyCode: varchar("currencyCode", { length: 3 }).notNull().default("SAR"),
+  amount: decimal("amount", { precision: 20, scale: 6 }).notNull(),
+  status: mysqlEnum("status", ["DRAFT", "POSTED", "REVERSED"]).notNull().default("DRAFT"),
+  idempotencyKey: varchar("idempotencyKey", { length: 200 }).notNull().unique(),
+  reference: varchar("reference", { length: 160 }),
+  actor: varchar("actor", { length: 100 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  postedAt: timestamp("postedAt"),
+});
+
+export const paymentAllocations = mysqlTable("payment_allocations", {
+  id: int("id").autoincrement().primaryKey(),
+  paymentId: int("paymentId").notNull(),
+  invoiceId: int("invoiceId").notNull(),
+  amount: decimal("amount", { precision: 20, scale: 6 }).notNull(),
+}, (table) => ({ paymentInvoice: unique("payment_invoice_allocation").on(table.paymentId, table.invoiceId) }));

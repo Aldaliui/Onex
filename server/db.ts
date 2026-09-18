@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ENV } from "./_core/env";
-import { accounts, adjustmentNoteLines, adjustmentNotes, auditEvents, banks, branches, cashBoxes, companies, customers, fiscalPeriods, inventoryCountLines, inventoryCounts, invoices, invoiceLines, items, journalEntries, journalEntryLines, suppliers, stockBalances, stockMovements, warehouses, windowContracts, windowExecutions, windowRegistry, type InsertUser, users } from "../drizzle/schema";
+import { accounts, adjustmentNoteLines, adjustmentNotes, auditEvents, banks, branches, cashBoxes, companies, customers, documentEvents, fiscalPeriods, inventoryCountLines, inventoryCounts, invoices, invoiceLines, items, journalEntries, journalEntryLines, paymentAllocations, paymentVouchers, receiptAllocations, receiptVouchers, suppliers, stockBalances, stockMovements, warehouses, windowContracts, windowExecutions, windowRegistry, type InsertUser, users } from "../drizzle/schema";
 import { buildPurchaseJournal, buildReversalJournal, buildSaleJournal, calculateInvoice, canPostToPeriod, validateJournal } from "./accountingCore";
 import { getLegacyWindowContract } from "./legacyWindowContracts";
 
@@ -1084,3 +1084,50 @@ export async function deleteWindowRecord(input: { legacyForm: string; id: number
     throw new Error("WINDOW_DELETE_NOT_SUPPORTED");
   });
 }
+
+const demoReceiptVouchers = new Map<number, { id: number; voucherNo: string; customerId: number; amount: number; status: "DRAFT" | "POSTED" | "REVERSED"; allocations: { invoiceId: number; amount: number }[] }>();
+const demoPaymentVouchers = new Map<number, { id: number; voucherNo: string; supplierId: number; amount: number; status: "DRAFT" | "POSTED" | "REVERSED"; allocations: { invoiceId: number; amount: number }[] }>();
+let demoVoucherSequence = 5000;
+
+type VoucherAllocation = { invoiceId: number; amount: string };
+type VoucherInput = { voucherNo: string; companyId?: number; partyId: number; cashAccountCode: string; currencyCode?: string; amount: string; reference?: string; actor: string; allocations: VoucherAllocation[] };
+
+function validateVoucher(input: VoucherInput) {
+  const amount = Number(input.amount);
+  if (!Number.isFinite(amount) || amount <= 0) throw new Error("VOUCHER_AMOUNT_MUST_BE_POSITIVE");
+  if (!input.allocations.length) throw new Error("VOUCHER_NEEDS_ALLOCATIONS");
+  const allocations = input.allocations.map((row) => ({ invoiceId: row.invoiceId, amount: Number(row.amount) }));
+  if (allocations.some((row) => !Number.isInteger(row.invoiceId) || row.invoiceId <= 0 || !Number.isFinite(row.amount) || row.amount <= 0)) throw new Error("VOUCHER_INVALID_ALLOCATION");
+  const allocated = allocations.reduce((sum, row) => sum + row.amount, 0);
+  if (Math.abs(allocated - amount) > 0.000001) throw new Error("VOUCHER_ALLOCATION_MUST_EQUAL_TOTAL");
+  return { amount, allocations };
+}
+
+export async function createReceiptVoucher(input: VoucherInput) {
+  const checked = validateVoucher(input); const db = await getDb(); const idempotencyKey = `RECEIPT:${input.voucherNo}`;
+  if (!db) { if (Array.from(demoReceiptVouchers.values()).some((row) => row.voucherNo === input.voucherNo)) throw new Error("DUPLICATE_IDEMPOTENCY_KEY"); const id = ++demoVoucherSequence; const result = { id, voucherNo: input.voucherNo, customerId: input.partyId, amount: checked.amount, status: "DRAFT" as const, allocations: checked.allocations }; demoReceiptVouchers.set(id, result); return result; }
+  return db.transaction(async (tx) => { const inserted = await tx.insert(receiptVouchers).values({ voucherNo: input.voucherNo, companyId: input.companyId || 1, customerId: input.partyId, cashAccountCode: input.cashAccountCode, currencyCode: input.currencyCode || "SAR", amount: checked.amount.toFixed(6), idempotencyKey, reference: input.reference || null, actor: input.actor }).$returningId(); const id = Number(inserted[0]?.id); if (!id) throw new Error("RECEIPT_CREATE_FAILED"); await tx.insert(receiptAllocations).values(checked.allocations.map((row) => ({ receiptId: id, invoiceId: row.invoiceId, amount: row.amount.toFixed(6) }))); return { id, voucherNo: input.voucherNo, amount: checked.amount, status: "DRAFT" as const }; });
+}
+
+export async function createPaymentVoucher(input: VoucherInput) {
+  const checked = validateVoucher(input); const db = await getDb(); const idempotencyKey = `PAYMENT:${input.voucherNo}`;
+  if (!db) { if (Array.from(demoPaymentVouchers.values()).some((row) => row.voucherNo === input.voucherNo)) throw new Error("DUPLICATE_IDEMPOTENCY_KEY"); const id = ++demoVoucherSequence; const result = { id, voucherNo: input.voucherNo, supplierId: input.partyId, amount: checked.amount, status: "DRAFT" as const, allocations: checked.allocations }; demoPaymentVouchers.set(id, result); return result; }
+  return db.transaction(async (tx) => { const inserted = await tx.insert(paymentVouchers).values({ voucherNo: input.voucherNo, companyId: input.companyId || 1, supplierId: input.partyId, cashAccountCode: input.cashAccountCode, currencyCode: input.currencyCode || "SAR", amount: checked.amount.toFixed(6), idempotencyKey, reference: input.reference || null, actor: input.actor }).$returningId(); const id = Number(inserted[0]?.id); if (!id) throw new Error("PAYMENT_CREATE_FAILED"); await tx.insert(paymentAllocations).values(checked.allocations.map((row) => ({ paymentId: id, invoiceId: row.invoiceId, amount: row.amount.toFixed(6) }))); return { id, voucherNo: input.voucherNo, amount: checked.amount, status: "DRAFT" as const }; });
+}
+
+async function postVoucher(kind: "RECEIPT" | "PAYMENT", id: number, actor: string) {
+  const db = await getDb();
+  if (!db) { const map = kind === "RECEIPT" ? demoReceiptVouchers : demoPaymentVouchers; const voucher = map.get(id); if (!voucher) throw new Error(`${kind}_NOT_FOUND`); if (voucher.status !== "DRAFT") throw new Error(`${kind}_NOT_POSTABLE`); const invoicesMap = kind === "RECEIPT" ? demoInvoices : demoPurchaseInvoices; for (const allocation of voucher.allocations) { const invoice = invoicesMap.get(allocation.invoiceId); if (!invoice) throw new Error("ALLOCATED_INVOICE_NOT_FOUND"); if (invoice.status !== "POSTED") throw new Error("ALLOCATED_INVOICE_NOT_POSTED"); } voucher.status = "POSTED"; return { id, status: "POSTED" as const }; }
+  return db.transaction(async (tx) => {
+    const voucher = kind === "RECEIPT" ? (await tx.select().from(receiptVouchers).where(eq(receiptVouchers.id, id)).limit(1))[0] : (await tx.select().from(paymentVouchers).where(eq(paymentVouchers.id, id)).limit(1))[0];
+    if (!voucher) throw new Error(`${kind}_NOT_FOUND`); if (voucher.status !== "DRAFT") throw new Error(`${kind}_NOT_POSTABLE`);
+    const allocations = kind === "RECEIPT" ? await tx.select().from(receiptAllocations).where(eq(receiptAllocations.receiptId, id)) : await tx.select().from(paymentAllocations).where(eq(paymentAllocations.paymentId, id));
+    for (const allocation of allocations) { const invoice = (await tx.select().from(invoices).where(eq(invoices.id, allocation.invoiceId)).limit(1))[0]; if (!invoice || invoice.status !== "POSTED") throw new Error("ALLOCATED_INVOICE_NOT_POSTED"); const currentPaid = Number(invoice.paidAmount || 0); const allocationAmount = Number(allocation.amount); const remaining = Number(invoice.grandTotal) - currentPaid; if (allocationAmount > remaining + 0.000001) throw new Error("VOUCHER_EXCEEDS_INVOICE_BALANCE"); await tx.update(invoices).set({ paidAmount: (currentPaid + allocationAmount).toFixed(6), remainingAmount: (remaining - allocationAmount).toFixed(6) }).where(eq(invoices.id, invoice.id)); }
+    if (kind === "RECEIPT") await tx.update(receiptVouchers).set({ status: "POSTED", postedAt: new Date() }).where(eq(receiptVouchers.id, id)); else await tx.update(paymentVouchers).set({ status: "POSTED", postedAt: new Date() }).where(eq(paymentVouchers.id, id));
+    await tx.insert(auditEvents).values({ actor, actionCode: "POST", entityType: `${kind}_VOUCHER`, entityId: String(id), requestId: `${kind}:POST:${id}` });
+    return { id, status: "POSTED" as const };
+  });
+}
+
+export const postReceiptVoucher = (id: number, actor: string) => postVoucher("RECEIPT", id, actor);
+export const postPaymentVoucher = (id: number, actor: string) => postVoucher("PAYMENT", id, actor);
