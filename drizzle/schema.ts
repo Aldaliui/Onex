@@ -439,3 +439,70 @@ export const paymentAllocations = mysqlTable("payment_allocations", {
   invoiceId: int("invoiceId").notNull(),
   amount: decimal("amount", { precision: 20, scale: 6 }).notNull(),
 }, (table) => ({ paymentInvoice: unique("payment_invoice_allocation").on(table.paymentId, table.invoiceId) }));
+
+export const itemUnits = mysqlTable("item_units", {
+  id: int("id").autoincrement().primaryKey(),
+  itemId: int("itemId").notNull(),
+  unitCode: varchar("unitCode", { length: 30 }).notNull(),
+  unitName: varchar("unitName", { length: 100 }).notNull(),
+  conversionToBase: decimal("conversionToBase", { precision: 20, scale: 6 }).notNull().default("1"),
+  isBase: int("isBase").notNull().default(0),
+  barcode: varchar("barcode", { length: 100 }),
+  active: int("active").notNull().default(1),
+}, (table) => ({ itemUnit: unique("item_unit_code").on(table.itemId, table.unitCode) }));
+
+export const warehouseLocations = mysqlTable("warehouse_locations", {
+  id: int("id").autoincrement().primaryKey(),
+  warehouseId: int("warehouseId").notNull(),
+  code: varchar("code", { length: 50 }).notNull(),
+  name: varchar("name", { length: 160 }).notNull(),
+  active: int("active").notNull().default(1),
+}, (table) => ({ warehouseLocation: unique("warehouse_location_code").on(table.warehouseId, table.code) }));
+
+export const inventorySettings = mysqlTable("inventory_settings", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull().unique(),
+  costingType: varchar("costingType", { length: 30 }).notNull().default("MOVING_AVERAGE"),
+  allowNegativeStock: int("allowNegativeStock").notNull().default(0),
+  useBatchNo: int("useBatchNo").notNull().default(0),
+  useExpireDate: int("useExpireDate").notNull().default(0),
+  useSerialNo: int("useSerialNo").notNull().default(0),
+});
+
+export const inventoryBatches = mysqlTable("inventory_batches", {
+  id: int("id").autoincrement().primaryKey(),
+  itemId: int("itemId").notNull(),
+  warehouseId: int("warehouseId").notNull(),
+  batchNo: varchar("batchNo", { length: 100 }).notNull(),
+  expireDate: timestamp("expireDate"),
+  quantity: decimal("quantity", { precision: 20, scale: 6 }).notNull().default("0"),
+  unitCost: decimal("unitCost", { precision: 20, scale: 6 }).notNull().default("0"),
+}, (table) => ({ batchScope: unique("inventory_batch_scope").on(table.itemId, table.warehouseId, table.batchNo) }));
+
+export const inventorySerials = mysqlTable("inventory_serials", {
+  id: int("id").autoincrement().primaryKey(),
+  itemId: int("itemId").notNull(),
+  warehouseId: int("warehouseId").notNull(),
+  serialNo: varchar("serialNo", { length: 160 }).notNull(),
+  status: mysqlEnum("status", ["AVAILABLE", "SOLD", "DAMAGED", "TRANSFERRED"]).notNull().default("AVAILABLE"),
+}, (table) => ({ serialUnique: unique("inventory_serial_unique").on(table.itemId, table.serialNo) }));
+
+export const inventoryTransfers = mysqlTable("inventory_transfers", {
+  id: int("id").autoincrement().primaryKey(),
+  transferNo: varchar("transferNo", { length: 80 }).notNull().unique(),
+  sourceWarehouseId: int("sourceWarehouseId").notNull(),
+  destinationWarehouseId: int("destinationWarehouseId").notNull(),
+  status: mysqlEnum("status", ["DRAFT", "POSTED", "CANCELLED"]).notNull().default("DRAFT"),
+  actor: varchar("actor", { length: 100 }).notNull(),
+  idempotencyKey: varchar("idempotencyKey", { length: 160 }).notNull().unique(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  postedAt: timestamp("postedAt"),
+});
+
+export const inventoryTransferLines = mysqlTable("inventory_transfer_lines", {
+  id: int("id").autoincrement().primaryKey(),
+  transferId: int("transferId").notNull(),
+  itemId: int("itemId").notNull(),
+  quantity: decimal("quantity", { precision: 20, scale: 6 }).notNull(),
+  unitCost: decimal("unitCost", { precision: 20, scale: 6 }).notNull().default("0"),
+});
