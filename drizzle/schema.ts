@@ -335,3 +335,61 @@ export type JournalEntry = typeof journalEntries.$inferSelect;
 export type Branch = typeof branches.$inferSelect;
 export type Account = typeof accounts.$inferSelect;
 export type FiscalPeriod = typeof fiscalPeriods.$inferSelect;
+
+export const documentSequences = mysqlTable("document_sequences", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull(),
+  branchId: int("branchId"),
+  periodId: int("periodId"),
+  documentType: varchar("documentType", { length: 40 }).notNull(),
+  prefix: varchar("prefix", { length: 30 }).notNull().default(""),
+  nextNumber: int("nextNumber").notNull().default(1),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({ scope: unique("document_sequence_scope").on(table.companyId, table.branchId, table.periodId, table.documentType) }));
+
+export const documentEvents = mysqlTable("document_events", {
+  id: int("id").autoincrement().primaryKey(),
+  documentType: varchar("documentType", { length: 40 }).notNull(),
+  documentId: int("documentId").notNull(),
+  fromState: varchar("fromState", { length: 20 }),
+  toState: varchar("toState", { length: 20 }).notNull(),
+  actor: varchar("actor", { length: 100 }).notNull(),
+  reason: varchar("reason", { length: 500 }),
+  requestId: varchar("requestId", { length: 160 }).notNull().unique(),
+  occurredAt: timestamp("occurredAt").defaultNow().notNull(),
+}, (table) => ({ documentIdx: index("document_events_document_idx").on(table.documentType, table.documentId, table.occurredAt) }));
+
+export const postingBatches = mysqlTable("posting_batches", {
+  id: int("id").autoincrement().primaryKey(),
+  documentType: varchar("documentType", { length: 40 }).notNull(),
+  documentId: int("documentId").notNull(),
+  idempotencyKey: varchar("idempotencyKey", { length: 200 }).notNull().unique(),
+  status: mysqlEnum("status", ["STARTED", "COMPLETED", "FAILED"]).notNull().default("STARTED"),
+  actor: varchar("actor", { length: 100 }).notNull(),
+  errorCode: varchar("errorCode", { length: 100 }),
+  startedAt: timestamp("startedAt").defaultNow().notNull(),
+  completedAt: timestamp("completedAt"),
+}, (table) => ({ documentIdx: index("posting_batches_document_idx").on(table.documentType, table.documentId, table.status) }));
+
+export const postingLines = mysqlTable("posting_lines", {
+  id: int("id").autoincrement().primaryKey(),
+  postingBatchId: int("postingBatchId").notNull(),
+  documentLineId: int("documentLineId"),
+  effectType: varchar("effectType", { length: 30 }).notNull(),
+  sourceTable: varchar("sourceTable", { length: 80 }).notNull(),
+  sourceId: int("sourceId").notNull(),
+  amount: decimal("amount", { precision: 20, scale: 6 }).notNull().default("0"),
+  quantity: decimal("quantity", { precision: 20, scale: 6 }).notNull().default("0"),
+});
+
+export const outboxEvents = mysqlTable("outbox_events", {
+  id: int("id").autoincrement().primaryKey(),
+  eventType: varchar("eventType", { length: 80 }).notNull(),
+  aggregateType: varchar("aggregateType", { length: 40 }).notNull(),
+  aggregateId: int("aggregateId").notNull(),
+  payload: text("payload").notNull(),
+  status: mysqlEnum("status", ["PENDING", "PUBLISHED", "FAILED"]).notNull().default("PENDING"),
+  attempts: int("attempts").notNull().default(0),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  publishedAt: timestamp("publishedAt"),
+}, (table) => ({ pendingIdx: index("outbox_pending_idx").on(table.status, table.createdAt) }));
