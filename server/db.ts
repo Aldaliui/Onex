@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { ENV } from "./_core/env";
 import { accounts, adjustmentNoteLines, adjustmentNotes, auditEvents, banks, branches, cashBoxes, companies, customers, documentEvents, fiscalPeriods, inventoryBatches, inventoryCountLines, inventoryCounts, inventorySerials, inventoryTransferLines, inventoryTransfers, invoices, invoiceLines, items, journalEntries, journalEntryLines, paymentAllocations, paymentVouchers, receiptAllocations, receiptVouchers, stockBalances, stockLocationBalances, stockMovements, suppliers, systemSettings, warehouseLocations, warehouses, windowContracts, windowExecutions, windowRegistry, type InsertUser, users } from "../drizzle/schema";
 import { buildPurchaseJournal, buildReversalJournal, buildSaleJournal, calculateInvoice, canPostToPeriod, validateJournal } from "./accountingCore";
+import { assertAtomicPost, assertAtomicReverse } from "./documentLifecycle";
 import { getLegacyWindowContract } from "./legacyWindowContracts";
 import { assertStockRule, calculateMovingAverage } from "./inventoryKernel";
 import { createCloudSalesInvoice, getCloudMasterData, isCloudflareD1Enabled, postCloudSalesInvoice, reverseCloudSalesInvoice } from "./cloudflareD1";
@@ -624,6 +625,7 @@ export async function postPurchaseInvoice(invoiceId: number, actor: string) {
     const invoice = demoPurchaseInvoices.get(invoiceId);
     if (!invoice) throw new Error("PURCHASE_INVOICE_NOT_FOUND");
     if (invoice.status !== "DRAFT") throw new Error("PURCHASE_INVOICE_ALREADY_POSTED_OR_REVERSED");
+    assertAtomicPost({ documentType: "PURCHASE_INVOICE", documentId: invoiceId, actor, requestId: `POST:${invoice.docNo}` });
     applyDemoInvoiceTrace(demoInvoiceLines.get(invoiceId) || [], 1, "IN");
     invoice.status = "POSTED";
     return { invoiceId, status: "POSTED" as const };
@@ -632,6 +634,7 @@ export async function postPurchaseInvoice(invoiceId: number, actor: string) {
     const invoice = (await tx.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.invoiceType, "PURCHASE"))).limit(1))[0];
     if (!invoice) throw new Error("PURCHASE_INVOICE_NOT_FOUND");
     if (invoice.status !== "DRAFT") throw new Error("PURCHASE_INVOICE_ALREADY_POSTED_OR_REVERSED");
+    assertAtomicPost({ documentType: "PURCHASE_INVOICE", documentId: invoiceId, actor, requestId: `POST:${invoice.docNo}` });
     const supplier = invoice.supplierId ? (await tx.select().from(suppliers).where(eq(suppliers.id, invoice.supplierId)).limit(1))[0] : undefined;
     if (!supplier?.accountId) throw new Error("SUPPLIER_ACCOUNT_NOT_LINKED");
     const supplierAccount = (await tx.select().from(accounts).where(eq(accounts.id, supplier.accountId)).limit(1))[0];
@@ -666,12 +669,14 @@ export async function reversePurchaseInvoice(invoiceId: number, actor: string) {
   if (!db) {
     const invoice = demoPurchaseInvoices.get(invoiceId);
     if (!invoice || invoice.status !== "POSTED") throw new Error("ONLY_POSTED_PURCHASE_INVOICES_CAN_BE_REVERSED");
+    assertAtomicReverse({ documentType: "PURCHASE_INVOICE", documentId: invoiceId, actor, requestId: `REV:${invoice.docNo}` });
     invoice.status = "REVERSED";
     return { invoiceId, status: "REVERSED" as const };
   }
   return db.transaction(async (tx) => {
     const invoice = (await tx.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.invoiceType, "PURCHASE"))).limit(1))[0];
     if (!invoice || invoice.status !== "POSTED") throw new Error("ONLY_POSTED_PURCHASE_INVOICES_CAN_BE_REVERSED");
+    assertAtomicReverse({ documentType: "PURCHASE_INVOICE", documentId: invoiceId, actor, requestId: `REV:${invoice.docNo}` });
     const lines = await tx.select({ line: invoiceLines, item: items, balance: stockBalances }).from(invoiceLines).innerJoin(items, eq(invoiceLines.itemId, items.id)).leftJoin(stockBalances, and(eq(stockBalances.itemId, invoiceLines.itemId), eq(stockBalances.warehouseId, invoice.warehouseId))).where(eq(invoiceLines.invoiceId, invoiceId));
     for (const row of lines) {
       if (!row.item.stockFlag || !row.balance) continue;
@@ -792,13 +797,17 @@ export async function receiveStock(input: { itemId: number; warehouseId: number;
   });
 }
 
-export async function postInvoice(invoiceId: number, actor: string) {
-  if (isCloudflareD1Enabled()) return postCloudSalesInvoice(invoiceId);
+export async function postInvoice(invoiceId: number, actor: string, requestId?: string) {
+  if (isCloudflareD1Enabled()) {
+    assertAtomicPost({ documentType: "SALES_INVOICE", documentId: invoiceId, actor, requestId: requestId || `POST:SALES_INVOICE:${invoiceId}` });
+    return postCloudSalesInvoice(invoiceId);
+  }
   const db = await getDb();
   if (!db) {
     const invoice = demoInvoices.get(invoiceId);
     if (!invoice) throw new Error("INVOICE_NOT_FOUND");
     if (invoice.status !== "DRAFT") throw new Error("INVOICE_ALREADY_POSTED_OR_REVERSED");
+    assertAtomicPost({ documentType: "SALES_INVOICE", documentId: invoiceId, actor, requestId: `POST:${invoice.docNo}` });
     applyDemoInvoiceTrace(demoInvoiceLines.get(invoiceId) || [], 1, "OUT");
     invoice.status = "POSTED";
     return { invoiceId, status: "POSTED" as const, totalCogs: 0 };
@@ -807,6 +816,7 @@ export async function postInvoice(invoiceId: number, actor: string) {
     const invoice = (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1))[0];
     if (!invoice) throw new Error("INVOICE_NOT_FOUND");
     if (invoice.status !== "DRAFT") throw new Error("INVOICE_ALREADY_POSTED_OR_REVERSED");
+    assertAtomicPost({ documentType: "SALES_INVOICE", documentId: invoiceId, actor, requestId: `POST:${invoice.docNo}` });
     const customer = invoice.customerId ? (await tx.select().from(customers).where(eq(customers.id, invoice.customerId)).limit(1))[0] : undefined;
     if (!customer?.accountId) throw new Error("CUSTOMER_ACCOUNT_NOT_LINKED");
     const customerAccount = (await tx.select().from(accounts).where(eq(accounts.id, customer.accountId)).limit(1))[0];
@@ -845,18 +855,23 @@ export async function postInvoice(invoiceId: number, actor: string) {
   });
 }
 
-export async function reverseInvoice(invoiceId: number, actor: string) {
-  if (isCloudflareD1Enabled()) return reverseCloudSalesInvoice(invoiceId);
+export async function reverseInvoice(invoiceId: number, actor: string, requestId?: string) {
+  if (isCloudflareD1Enabled()) {
+    assertAtomicReverse({ documentType: "SALES_INVOICE", documentId: invoiceId, actor, requestId: requestId || `REV:SALES_INVOICE:${invoiceId}` });
+    return reverseCloudSalesInvoice(invoiceId);
+  }
   const db = await getDb();
   if (!db) {
     const invoice = demoInvoices.get(invoiceId);
     if (!invoice || invoice.status !== "POSTED") throw new Error("ONLY_POSTED_INVOICES_CAN_BE_REVERSED");
+    assertAtomicReverse({ documentType: "SALES_INVOICE", documentId: invoiceId, actor, requestId: `REV:${invoice.docNo}` });
     invoice.status = "REVERSED";
     return { invoiceId, status: "REVERSED" as const };
   }
   return db.transaction(async (tx) => {
     const invoice = (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1))[0];
     if (!invoice || invoice.status !== "POSTED") throw new Error("ONLY_POSTED_INVOICES_CAN_BE_REVERSED");
+    assertAtomicReverse({ documentType: "SALES_INVOICE", documentId: invoiceId, actor, requestId: `REV:${invoice.docNo}` });
     const lines = await tx.select({ line: invoiceLines, item: items, balance: stockBalances }).from(invoiceLines).innerJoin(items, eq(invoiceLines.itemId, items.id)).leftJoin(stockBalances, and(eq(stockBalances.itemId, invoiceLines.itemId), eq(stockBalances.warehouseId, invoice.warehouseId))).where(eq(invoiceLines.invoiceId, invoiceId));
     const originalJournal = (await tx.select().from(journalEntries).where(and(eq(journalEntries.sourceInvoiceId, invoiceId), eq(journalEntries.entryType, "AR_SALE"))).limit(1))[0];
     for (const row of lines) {
@@ -909,10 +924,10 @@ export async function executeSalesWindowAction(input: {
       response = await createInvoice(input.invoice);
     } else if (input.action === "post") {
       if (!input.invoiceId) throw new Error("SALES_INVOICE_ID_REQUIRED");
-      response = await postInvoice(input.invoiceId, input.actor);
+      response = await postInvoice(input.invoiceId, input.actor, input.requestId);
     } else if (input.action === "reverse") {
       if (!input.invoiceId) throw new Error("SALES_INVOICE_ID_REQUIRED");
-      response = await reverseInvoice(input.invoiceId, input.actor);
+      response = await reverseInvoice(input.invoiceId, input.actor, input.requestId);
     } else if (input.action === "print") response = { rows: await searchInvoices(input.search, input.limit || 20), mode: "DATABASE_CONTRACT" };
     else throw new Error("SALES_ACTION_NOT_IMPLEMENTED");
     await log("SUCCEEDED", response, input.invoiceId); if (!db) demoWindowExecutions.set(input.requestId, { status: "SUCCEEDED", response });
@@ -1141,10 +1156,10 @@ export async function createPaymentVoucher(input: VoucherInput) {
 
 async function postVoucher(kind: "RECEIPT" | "PAYMENT", id: number, actor: string) {
   const db = await getDb();
-  if (!db) { const map = kind === "RECEIPT" ? demoReceiptVouchers : demoPaymentVouchers; const voucher = map.get(id); if (!voucher) throw new Error(`${kind}_NOT_FOUND`); if (voucher.status !== "DRAFT") throw new Error(`${kind}_NOT_POSTABLE`); const invoicesMap = kind === "RECEIPT" ? demoInvoices : demoPurchaseInvoices; for (const allocation of voucher.allocations) { const invoice = invoicesMap.get(allocation.invoiceId); if (!invoice) throw new Error("ALLOCATED_INVOICE_NOT_FOUND"); if (invoice.status !== "POSTED") throw new Error("ALLOCATED_INVOICE_NOT_POSTED"); } voucher.status = "POSTED"; return { id, status: "POSTED" as const }; }
+  if (!db) { const map = kind === "RECEIPT" ? demoReceiptVouchers : demoPaymentVouchers; const voucher = map.get(id); if (!voucher) throw new Error(`${kind}_NOT_FOUND`); if (voucher.status !== "DRAFT") throw new Error(`${kind}_NOT_POSTABLE`); assertAtomicPost({ documentType: `${kind}_VOUCHER`, documentId: id, actor, requestId: `${kind}:POST:${id}` }); const invoicesMap = kind === "RECEIPT" ? demoInvoices : demoPurchaseInvoices; for (const allocation of voucher.allocations) { const invoice = invoicesMap.get(allocation.invoiceId); if (!invoice) throw new Error("ALLOCATED_INVOICE_NOT_FOUND"); if (invoice.status !== "POSTED") throw new Error("ALLOCATED_INVOICE_NOT_POSTED"); } voucher.status = "POSTED"; return { id, status: "POSTED" as const }; }
   return db.transaction(async (tx) => {
     const voucher = kind === "RECEIPT" ? (await tx.select().from(receiptVouchers).where(eq(receiptVouchers.id, id)).limit(1))[0] : (await tx.select().from(paymentVouchers).where(eq(paymentVouchers.id, id)).limit(1))[0];
-    if (!voucher) throw new Error(`${kind}_NOT_FOUND`); if (voucher.status !== "DRAFT") throw new Error(`${kind}_NOT_POSTABLE`);
+    if (!voucher) throw new Error(`${kind}_NOT_FOUND`); if (voucher.status !== "DRAFT") throw new Error(`${kind}_NOT_POSTABLE`); assertAtomicPost({ documentType: `${kind}_VOUCHER`, documentId: id, actor, requestId: `${kind}:POST:${id}` });
     const allocations = kind === "RECEIPT" ? await tx.select().from(receiptAllocations).where(eq(receiptAllocations.receiptId, id)) : await tx.select().from(paymentAllocations).where(eq(paymentAllocations.paymentId, id));
     for (const allocation of allocations) { const invoice = (await tx.select().from(invoices).where(eq(invoices.id, allocation.invoiceId)).limit(1))[0]; if (!invoice || invoice.status !== "POSTED") throw new Error("ALLOCATED_INVOICE_NOT_POSTED"); const currentPaid = Number(invoice.paidAmount || 0); const allocationAmount = Number(allocation.amount); const remaining = Number(invoice.grandTotal) - currentPaid; if (allocationAmount > remaining + 0.000001) throw new Error("VOUCHER_EXCEEDS_INVOICE_BALANCE"); await tx.update(invoices).set({ paidAmount: (currentPaid + allocationAmount).toFixed(6), remainingAmount: (remaining - allocationAmount).toFixed(6) }).where(eq(invoices.id, invoice.id)); }
     if (kind === "RECEIPT") await tx.update(receiptVouchers).set({ status: "POSTED", postedAt: new Date() }).where(eq(receiptVouchers.id, id)); else await tx.update(paymentVouchers).set({ status: "POSTED", postedAt: new Date() }).where(eq(paymentVouchers.id, id));
@@ -1167,9 +1182,9 @@ export async function createInventoryTransfer(input: { transferNo: string; sourc
 
 export async function postInventoryTransfer(transferId: number, actor: string) {
   const db = await getDb();
-  if (!db) { const transfer = demoInventoryTransfers.get(transferId); if (!transfer || transfer.status !== "DRAFT") throw new Error("TRANSFER_NOT_POSTABLE"); for (const line of transfer.lines) { const sourceKey = `${line.itemId}:${transfer.sourceWarehouseId}`; const destinationKey = `${line.itemId}:${transfer.destinationWarehouseId}`; const source = demoInventoryBalances.get(sourceKey) || { quantity: 0, totalCost: 0, unitCost: 0 }; const afterSource = assertStockRule({ beforeQuantity: source.quantity, movementQuantity: line.quantity, direction: "OUT" }); const destination = demoInventoryBalances.get(destinationKey) || { quantity: 0, totalCost: 0, unitCost: 0 }; const movedCost = line.quantity * source.unitCost; demoInventoryBalances.set(sourceKey, { quantity: afterSource, totalCost: Math.max(0, source.totalCost - movedCost), unitCost: afterSource ? Math.max(0, source.totalCost - movedCost) / afterSource : 0 }); demoInventoryBalances.set(destinationKey, { quantity: destination.quantity + line.quantity, totalCost: destination.totalCost + movedCost, unitCost: (destination.totalCost + movedCost) / (destination.quantity + line.quantity) }); } transfer.status = "POSTED"; return { transferId, status: "POSTED" as const }; }
+  if (!db) { const transfer = demoInventoryTransfers.get(transferId); if (!transfer || transfer.status !== "DRAFT") throw new Error("TRANSFER_NOT_POSTABLE"); assertAtomicPost({ documentType: "INVENTORY_TRANSFER", documentId: transferId, actor, requestId: `TRANSFER:POST:${transferId}` }); for (const line of transfer.lines) { const sourceKey = `${line.itemId}:${transfer.sourceWarehouseId}`; const destinationKey = `${line.itemId}:${transfer.destinationWarehouseId}`; const source = demoInventoryBalances.get(sourceKey) || { quantity: 0, totalCost: 0, unitCost: 0 }; const afterSource = assertStockRule({ beforeQuantity: source.quantity, movementQuantity: line.quantity, direction: "OUT" }); const destination = demoInventoryBalances.get(destinationKey) || { quantity: 0, totalCost: 0, unitCost: 0 }; const movedCost = line.quantity * source.unitCost; demoInventoryBalances.set(sourceKey, { quantity: afterSource, totalCost: Math.max(0, source.totalCost - movedCost), unitCost: afterSource ? Math.max(0, source.totalCost - movedCost) / afterSource : 0 }); demoInventoryBalances.set(destinationKey, { quantity: destination.quantity + line.quantity, totalCost: destination.totalCost + movedCost, unitCost: (destination.totalCost + movedCost) / (destination.quantity + line.quantity) }); } transfer.status = "POSTED"; return { transferId, status: "POSTED" as const }; }
   return db.transaction(async (tx) => {
-    const transfer = (await tx.select().from(inventoryTransfers).where(eq(inventoryTransfers.id, transferId)).limit(1))[0]; if (!transfer || transfer.status !== "DRAFT") throw new Error("TRANSFER_NOT_POSTABLE");
+    const transfer = (await tx.select().from(inventoryTransfers).where(eq(inventoryTransfers.id, transferId)).limit(1))[0]; if (!transfer || transfer.status !== "DRAFT") throw new Error("TRANSFER_NOT_POSTABLE"); assertAtomicPost({ documentType: "INVENTORY_TRANSFER", documentId: transferId, actor, requestId: `TRANSFER:POST:${transferId}` });
     const lines = await tx.select().from(inventoryTransferLines).where(eq(inventoryTransferLines.transferId, transferId));
     for (const line of lines) { const source = (await tx.select().from(stockBalances).where(and(eq(stockBalances.itemId, line.itemId), eq(stockBalances.warehouseId, transfer.sourceWarehouseId))).limit(1))[0]; const quantity = Number(line.quantity); if (!source) throw new Error("INSUFFICIENT_STOCK"); const afterSource = assertStockRule({ beforeQuantity: Number(source.quantity), movementQuantity: quantity, direction: "OUT" }); const movedCost = quantity * Number(source.unitCost); const destination = (await tx.select().from(stockBalances).where(and(eq(stockBalances.itemId, line.itemId), eq(stockBalances.warehouseId, transfer.destinationWarehouseId))).limit(1))[0]; const nextDestination = destination ? calculateMovingAverage(Number(destination.quantity), Number(destination.totalCost), quantity, Number(source.unitCost)) : { quantity, totalCost: movedCost, unitCost: Number(source.unitCost) }; await tx.update(stockBalances).set({ quantity: afterSource.toFixed(6), totalCost: Math.max(0, Number(source.totalCost) - movedCost).toFixed(6), unitCost: afterSource ? (Math.max(0, Number(source.totalCost) - movedCost) / afterSource).toFixed(6) : "0", versionNo: source.versionNo + 1 }).where(eq(stockBalances.id, source.id)); if (destination) await tx.update(stockBalances).set({ quantity: nextDestination.quantity.toFixed(6), totalCost: nextDestination.totalCost.toFixed(6), unitCost: nextDestination.unitCost.toFixed(6), versionNo: destination.versionNo + 1 }).where(eq(stockBalances.id, destination.id)); else await tx.insert(stockBalances).values({ itemId: line.itemId, warehouseId: transfer.destinationWarehouseId, quantity: nextDestination.quantity.toFixed(6), totalCost: nextDestination.totalCost.toFixed(6), unitCost: nextDestination.unitCost.toFixed(6), versionNo: 1 }); await tx.insert(stockMovements).values([{ itemId: line.itemId, warehouseId: transfer.sourceWarehouseId, movementType: "TRANSFER_OUT", quantityOut: quantity.toFixed(6), unitCost: Number(source.unitCost).toFixed(6), totalCost: movedCost.toFixed(6), balanceAfter: afterSource.toFixed(6), createdBy: actor }, { itemId: line.itemId, warehouseId: transfer.destinationWarehouseId, movementType: "TRANSFER_IN", quantityIn: quantity.toFixed(6), unitCost: Number(source.unitCost).toFixed(6), totalCost: movedCost.toFixed(6), balanceAfter: nextDestination.quantity.toFixed(6), createdBy: actor }]); }
     await tx.update(inventoryTransfers).set({ status: "POSTED", postedAt: new Date() }).where(eq(inventoryTransfers.id, transferId)); await tx.insert(auditEvents).values({ actor, actionCode: "POST", entityType: "INVENTORY_TRANSFER", entityId: String(transferId), requestId: `TRANSFER:POST:${transferId}` }); return { transferId, status: "POSTED" as const };

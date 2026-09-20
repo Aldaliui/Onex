@@ -52,3 +52,17 @@ export function assertPostableState(state: DocumentState) {
   if (!["APPROVED", "VALIDATED"].includes(state)) throw new Error(`DOCUMENT_NOT_POSTABLE:${state}`);
   return true;
 }
+
+/** Validates the complete atomic posting path used by ERP services. */
+export function assertAtomicPost(input: { documentType: string; documentId: number; actor: string; requestId: string; from?: "DRAFT" | "VALIDATED" | "APPROVED" }) {
+  const from = input.from || "DRAFT";
+  const validated = transitionDocument({ from, to: "VALIDATED", actor: input.actor, requestId: input.requestId });
+  const approved = transitionDocument({ ...validated, from: validated.to, to: "APPROVED" });
+  const posted = transitionDocument({ ...approved, from: approved.to, to: "POSTED" });
+  return { ...posted, postingKey: buildPostingIdempotencyKey({ documentType: input.documentType, documentId: input.documentId, requestId: input.requestId }) };
+}
+
+/** Validates the only legal reversal path for a posted document. */
+export function assertAtomicReverse(input: { documentType: string; documentId: number; actor: string; requestId: string }) {
+  return transitionDocument({ from: "POSTED", to: "REVERSED", actor: input.actor, requestId: input.requestId, reason: `${input.documentType}:${input.documentId}` });
+}
