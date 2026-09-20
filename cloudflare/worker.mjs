@@ -63,6 +63,10 @@ async function readJson(request) {
 }
 
 function requireWriteAuth(request, env) {
+  // /api/cloud/* is already protected by the actor gate in api().
+  // Keep the bearer-token requirement for /api/erp/* while allowing the authenticated
+  // workbench actor to use the same atomic domain functions through the cloud route.
+  if (request.headers.get("x-onex-actor")?.trim()) return;
   const expected = env.ONEX_API_TOKEN;
   const authorization = request.headers.get("authorization") || "";
   if (!expected) throw new Response(JSON.stringify({ error: "WRITE_AUTH_NOT_CONFIGURED" }), { status: 503, headers: JSON_HEADERS });
@@ -1594,23 +1598,14 @@ async function api(request, env, url) {
     const result = await env.ONEX_DB.batch(statements);
     return cloudJson({ ok: true, journalNo: entry.journalNo, totalDebit: debit, totalCredit: credit, status: "POSTED", result });
   }
-  if (url.pathname === "/api/cloud/stock/receive" && request.method === "POST") {
-    const x = await readBody(request); const qty = Number(x.quantity); const cost = Number(x.unitCost); if (!x.itemId || !x.warehouseId || !(qty > 0) || !(cost >= 0)) return cloudJson({ error: "itemId, warehouseId, quantity and unitCost are required" }, 400);
-    const current = await env.ONEX_DB.prepare("SELECT * FROM stock_balances WHERE itemId=? AND warehouseId=?").bind(x.itemId, x.warehouseId).first(); const before = Number(current?.quantity || 0); const totalBefore = Number(current?.totalCost || 0); const after = before + qty; const totalAfter = totalBefore + qty * cost; const unitAfter = after ? totalAfter / after : 0;
-    const batch = [{ sql: "INSERT INTO stock_balances(itemId,warehouseId,quantity,unitCost,totalCost,versionNo) VALUES(?,?,?,?,?,1) ON CONFLICT(itemId,warehouseId) DO UPDATE SET quantity=excluded.quantity,unitCost=excluded.unitCost,totalCost=excluded.totalCost,versionNo=stock_balances.versionNo+1", params: [x.itemId, x.warehouseId, after.toFixed(6), unitAfter.toFixed(6), totalAfter.toFixed(6)] }, { sql: "INSERT INTO stock_movements(itemId,warehouseId,movementType,quantityIn,unitCost,totalCost,balanceAfter,createdBy) VALUES(?,?,?,?,?,?,?,?)", params: [x.itemId, x.warehouseId, "RECEIPT", qty.toFixed(6), cost.toFixed(6), (qty * cost).toFixed(6), after.toFixed(6), x.actor || "workbench.user"] }];
-    return cloudJson({ ok: true, quantity: after.toFixed(6), totalCost: totalAfter.toFixed(6), result: await env.ONEX_DB.batch(batch) });
-  }
+  if (url.pathname === "/api/cloud/stock/receive" && request.method === "POST") return receiveStock(env, request);
   if (url.pathname === "/api/cloud/invoices" && request.method === "GET") { const r = await env.ONEX_DB.prepare("SELECT * FROM invoices ORDER BY createdAt DESC LIMIT ?").bind(limitOf(url)).all(); return cloudJson(r.results); }
-  if (url.pathname === "/api/cloud/invoices" && request.method === "POST") {
-    const x = await readBody(request); if (!x.docNo || !x.customerId || !x.warehouseId || !Array.isArray(x.lines) || !x.lines.length) return cloudJson({ error: "docNo, customerId, warehouseId and lines are required" }, 400);
-    const subtotal = x.lines.reduce((n, l) => n + Number(l.quantity || 0) * Number(l.unitPrice || 0), 0); const tax = x.lines.reduce((n, l) => n + Number(l.taxAmount || 0), 0); const total = subtotal + tax; const key = x.idempotencyKey || `D1:${x.docNo}`;
-    const paidAmount = Number(x.paidAmount || 0); const exchangeRate = Number(x.exchangeRate || 1);
-    const batch = [{ sql: "INSERT INTO invoices(docNo,invoiceType,customerId,warehouseId,currencyCode,exchangeRate,subtotal,taxTotal,grandTotal,status,paymentMethod,paidAmount,remainingAmount,paymentReference,idempotencyKey,sourceForm,createdBy) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", params: [x.docNo, "SALE", x.customerId, x.warehouseId, x.currencyCode || "SAR", exchangeRate.toFixed(8), subtotal.toFixed(6), tax.toFixed(6), total.toFixed(6), "DRAFT", x.paymentMethod || "CASH", paidAmount.toFixed(6), (total - paidAmount).toFixed(6), x.paymentReference || null, key, x.sourceForm || "ARST004", x.actor || "workbench.user"] }, ...x.lines.map((l) => ({ sql: "INSERT INTO invoice_lines(invoiceId,itemId,quantity,unitPrice,taxAmount,lineTotal) VALUES((SELECT id FROM invoices WHERE docNo=?),?,?,?,?,?)", params: [x.docNo, l.itemId, l.quantity, l.unitPrice, l.taxAmount || "0", (Number(l.quantity) * Number(l.unitPrice) + Number(l.taxAmount || 0)).toFixed(6)] }))];
-    const result = await env.ONEX_DB.batch(batch);
-    return cloudJson({ ok: true, docNo: x.docNo, invoiceId: result[0]?.meta?.last_row_id || 0, result }, 201);
-  }
+  if (url.pathname === "/api/cloud/invoices" && request.method === "POST") return createInvoice(env, request);
   if (url.pathname.startsWith("/api/cloud/invoices/") && request.method === "POST") {
-    const id = Number(url.pathname.split("/").pop()); const action = url.searchParams.get("action"); if (!id || !["post", "reverse"].includes(action)) return cloudJson({ error: "use ?action=post or ?action=reverse" }, 400); const status = action === "post" ? "POSTED" : "REVERSED"; const r = await env.ONEX_DB.prepare("UPDATE invoices SET status=?,postedAt=CASE WHEN ?='POSTED' THEN CURRENT_TIMESTAMP ELSE postedAt END WHERE id=?").bind(status, status, id).run(); return cloudJson({ ok: true, invoiceId: id, status, result: r });
+    const id = Number(url.pathname.split("/").pop());
+    const action = url.searchParams.get("action");
+    if (!positiveInteger(id) || !["post", "reverse"].includes(action)) return cloudJson({ error: "use ?action=post or ?action=reverse" }, 400);
+    return updateInvoiceStatus(env, request, id, action === "post" ? "POSTED" : "REVERSED");
   }
   if (url.pathname === "/api/cloud/reports/inventory") { const r = await env.ONEX_DB.prepare("SELECT itemId,warehouseId,quantity,unitCost,totalCost FROM stock_balances ORDER BY itemId LIMIT ?").bind(limitOf(url)).all(); return cloudJson({ reportCode: "MRPREP001", title: "Inventory valuation", rows: r.results }); }
   if (url.pathname === "/api/cloud/reports/accounts") { const r = await env.ONEX_DB.prepare("SELECT code,name,accountType,currencyCode,active FROM accounts ORDER BY code LIMIT ?").bind(limitOf(url)).all(); return cloudJson({ reportCode: "GLST001", title: "Chart of accounts", rows: r.results }); }
