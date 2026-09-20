@@ -203,6 +203,22 @@ export const invoiceLines = mysqlTable("invoice_lines", {
   serialsJson: text("serialsJson"),
 });
 
+export const eInvoiceSubmissions = mysqlTable("e_invoice_submissions", {
+  id: int("id").autoincrement().primaryKey(),
+  invoiceId: int("invoiceId").notNull(),
+  provider: varchar("provider", { length: 80 }).notNull(),
+  status: mysqlEnum("status", ["QUEUED", "SUBMITTED", "ACCEPTED", "REJECTED", "FAILED"]).notNull().default("QUEUED"),
+  externalId: varchar("externalId", { length: 160 }),
+  idempotencyKey: varchar("idempotencyKey", { length: 160 }).notNull().unique(),
+  payloadJson: text("payloadJson").notNull(),
+  responseJson: text("responseJson"),
+  errorCode: varchar("errorCode", { length: 80 }),
+  errorMessage: varchar("errorMessage", { length: 500 }),
+  submittedAt: timestamp("submittedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({ invoiceIdx: index("e_invoice_submission_invoice_idx").on(table.invoiceId), statusIdx: index("e_invoice_submission_status_idx").on(table.status) }));
+
 export const adjustmentNotes = mysqlTable("adjustment_notes", {
   id: int("id").autoincrement().primaryKey(),
   docNo: varchar("docNo", { length: 80 }).notNull().unique(),

@@ -3,12 +3,13 @@ import { drizzle } from "drizzle-orm/mysql2";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ENV } from "./_core/env";
-import { accounts, adjustmentNoteLines, adjustmentNotes, auditEvents, banks, branches, cashBoxes, companies, customers, documentEvents, fiscalPeriods, inventoryBatches, inventoryCountLines, inventoryCounts, inventorySerials, inventoryTransferLines, inventoryTransfers, invoices, invoiceLines, items, journalEntries, journalEntryLines, paymentAllocations, paymentVouchers, receiptAllocations, receiptVouchers, stockBalances, stockLocationBalances, stockMovements, suppliers, systemSettings, warehouseLocations, warehouses, windowContracts, windowExecutions, windowRegistry, type InsertUser, users } from "../drizzle/schema";
+import { accounts, adjustmentNoteLines, adjustmentNotes, auditEvents, banks, branches, cashBoxes, companies, customers, documentEvents, eInvoiceSubmissions, fiscalPeriods, inventoryBatches, inventoryCountLines, inventoryCounts, inventorySerials, inventoryTransferLines, inventoryTransfers, invoices, invoiceLines, items, journalEntries, journalEntryLines, paymentAllocations, paymentVouchers, receiptAllocations, receiptVouchers, stockBalances, stockLocationBalances, stockMovements, suppliers, systemSettings, warehouseLocations, warehouses, windowContracts, windowExecutions, windowRegistry, type InsertUser, users } from "../drizzle/schema";
 import { buildPurchaseJournal, buildReversalJournal, buildSaleJournal, calculateInvoice, canPostToPeriod, validateJournal } from "./accountingCore";
 import { assertAtomicPost, assertAtomicReverse } from "./documentLifecycle";
 import { getLegacyWindowContract } from "./legacyWindowContracts";
 import { assertStockRule, calculateMovingAverage } from "./inventoryKernel";
 import { createCloudSalesInvoice, getCloudMasterData, isCloudflareD1Enabled, postCloudSalesInvoice, reverseCloudSalesInvoice } from "./cloudflareD1";
+import { buildEInvoicePayload, getEInvoiceProvider, type EInvoiceStatus } from "./eInvoicing";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let demoInvoiceSequence = 1000;
@@ -23,6 +24,7 @@ const demoBanks: Array<{ id: number; companyId: number; accountId?: number; code
 const demoItems = [{ id: 1, companyId: 1, code: "ITEM-001", description: "صنف تجريبي", stockFlag: 1, unitCost: "100", revenueAccount: "4100", inventoryAccount: "1300", cogsAccount: "5100", active: 1 }];
 const demoJournals: Array<{ id: number; journalNo: string; entryType: string; totalDebit: string; totalCredit: string; status: "POSTED" }> = [];
 const demoWindowExecutions = new Map<string, { status: string; response: unknown }>();
+const demoEInvoiceSubmissions = new Map<string, { id: number; invoiceId: number; provider: string; status: EInvoiceStatus; externalId?: string; response?: unknown; errorCode?: string; errorMessage?: string }>();
 const demoUsers: Array<{ id: number; openId: string; name: string | null; email: string | null; loginMethod: string; role: "user" | "admin"; lastSignedIn: Date }> = [];
 const demoInventoryBalances = new Map<string, { quantity: number; totalCost: number; unitCost: number }>();
 const demoInventoryTransfers = new Map<number, { id: number; transferNo: string; sourceWarehouseId: number; destinationWarehouseId: number; status: "DRAFT" | "POSTED"; lines: { itemId: number; quantity: number; unitCost: number }[] }>();
@@ -853,6 +855,45 @@ export async function postInvoice(invoiceId: number, actor: string, requestId?: 
     await tx.insert(auditEvents).values({ actor, actionCode: "POST", entityType: "AR_DOC", entityId: String(invoiceId), requestId: `POST:${invoice.docNo}` });
     return { invoiceId, status: "POSTED" as const, totalCogs };
   });
+}
+
+export async function submitEInvoice(invoiceId: number, actor: string, requestId?: string) {
+  const db = await getDb();
+  const idempotencyKey = requestId?.trim() || `EINV:${invoiceId}`;
+  if (!db) {
+    const invoice = demoInvoices.get(invoiceId);
+    if (!invoice || invoice.status !== "POSTED") throw new Error("EINVOICE_REQUIRES_POSTED_SALES_INVOICE");
+    const existing = demoEInvoiceSubmissions.get(idempotencyKey);
+    if (existing) return { ...existing, idempotent: true };
+    const provider = getEInvoiceProvider();
+    const result = await provider.submit(buildEInvoicePayload({ invoiceId, docNo: invoice.docNo, createdAt: new Date(), currencyCode: "SAR", customerId: 1, customerName: "عميل تجريبي", lines: demoInvoiceLines.get(invoiceId) || [] }), idempotencyKey);
+    const submission = { id: demoEInvoiceSubmissions.size + 1, invoiceId, provider: provider.name, ...result };
+    demoEInvoiceSubmissions.set(idempotencyKey, submission);
+    return submission;
+  }
+  const existing = (await db.select().from(eInvoiceSubmissions).where(eq(eInvoiceSubmissions.idempotencyKey, idempotencyKey)).limit(1))[0];
+  if (existing) return { ...existing, response: existing.responseJson ? JSON.parse(existing.responseJson) : undefined, idempotent: true };
+  const invoice = (await db.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.invoiceType, "SALE"))).limit(1))[0];
+  if (!invoice || invoice.status !== "POSTED") throw new Error("EINVOICE_REQUIRES_POSTED_SALES_INVOICE");
+  const customer = invoice.customerId ? (await db.select().from(customers).where(eq(customers.id, invoice.customerId)).limit(1))[0] : undefined;
+  const lines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
+  const payload = buildEInvoicePayload({ invoiceId, docNo: invoice.docNo, createdAt: invoice.createdAt, currencyCode: invoice.currencyCode, customerId: invoice.customerId, customerName: customer?.legalName, lines });
+  const provider = getEInvoiceProvider();
+  const inserted = await db.insert(eInvoiceSubmissions).values({ invoiceId, provider: provider.name, status: "QUEUED", idempotencyKey, payloadJson: JSON.stringify(payload) }).$returningId();
+  const id = Number(inserted[0]?.id);
+  if (!id) throw new Error("EINVOICE_SUBMISSION_CREATE_FAILED");
+  let result;
+  try { result = await provider.submit(payload, idempotencyKey); } catch (error) { result = { status: "FAILED" as const, errorCode: "PROVIDER_UNAVAILABLE", errorMessage: error instanceof Error ? error.message : String(error) }; }
+  await db.update(eInvoiceSubmissions).set({ status: result.status, externalId: result.externalId || null, responseJson: result.response === undefined ? null : JSON.stringify(result.response), errorCode: result.errorCode || null, errorMessage: result.errorMessage || null, submittedAt: new Date() }).where(eq(eInvoiceSubmissions.id, id));
+  await db.insert(auditEvents).values({ actor, actionCode: "EINVOICE_SUBMIT", entityType: "AR_DOC", entityId: String(invoiceId), requestId: idempotencyKey });
+  return { id, invoiceId, provider: provider.name, ...result };
+}
+
+export async function getEInvoiceStatus(invoiceId: number) {
+  const db = await getDb();
+  if (!db) return Array.from(demoEInvoiceSubmissions.values()).filter((row) => row.invoiceId === invoiceId);
+  const rows = await db.select().from(eInvoiceSubmissions).where(eq(eInvoiceSubmissions.invoiceId, invoiceId)).orderBy(desc(eInvoiceSubmissions.createdAt));
+  return rows.map((row) => ({ ...row, response: row.responseJson ? JSON.parse(row.responseJson) : undefined }));
 }
 
 export async function reverseInvoice(invoiceId: number, actor: string, requestId?: string) {
