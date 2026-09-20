@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import EInvoiceStatusPanel from "@/components/EInvoiceStatusPanel";
 
 type Line = { itemId: number; itemCode: string; description: string; quantity: string; unitPrice: string; taxAmount: string };
 
@@ -15,7 +16,7 @@ export default function SalesInvoiceForm() {
   const master = trpc.masterData.useQuery();
   const createInvoice = trpc.invoices.create.useMutation();
   const postInvoice = trpc.invoices.post.useMutation();
-  const offline = useOfflineSync(async (operation) => { if (operation.type !== "SALES_INVOICE_CREATE") return "CONFLICT"; const payload = operation.payload as { invoice: Parameters<typeof createInvoice.mutateAsync>[0]; postNow: boolean }; const created = await createInvoice.mutateAsync(payload.invoice); if (payload.postNow) await postInvoice.mutateAsync({ invoiceId: Number(created.invoiceId), actor: payload.invoice.actor }); return "SYNCED"; });
+  const offline = useOfflineSync(async (operation) => { if (operation.type !== "SALES_INVOICE_CREATE") return "CONFLICT"; const payload = operation.payload as { invoice: Parameters<typeof createInvoice.mutateAsync>[0]; postNow: boolean }; const created = await createInvoice.mutateAsync(payload.invoice); setInvoiceId(Number(created.invoiceId)); if (payload.postNow) { await postInvoice.mutateAsync({ invoiceId: Number(created.invoiceId), actor: payload.invoice.actor }); setStatus("POSTED"); } return "SYNCED"; });
   const [docNo, setDocNo] = useState(`INV-${new Date().getFullYear()}-0001`);
   const [invoiceDate] = useState(new Date().toISOString().slice(0, 10));
   const [rowSearch, setRowSearch] = useState<Record<number, string>>({});
@@ -28,6 +29,7 @@ export default function SalesInvoiceForm() {
   const [paymentReference, setPaymentReference] = useState("");
   const [itemSearch, setItemSearch] = useState("");
   const [status, setStatus] = useState<"DRAFT" | "POSTED">("DRAFT");
+  const [invoiceId, setInvoiceId] = useState<number | null>(null);
   const [lines, setLines] = useState<Line[]>([]);
   const customers = master.data?.customers ?? [];
   const warehouses = master.data?.warehouses ?? [];
@@ -51,7 +53,7 @@ export default function SalesInvoiceForm() {
   const updateLine = (index: number, patch: Partial<Line>) => setLines((current) => current.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line));
   const selectLineItem = (index: number, item: any) => { updateLine(index, { itemId: item.id, itemCode: item.code, description: item.description, unitPrice: String(item.salePrice ?? item.unitCost ?? "0") }); setRowSearch((current) => ({ ...current, [index]: "" })); };
   const rowMatches = (index: number) => items.filter((item: any) => `${item.code} ${item.description}`.toLowerCase().includes((rowSearch[index] || "").toLowerCase())).slice(0, 6);
-  const reset = () => { setLines([]); setPaidAmount("0"); setPaymentReference(""); setStatus("DRAFT"); };
+  const reset = () => { setLines([]); setPaidAmount("0"); setPaymentReference(""); setStatus("DRAFT"); setInvoiceId(null); };
 
   const save = async (postNow: boolean) => {
     if (master.isLoading) return toast.info("جارٍ تحميل بيانات D1...");
@@ -63,6 +65,7 @@ export default function SalesInvoiceForm() {
     try {
       if (!offline.online) { await offline.enqueue("SALES_INVOICE_CREATE", { invoice, postNow }, `SALES_INVOICE:${docNo}`); toast.info("تم حفظ فاتورة المبيعات محليًا وستتم مزامنتها عند عودة الاتصال"); return; }
       const created = await createInvoice.mutateAsync(invoice);
+      setInvoiceId(Number(created.invoiceId));
       await master.refetch();
       if (postNow) {
         await postInvoice.mutateAsync({ invoiceId: Number(created.invoiceId), actor: "workbench.user" });
@@ -91,7 +94,7 @@ export default function SalesInvoiceForm() {
         <Separator /><div className="form-grid payment-grid"><label>نوع الفاتورة / الدفع<select value={paymentMethod} disabled={status === "POSTED"} onChange={(event) => setPaymentMethod(event.target.value)}><option value="CASH">نقداً</option><option value="CREDIT">آجل</option><option value="CHECK">شيك</option><option value="WALLET">محفظة إلكترونية</option><option value="BANK_TRANSFER">حوالة بنكية</option></select></label><label>المبلغ المدفوع<Input value={paidAmount} disabled={status === "POSTED"} inputMode="decimal" onChange={(event) => setPaidAmount(event.target.value)} /></label><label>المبلغ المتبقي<Input value={totals.remaining.toFixed(2)} readOnly /></label><label>رقم الشيك / مرجع العملية<Input value={paymentReference} disabled={status === "POSTED"} onChange={(event) => setPaymentReference(event.target.value)} /></label></div>
         <div className="posting-contract"><div className="contract-icon"><CircleDollarSign size={17} /></div><div><b>معاينة الترحيل</b><p>الفاتورة ← العميل ← المبيعات ← المخزون ← القيد ← التدقيق</p></div><span>{currencyCode}</span></div><div className="form-actions"><Button variant="outline" disabled={createInvoice.isPending || status === "POSTED"} onClick={() => save(false)}><Pencil size={15} />حفظ كمسودة</Button><Button disabled={createInvoice.isPending || postInvoice.isPending || status === "POSTED"} onClick={() => save(true)}><Send size={15} />{createInvoice.isPending || postInvoice.isPending ? "جارٍ التنفيذ..." : "حفظ وترحيل"}</Button></div></CardContent>
       </Card>
-      <Card className="panel posting-preview"><CardHeader><div><p className="panel-kicker">POSTING PREVIEW</p><CardTitle>الإجماليات</CardTitle></div></CardHeader><CardContent><div className="preview-total"><span>الإجمالي بالعملة الأصلية</span><strong>{totals.total.toFixed(2)} <small>{currencyCode}</small></strong></div><div className="preview-rows"><div><span>الصافي</span><b>{totals.subtotal.toFixed(2)}</b></div><div><span>الضريبة</span><b>{totals.tax.toFixed(2)}</b></div><div><span>المدفوع</span><b>{totals.paid.toFixed(2)}</b></div><div><span>المعادل المحلي</span><b>{totals.localTotal.toFixed(2)}</b></div></div><Separator /><div className="check-list"><div><span className="check">✓</span> بحث أصناف داخل الفاتورة</div><div><span className="check">✓</span> تعدد العملات وسعر الصرف</div><div><span className="check">✓</span> دفع جزئي ومتأخر</div><div><span className="check">✓</span> مسودة قبل الترحيل</div></div></CardContent></Card>
+      <Card className="panel posting-preview"><CardHeader><div><p className="panel-kicker">POSTING PREVIEW</p><CardTitle>الإجماليات</CardTitle></div></CardHeader><CardContent><div className="preview-total"><span>الإجمالي بالعملة الأصلية</span><strong>{totals.total.toFixed(2)} <small>{currencyCode}</small></strong></div><div className="preview-rows"><div><span>الصافي</span><b>{totals.subtotal.toFixed(2)}</b></div><div><span>الضريبة</span><b>{totals.tax.toFixed(2)}</b></div><div><span>المدفوع</span><b>{totals.paid.toFixed(2)}</b></div><div><span>المعادل المحلي</span><b>{totals.localTotal.toFixed(2)}</b></div></div><Separator /><div className="check-list"><div><span className="check">✓</span> بحث أصناف داخل الفاتورة</div><div><span className="check">✓</span> تعدد العملات وسعر الصرف</div><div><span className="check">✓</span> دفع جزئي ومتأخر</div><div><span className="check">✓</span> مسودة قبل الترحيل</div></div>{invoiceId && <EInvoiceStatusPanel invoiceId={invoiceId} invoiceStatus={status} documentNumber={docNo} />}</CardContent></Card>
     </div>
   </section>;
 }
