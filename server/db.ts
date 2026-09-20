@@ -626,10 +626,16 @@ function validateLinkedInvoiceLines(lines: LinkedInvoiceLine[]) { for (const lin
 function applyDemoInvoiceTrace(lines: LinkedInvoiceLine[], warehouseId: number, direction: "IN" | "OUT") { for (const line of lines) { const quantity = Number(line.quantity); if (line.batchNo) { const key = `${line.itemId}:${warehouseId}:${line.batchNo}`; const batch = demoBatchBalances.get(key) || { quantity: 0, unitCost: Number(line.unitPrice) }; const after = direction === "IN" ? batch.quantity + quantity : batch.quantity - quantity; if (after < -0.000001) throw new Error("INSUFFICIENT_BATCH_STOCK"); demoBatchBalances.set(key, { quantity: after, unitCost: Number(line.unitPrice) || batch.unitCost }); } if (line.locationId) { const key = `${line.itemId}:${warehouseId}:${line.locationId}`; const before = demoLocationBalances.get(key) || 0; const after = direction === "IN" ? before + quantity : before - quantity; if (after < -0.000001) throw new Error("INSUFFICIENT_LOCATION_STOCK"); demoLocationBalances.set(key, after); } for (const serialNo of line.serials || []) { const key = `${line.itemId}:${serialNo}`; if (direction === "IN") { if (demoSerialStatuses.has(key)) throw new Error("DUPLICATE_SERIAL_NUMBER"); demoSerialStatuses.set(key, { warehouseId, status: "AVAILABLE" }); } else { const serial = demoSerialStatuses.get(key); if (!serial || serial.warehouseId !== warehouseId || serial.status !== "AVAILABLE") throw new Error("SERIAL_NOT_AVAILABLE"); serial.status = "SOLD"; } } } }
 
 export async function createInvoice(input: { docNo: string; customerId: number; warehouseId: number; currencyCode?: string; exchangeRate?: string; paymentMethod?: string; paidAmount?: string; paymentReference?: string; lines: LinkedInvoiceLine[]; actor: string; }) {
-  if (isCloudflareD1Enabled()) return createCloudSalesInvoice(input as unknown as Record<string, unknown>);
-  const db = await getDb();
+  if (!input.docNo.trim()) throw new Error("INVOICE_DOCNO_REQUIRED");
+  if (!Number(input.customerId) || !Number(input.warehouseId)) throw new Error("INVOICE_PARTY_AND_WAREHOUSE_REQUIRED");
+  if (!Number.isFinite(Number(input.exchangeRate || 1)) || Number(input.exchangeRate || 1) <= 0) throw new Error("EXCHANGE_RATE_INVALID");
+  if (!input.lines.length) throw new Error("INVOICE_LINES_REQUIRED");
+  for (const line of input.lines) { if (!Number.isFinite(Number(line.quantity)) || Number(line.quantity) <= 0) throw new Error("INVOICE_QUANTITY_INVALID"); if (!Number.isFinite(Number(line.unitPrice)) || Number(line.unitPrice) < 0) throw new Error("INVOICE_PRICE_INVALID"); if (!Number.isFinite(Number(line.taxAmount)) || Number(line.taxAmount) < 0) throw new Error("INVOICE_TAX_INVALID"); }
   validateLinkedInvoiceLines(input.lines);
   const calculated = calculateInvoice(input.lines, input.paidAmount || "0");
+  if (Number(input.paidAmount || 0) < 0 || Number(input.paidAmount || 0) > calculated.grandTotal) throw new Error("PAID_AMOUNT_EXCEEDS_INVOICE");
+  if (isCloudflareD1Enabled()) return createCloudSalesInvoice(input as unknown as Record<string, unknown>);
+  const db = await getDb();
   const { subtotal, taxTotal, grandTotal } = calculated;
   const idempotencyKey = `ARST004:${input.docNo}`;
   if (!db) {
