@@ -102,7 +102,7 @@ async function masterData(env, request) {
     env.ONEX_DB.prepare("SELECT id, code, name, baseCurrency FROM companies ORDER BY id LIMIT 20"),
     env.ONEX_DB.prepare("SELECT id, companyId, accountId, code, legalName, currencyCode, status FROM customers ORDER BY code LIMIT 100"),
     env.ONEX_DB.prepare("SELECT id, companyId, accountId, code, legalName, currencyCode, status FROM suppliers ORDER BY code LIMIT 100"),
-    env.ONEX_DB.prepare("SELECT id, companyId, code, COALESCE(NULLIF(description, ''), name) AS description, currencyCode, stockFlag, unitCost, revenueAccount, inventoryAccount, cogsAccount, active FROM items ORDER BY code LIMIT 100"),
+    env.ONEX_DB.prepare("SELECT id, companyId, code, COALESCE(NULLIF(description, ''), name) AS description, name, currencyCode, unitCode, stockFlag, unitCost, salePrice, revenueAccount, inventoryAccount, cogsAccount, active FROM items ORDER BY code LIMIT 100"),
     env.ONEX_DB.prepare("SELECT id, companyId, code, name, active FROM warehouses ORDER BY code LIMIT 50"),
     env.ONEX_DB.prepare("SELECT code, name, decimalScale, active FROM currencies WHERE active = 1 ORDER BY code"),
     env.ONEX_DB.prepare("SELECT id, companyId, code, name, accountId, currencyCode, active FROM cash_boxes ORDER BY code LIMIT 50"),
@@ -679,11 +679,19 @@ async function inventoryGetItem(request, env, auth, id) {
   `).bind(id, auth.companyId).first();
   if (!item) return inventoryErrorResponse("ITEM_NOT_FOUND", request, env, 404);
 
-  const units = await env.ONEX_DB.prepare(`
+  const [units, balances] = await env.ONEX_DB.batch([
+    env.ONEX_DB.prepare(`
     SELECT id, unitCode, unitName, conversionToBase, isBase, barcode, active
     FROM item_units WHERE itemId = ? ORDER BY isBase DESC, unitCode
-  `).bind(id).all();
-  return inventoryResponse({ ...item, units: units.results ?? [] }, request, env);
+  `).bind(id),
+    env.ONEX_DB.prepare(`
+      SELECT sb.warehouseId, w.code AS warehouseCode, w.name AS warehouseName,
+             sb.quantity, sb.reservedQuantity, sb.unitCost, sb.totalCost, sb.versionNo
+      FROM stock_balances sb JOIN warehouses w ON w.id = sb.warehouseId
+      WHERE sb.itemId = ? AND w.companyId = ? ORDER BY w.code
+    `).bind(id, auth.companyId),
+  ]);
+  return inventoryResponse({ ...item, units: units.results ?? [], balances: balances.results ?? [] }, request, env);
 }
 
 async function inventoryCreateItem(request, env, auth) {
@@ -1113,11 +1121,15 @@ async function listInventoryMovements(request, env, auth) {
   const warehouseId = url.searchParams.get("warehouseId") ? inventoryParseId(url.searchParams.get("warehouseId")) : null;
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 100), 1), 500);
   const result = await env.ONEX_DB.prepare(`
-    SELECT sm.id, sm.itemId, sm.warehouseId, sm.inventoryDocumentId, sm.movementType,
+    SELECT sm.id, sm.itemId, sm.warehouseId, sm.sourceInvoiceId, sm.inventoryDocumentId, sm.movementType,
            sm.quantityIn, sm.quantityOut, sm.unitCost, sm.totalCost, sm.balanceAfter,
-           sm.createdBy, sm.createdAt, d.docNo, d.docType
+           sm.createdBy, sm.createdAt,
+           COALESCE(d.docNo, si.docNo, pi.docNo, sm.reference) AS docNo,
+           COALESCE(d.docType, CASE WHEN si.id IS NOT NULL THEN 'SALES_INVOICE' WHEN pi.id IS NOT NULL THEN 'PURCHASE_INVOICE' END) AS docType
     FROM stock_movements sm
-    JOIN inventory_documents d ON d.id = sm.inventoryDocumentId
+    LEFT JOIN inventory_documents d ON d.id = sm.inventoryDocumentId
+    LEFT JOIN invoices si ON si.id = sm.sourceInvoiceId
+    LEFT JOIN purchase_invoices pi ON pi.docNo = sm.reference
     JOIN items i ON i.id = sm.itemId
     WHERE i.companyId = ?
       AND (? IS NULL OR sm.itemId = ?)
@@ -1505,6 +1517,15 @@ async function api(request, env, url) {
     const r = await env.ONEX_DB.prepare("INSERT INTO warehouses(companyId,code,name,active) VALUES(?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,active=excluded.active").bind(x.companyId || 1, x.code, x.name, x.active ?? 1).run();
     return cloudJson({ ok: true, result: r });
   }
+  if (url.pathname === "/api/cloud/item-trace" && request.method === "GET") {
+    const itemId = Number(url.searchParams.get("itemId")); const warehouseId = url.searchParams.get("warehouseId");
+    if (!positiveInteger(itemId)) return cloudJson({ error: "ITEM_ID_REQUIRED" }, 400);
+    const item = await env.ONEX_DB.prepare("SELECT id,companyId,code,name,description,unitCode,currencyCode,stockFlag,unitCost,salePrice,revenueAccount,inventoryAccount,cogsAccount,active FROM items WHERE id=? LIMIT 1").bind(itemId).first();
+    if (!item) return cloudJson({ error: "ITEM_NOT_FOUND" }, 404);
+    const balances = await env.ONEX_DB.prepare("SELECT sb.warehouseId,w.code AS warehouseCode,w.name AS warehouseName,sb.quantity,sb.reservedQuantity,sb.unitCost,sb.totalCost,sb.versionNo FROM stock_balances sb JOIN warehouses w ON w.id=sb.warehouseId WHERE sb.itemId=? AND (? IS NULL OR sb.warehouseId=?) ORDER BY w.code").bind(itemId, warehouseId ? Number(warehouseId) : null, warehouseId ? Number(warehouseId) : null).all();
+    const movements = await env.ONEX_DB.prepare("SELECT sm.id,sm.itemId,sm.warehouseId,sm.sourceInvoiceId,sm.inventoryDocumentId,sm.movementType,sm.quantityIn,sm.quantityOut,sm.unitCost,sm.totalCost,sm.balanceAfter,sm.createdBy,sm.createdAt,COALESCE(d.docNo,si.docNo,pi.docNo,sm.reference) AS docNo FROM stock_movements sm LEFT JOIN inventory_documents d ON d.id=sm.inventoryDocumentId LEFT JOIN invoices si ON si.id=sm.sourceInvoiceId LEFT JOIN purchase_invoices pi ON pi.docNo=sm.reference WHERE sm.itemId=? AND (? IS NULL OR sm.warehouseId=?) ORDER BY sm.createdAt DESC,sm.id DESC LIMIT 100").bind(itemId, warehouseId ? Number(warehouseId) : null, warehouseId ? Number(warehouseId) : null).all();
+    return cloudJson({ item: { ...item, balances: balances.results ?? [] }, movements: movements.results ?? [] });
+  }
   if (url.pathname === "/api/cloud/accounts" && request.method === "GET") {
     const q = (url.searchParams.get("search") || "").trim(); const lim = limitOf(url);
     const r = q ? await env.ONEX_DB.prepare("SELECT * FROM accounts WHERE code LIKE ? OR name LIKE ? ORDER BY code LIMIT ?").bind(`%${q}%`, `%${q}%`, lim).all() : await env.ONEX_DB.prepare("SELECT * FROM accounts ORDER BY code LIMIT ?").bind(lim).all();
@@ -1517,6 +1538,17 @@ async function api(request, env, url) {
       return cloudJson({ ok: true, result, updated: true });
     }
     const r = await env.ONEX_DB.prepare("INSERT INTO accounts(companyId,code,name,accountType,parentCode,currencyCode,active) VALUES(?,?,?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,accountType=excluded.accountType,parentCode=excluded.parentCode,currencyCode=excluded.currencyCode,active=excluded.active").bind(x.companyId || 1, x.code, x.name, x.accountType, x.parentCode || null, x.currencyCode || "SAR", x.active ?? 1).run(); return cloudJson({ ok: true, result: r });
+  }
+  if (url.pathname === "/api/cloud/accounts/import" && request.method === "POST") {
+    const x = await readBody(request); const rows = Array.isArray(x.rows) ? x.rows.slice(0, 1000) : [];
+    if (!rows.length) return cloudJson({ error: "ACCOUNT_IMPORT_ROWS_REQUIRED" }, 400);
+    const statements = [];
+    for (const row of rows) {
+      if (!row?.code || !row?.name || !row?.accountType) return cloudJson({ error: "ACCOUNT_IMPORT_ROW_INVALID" }, 400);
+      statements.push(env.ONEX_DB.prepare("INSERT INTO accounts(companyId,code,name,accountType,parentCode,currencyCode,active) VALUES(?,?,?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,accountType=excluded.accountType,parentCode=excluded.parentCode,currencyCode=excluded.currencyCode,active=excluded.active").bind(x.companyId || 1, String(row.code), String(row.name), String(row.accountType), row.parentCode || null, row.currencyCode || "SAR", row.active ?? 1));
+    }
+    statements.push(env.ONEX_DB.prepare("INSERT INTO audit_events(actor,actionCode,entityType,entityId,requestId) VALUES(?,?,?,?,?)").bind(x.actor || "cloud-user", "IMPORT", "ACCOUNT_CATALOG", "BATCH", `ACCOUNT:IMPORT:${Date.now()}`));
+    const result = await env.ONEX_DB.batch(statements); return cloudJson({ ok: true, imported: rows.length, result });
   }
   if (url.pathname.startsWith("/api/cloud/accounts/") && request.method === "DELETE") {
     const id = Number(url.pathname.split("/").pop());
@@ -1541,9 +1573,30 @@ async function api(request, env, url) {
     const result = await env.ONEX_DB.prepare("SELECT c.*, a.code AS accountCode, a.name AS accountName FROM cash_boxes c LEFT JOIN accounts a ON a.id=c.accountId WHERE c.companyId=1 ORDER BY c.code").all();
     return cloudJson(result.results ?? []);
   }
+  if (url.pathname === "/api/cloud/cash-boxes" && request.method === "POST") {
+    const x = await readBody(request); if (!x.code || !x.name) return cloudJson({ error: "CASH_BOX_CODE_AND_NAME_REQUIRED" }, 400);
+    await env.ONEX_DB.prepare("INSERT INTO cash_boxes(companyId,code,name,currencyCode,status) VALUES(?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,currencyCode=excluded.currencyCode,status=excluded.status").bind(x.companyId || 1, x.code, x.name, x.currencyCode || "SAR", x.status || "ACTIVE").run();
+    const row = await env.ONEX_DB.prepare("SELECT id,companyId,code,name,currencyCode,status,accountId FROM cash_boxes WHERE companyId=? AND code=? LIMIT 1").bind(x.companyId || 1, x.code).first();
+    return cloudJson(row);
+  }
   if (url.pathname === "/api/cloud/banks" && request.method === "GET") {
     const result = await env.ONEX_DB.prepare("SELECT b.*, a.code AS accountCode, a.name AS accountName FROM banks b LEFT JOIN accounts a ON a.id=b.accountId WHERE b.companyId=1 ORDER BY b.code").all();
     return cloudJson(result.results ?? []);
+  }
+  if (url.pathname === "/api/cloud/banks" && request.method === "POST") {
+    const x = await readBody(request); if (!x.code || !x.name) return cloudJson({ error: "BANK_CODE_AND_NAME_REQUIRED" }, 400);
+    await env.ONEX_DB.prepare("INSERT INTO banks(companyId,code,name,accountNumber,currencyCode,status) VALUES(?,?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,accountNumber=excluded.accountNumber,currencyCode=excluded.currencyCode,status=excluded.status").bind(x.companyId || 1, x.code, x.name, x.accountNumber || null, x.currencyCode || "SAR", x.status || "ACTIVE").run();
+    const row = await env.ONEX_DB.prepare("SELECT id,companyId,code,name,accountNumber,currencyCode,status,accountId FROM banks WHERE companyId=? AND code=? LIMIT 1").bind(x.companyId || 1, x.code).first();
+    return cloudJson(row);
+  }
+  if (url.pathname === "/api/cloud/currencies" && request.method === "GET") {
+    const rows = await env.ONEX_DB.prepare("SELECT code,name,decimalScale,active FROM currencies ORDER BY code").all(); return cloudJson(rows.results ?? []);
+  }
+  if (url.pathname === "/api/cloud/currencies" && request.method === "POST") {
+    const x = await readBody(request); const code = String(x.code || "").trim().toUpperCase(); const name = String(x.name || "").trim();
+    if (!/^[A-Z]{3}$/.test(code) || !name) return cloudJson({ error: "CURRENCY_CODE_AND_NAME_REQUIRED" }, 400);
+    const result = await env.ONEX_DB.prepare("INSERT INTO currencies(code,name,decimalScale,active) VALUES(?,?,?,?) ON CONFLICT(code) DO UPDATE SET name=excluded.name,decimalScale=excluded.decimalScale,active=excluded.active").bind(code, name, Number(x.decimalScale ?? 2), x.active ?? 1).run();
+    return cloudJson({ ok: true, code, name, decimalScale: Number(x.decimalScale ?? 2), active: x.active ?? 1, result });
   }
   const collection = { items: ["items", "code", "name"], customers: ["customers", "code", "legalName"], suppliers: ["suppliers", "code", "legalName"] };
   for (const [route, [table, codeField, nameField]] of Object.entries(collection)) {

@@ -47,8 +47,20 @@ export async function getCloudMasterData() {
     items: unknown[];
     warehouses: unknown[];
     currencies: unknown[];
-  }>("/api/erp/master-data");
+  }>('/api/erp/master-data');
 }
+
+export async function getCloudItemTrace(itemId: number, warehouseId?: number) {
+  return request<{ item: Record<string, unknown>; movements: unknown[] }>(`/api/cloud/item-trace?itemId=${itemId}${warehouseId ? `&warehouseId=${warehouseId}` : ""}`);
+}
+
+export const getCloudCurrencies = () => request<unknown[]>('/api/cloud/currencies');
+export const saveCloudCurrency = (input: Record<string, unknown>) => request<Record<string, unknown>>('/api/cloud/currencies', { method: 'POST', body: JSON.stringify(input) }, true);
+export const importCloudAccounts = (input: Record<string, unknown>) => request<Record<string, unknown>>('/api/cloud/accounts/import', { method: 'POST', body: JSON.stringify(input) }, true);
+export const saveCloudAccount = (input: Record<string, unknown>) => request<Record<string, unknown>>('/api/cloud/accounts', { method: 'POST', body: JSON.stringify(input) }, true);
+export const saveCloudCashBox = (input: Record<string, unknown>) => request<Record<string, unknown>>('/api/cloud/cash-boxes', { method: 'POST', body: JSON.stringify(input) }, true);
+export const saveCloudBank = (input: Record<string, unknown>) => request<Record<string, unknown>>('/api/cloud/banks', { method: 'POST', body: JSON.stringify(input) }, true);
+export const saveCloudWarehouse = (input: Record<string, unknown>) => request<Record<string, unknown>>('/api/cloud/warehouses', { method: 'POST', body: JSON.stringify(input) }, true);
 
 export async function createCloudSalesInvoice(input: Record<string, unknown>) {
   return request<Record<string, unknown>>("/api/erp/invoices", {

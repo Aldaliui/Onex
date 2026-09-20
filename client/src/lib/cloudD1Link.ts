@@ -36,6 +36,7 @@ const mapOperation = (op: Operation) => {
     case "windows.tree": return ["/windows/tree", "GET"] as const;
     case "windows.contract": return [`/windows/contract/${encodeURIComponent(String(input?.legacyForm || ""))}`, "GET"] as const;
     case "windows.records": return ["/windows/records", "GET"] as const;
+    case "windows.itemTrace": return ["/item-trace", "GET"] as const;
     case "windows.saveCustomer": return ["/customers", "POST"] as const;
     case "windows.deleteCustomer": return [`/customers/${encodeURIComponent(String(input?.id || ""))}`, "DELETE"] as const;
     case "windows.saveSupplier": return ["/suppliers", "POST"] as const;
@@ -49,6 +50,11 @@ const mapOperation = (op: Operation) => {
     case "windows.saveSystemUser": return ["/users", "POST"] as const;
     case "windows.saveBranch": return ["/branches", "POST"] as const;
     case "windows.saveWarehouse": return ["/warehouses", "POST"] as const;
+    case "windows.saveCashBox": return ["/cash-boxes", "POST"] as const;
+    case "windows.saveBank": return ["/banks", "POST"] as const;
+    case "windows.currencies": return ["/currencies", "GET"] as const;
+    case "windows.saveCurrency": return ["/currencies", "POST"] as const;
+    case "windows.importAccounts": return ["/accounts/import", "POST"] as const;
     case "windows.executeAction": return ["/windows/action", "POST"] as const;
     case "invoices.create": return ["/invoices", "POST"] as const;
     case "invoices.post": return [`/invoices/${encodeURIComponent(String(input?.invoiceId || ""))}?action=post`, "POST"] as const;

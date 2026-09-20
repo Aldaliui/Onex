@@ -8,7 +8,7 @@ import { buildPurchaseJournal, buildReversalJournal, buildSaleJournal, calculate
 import { assertAtomicPost, assertAtomicReverse } from "./documentLifecycle";
 import { getLegacyWindowContract } from "./legacyWindowContracts";
 import { assertStockRule, calculateMovingAverage } from "./inventoryKernel";
-import { createCloudSalesInvoice, getCloudMasterData, isCloudflareD1Enabled, postCloudSalesInvoice, reverseCloudSalesInvoice } from "./cloudflareD1";
+import { createCloudSalesInvoice, getCloudCurrencies, getCloudItemTrace, getCloudMasterData, importCloudAccounts, isCloudflareD1Enabled, postCloudSalesInvoice, reverseCloudSalesInvoice, saveCloudAccount, saveCloudBank, saveCloudCashBox, saveCloudCurrency, saveCloudWarehouse } from "./cloudflareD1";
 import { buildEInvoicePayload, getEInvoiceProvider, type EInvoiceStatus } from "./eInvoicing";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -352,6 +352,7 @@ export async function getErpControlData() {
 }
 
 export async function saveAccount(input: { id?: number; companyId: number; code: string; name: string; accountType: string; parentCode?: string; currencyCode?: string; active?: number }) {
+  if (isCloudflareD1Enabled()) return saveCloudAccount(input);
   const values = { companyId: input.companyId, code: input.code, name: input.name, accountType: input.accountType, parentCode: input.parentCode, currencyCode: input.currencyCode || "SAR", active: input.active ?? 1 };
   const db = await getDb();
   if (!db) { const existing = demoAccounts.find((row) => row.id === input.id || row.code === input.code); if (existing) Object.assign(existing, values); else demoAccounts.push({ id: Math.max(...demoAccounts.map((row) => row.id), 0) + 1, ...values }); return demoAccounts.at(-1); }
@@ -450,6 +451,7 @@ export async function searchWarehouses(search?: string, limit = 20) {
 }
 
 export async function saveWarehouse(input: { id?: number; companyId: number; code: string; name: string; active?: number }) {
+  if (isCloudflareD1Enabled()) return saveCloudWarehouse(input);
   const db = await getDb(); const values = { companyId: input.companyId, code: input.code, name: input.name, active: input.active ?? 1 };
   if (!db) { const existing = demoWarehouses.find((row) => row.id === input.id || row.code === input.code); if (existing) Object.assign(existing, values); else demoWarehouses.push({ id: Math.max(...demoWarehouses.map((row) => row.id), 0) + 1, ...values }); return demoWarehouses.at(-1); }
   if (input.id) { await db.update(warehouses).set(values).where(eq(warehouses.id, input.id)); return (await db.select().from(warehouses).where(eq(warehouses.id, input.id)).limit(1))[0]; }
@@ -485,12 +487,14 @@ export async function saveSupplier(input: { id?: number; companyId: number; code
 }
 
 export async function saveCashBox(input: { id?: number; companyId: number; code: string; name: string; currencyCode?: string; status?: "ACTIVE" | "BLOCKED" | "CLOSED" }) {
+  if (isCloudflareD1Enabled()) return saveCloudCashBox(input);
   const db = await getDb(); const currencyCode = input.currencyCode || "SAR"; const status = input.status || "ACTIVE";
   if (!db) { const existing = demoCashBoxes.find((row) => row.id === input.id || row.code === input.code); if (existing) { Object.assign(existing, input); return existing; } const id = Math.max(...demoCashBoxes.map((row) => row.id), 0) + 1; const accountId = Math.max(...demoAccounts.map((row) => row.id), 0) + 1; demoAccounts.push({ id: accountId, companyId: input.companyId, code: `1100-${String(id).padStart(4, "0")}`, name: input.name, accountType: "ASSET", parentCode: "1100", currencyCode, active: 1 }); const row = { id, companyId: input.companyId, accountId, code: input.code, name: input.name, currencyCode, status }; demoCashBoxes.push(row); return row; }
   return db.transaction(async (tx) => { const inserted = await tx.insert(cashBoxes).values({ companyId: input.companyId, code: input.code, name: input.name, currencyCode, status }).$returningId(); const id = Number(inserted[0]?.id); const account = await createLinkedAccount(tx, { companyId: input.companyId, entityId: id, name: input.name, accountType: "ASSET", parentCode: "1100", currencyCode }); await tx.update(cashBoxes).set({ accountId: account.id }).where(eq(cashBoxes.id, id)); return (await tx.select().from(cashBoxes).where(eq(cashBoxes.id, id)).limit(1))[0]; });
 }
 
 export async function saveBank(input: { id?: number; companyId: number; code: string; name: string; accountNumber?: string; currencyCode?: string; status?: "ACTIVE" | "BLOCKED" | "CLOSED" }) {
+  if (isCloudflareD1Enabled()) return saveCloudBank(input);
   const db = await getDb(); const currencyCode = input.currencyCode || "SAR"; const status = input.status || "ACTIVE";
   if (!db) { const existing = demoBanks.find((row) => row.id === input.id || row.code === input.code); if (existing) { Object.assign(existing, input); return existing; } const id = Math.max(...demoBanks.map((row) => row.id), 0) + 1; const accountId = Math.max(...demoAccounts.map((row) => row.id), 0) + 1; demoAccounts.push({ id: accountId, companyId: input.companyId, code: `1110-${String(id).padStart(4, "0")}`, name: input.name, accountType: "ASSET", parentCode: "1110", currencyCode, active: 1 }); const row = { id, companyId: input.companyId, accountId, code: input.code, name: input.name, accountNumber: input.accountNumber || "", currencyCode, status }; demoBanks.push(row); return row; }
   return db.transaction(async (tx) => { const inserted = await tx.insert(banks).values({ companyId: input.companyId, code: input.code, name: input.name, accountNumber: input.accountNumber || null, currencyCode, status }).$returningId(); const id = Number(inserted[0]?.id); const account = await createLinkedAccount(tx, { companyId: input.companyId, entityId: id, name: input.name, accountType: "ASSET", parentCode: "1110", currencyCode }); await tx.update(banks).set({ accountId: account.id }).where(eq(banks.id, id)); return (await tx.select().from(banks).where(eq(banks.id, id)).limit(1))[0]; });
@@ -501,6 +505,22 @@ export async function searchItems(search?: string, limit = 20) {
   if (!db) return demoItems.filter((row) => !query || `${row.code} ${row.description}`.toLowerCase().includes(query.toLowerCase())).slice(0, limit);
   const filters = query ? or(like(items.code, `%${query}%`), like(items.description, `%${query}%`)) : undefined;
   return db.select().from(items).where(filters).orderBy(items.code).limit(limit);
+}
+
+export async function getItemTrace(itemId: number, warehouseId?: number) {
+  if (isCloudflareD1Enabled()) return getCloudItemTrace(itemId, warehouseId);
+  const db = await getDb();
+  if (!db) {
+    const item = demoItems.find((row) => row.id === itemId);
+    if (!item) throw new Error("ITEM_NOT_FOUND");
+    const balance = demoInventoryBalances.get(`${itemId}:1`);
+    return { item: { ...item, unitCode: "EA", currencyCode: "SAR", balances: balance ? [{ warehouseId: 1, warehouseCode: "MAIN", warehouseName: "المستودع الرئيسي", ...balance }] : [] }, movements: [] };
+  }
+  const itemRow = (await db.select({ item: items, company: companies }).from(items).leftJoin(companies, eq(items.companyId, companies.id)).where(eq(items.id, itemId)).limit(1))[0];
+  if (!itemRow) throw new Error("ITEM_NOT_FOUND");
+  const balanceRows = await db.select({ balance: stockBalances, warehouse: warehouses }).from(stockBalances).leftJoin(warehouses, eq(stockBalances.warehouseId, warehouses.id)).where(and(eq(stockBalances.itemId, itemId), warehouseId ? eq(stockBalances.warehouseId, warehouseId) : sql`1 = 1`));
+  const movementRows = await db.select().from(stockMovements).where(and(eq(stockMovements.itemId, itemId), warehouseId ? eq(stockMovements.warehouseId, warehouseId) : sql`1 = 1`)).orderBy(desc(stockMovements.createdAt), desc(stockMovements.id)).limit(100);
+  return { item: { ...itemRow.item, unitCode: "EA", currencyCode: itemRow.company?.baseCurrency || "SAR", balances: balanceRows.map((row) => ({ ...row.balance, warehouseCode: row.warehouse?.code, warehouseName: row.warehouse?.name })) }, movements: movementRows };
 }
 
 export async function searchAccounts(search?: string, limit = 20) {
@@ -1253,3 +1273,20 @@ export async function saveSystemSettings(input: { engine: string; host?: string;
   await db.insert(systemSettings).values({ companyId: 1, engine: input.engine, host: input.host || null, port: input.port, databaseName: input.databaseName || null, ssl: input.ssl, updatedBy: input.updatedBy }).onDuplicateKeyUpdate({ set: { engine: input.engine, host: input.host || null, port: input.port, databaseName: input.databaseName || null, ssl: input.ssl, updatedBy: input.updatedBy, updatedAt: new Date() } });
   return { ...(await getSystemSettings()), saved: true, secretPolicy: "DATABASE_URL remains a server secret" };
 }
+export async function getCurrencies() {
+  if (isCloudflareD1Enabled()) return getCloudCurrencies();
+  return [{ code: "SAR", name: "Saudi Riyal", decimalScale: 2, active: 1 }, { code: "USD", name: "US Dollar", decimalScale: 2, active: 1 }, { code: "EUR", name: "Euro", decimalScale: 2, active: 1 }];
+}
+
+export async function saveCurrency(input: { code: string; name: string; decimalScale?: number; active?: number }) {
+  if (isCloudflareD1Enabled()) return saveCloudCurrency(input);
+  return { ...input, code: input.code.toUpperCase(), decimalScale: input.decimalScale ?? 2, active: input.active ?? 1 };
+}
+
+export async function importAccounts(input: { companyId?: number; actor?: string; rows: Array<{ code: string; name: string; accountType: string; parentCode?: string; currencyCode?: string; active?: number }> }) {
+  if (isCloudflareD1Enabled()) return importCloudAccounts(input);
+  for (const row of input.rows) await saveAccount({ ...row, companyId: input.companyId || 1 });
+  return { ok: true, imported: input.rows.length };
+}
+
+export async function searchCurrencies() { return getCurrencies(); }
