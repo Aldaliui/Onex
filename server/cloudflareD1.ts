@@ -54,6 +54,7 @@ export async function getCloudItemTrace(itemId: number, warehouseId?: number) {
   return request<{ item: Record<string, unknown>; movements: unknown[] }>(`/api/cloud/item-trace?itemId=${itemId}${warehouseId ? `&warehouseId=${warehouseId}` : ""}`);
 }
 
+export const getCloudAccounts = (search?: string) => request<unknown[]>(`/api/cloud/accounts?limit=500${search ? `&search=${encodeURIComponent(search)}` : ''}`);
 export const getCloudCurrencies = () => request<unknown[]>('/api/cloud/currencies');
 export const saveCloudCurrency = (input: Record<string, unknown>) => request<Record<string, unknown>>('/api/cloud/currencies', { method: 'POST', body: JSON.stringify(input) }, true);
 export const importCloudAccounts = (input: Record<string, unknown>) => request<Record<string, unknown>>('/api/cloud/accounts/import', { method: 'POST', body: JSON.stringify(input) }, true);

@@ -8,7 +8,7 @@ import { buildPurchaseJournal, buildReversalJournal, buildSaleJournal, calculate
 import { assertAtomicPost, assertAtomicReverse } from "./documentLifecycle";
 import { getLegacyWindowContract } from "./legacyWindowContracts";
 import { assertStockRule, calculateMovingAverage } from "./inventoryKernel";
-import { createCloudSalesInvoice, getCloudCurrencies, getCloudItemTrace, getCloudMasterData, importCloudAccounts, isCloudflareD1Enabled, postCloudSalesInvoice, reverseCloudSalesInvoice, saveCloudAccount, saveCloudBank, saveCloudCashBox, saveCloudCurrency, saveCloudWarehouse } from "./cloudflareD1";
+import { createCloudSalesInvoice, getCloudAccounts, getCloudCurrencies, getCloudItemTrace, getCloudMasterData, importCloudAccounts, isCloudflareD1Enabled, postCloudSalesInvoice, reverseCloudSalesInvoice, saveCloudAccount, saveCloudBank, saveCloudCashBox, saveCloudCurrency, saveCloudWarehouse } from "./cloudflareD1";
 import { buildEInvoicePayload, getEInvoiceProvider, type EInvoiceStatus } from "./eInvoicing";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -351,15 +351,6 @@ export async function getErpControlData() {
   return { branches: branchRows, accounts: accountRows, fiscalPeriods: periodRows };
 }
 
-export async function saveAccount(input: { id?: number; companyId: number; code: string; name: string; accountType: string; parentCode?: string; currencyCode?: string; active?: number }) {
-  if (isCloudflareD1Enabled()) return saveCloudAccount(input);
-  const values = { companyId: input.companyId, code: input.code, name: input.name, accountType: input.accountType, parentCode: input.parentCode, currencyCode: input.currencyCode || "SAR", active: input.active ?? 1 };
-  const db = await getDb();
-  if (!db) { const existing = demoAccounts.find((row) => row.id === input.id || row.code === input.code); if (existing) Object.assign(existing, values); else demoAccounts.push({ id: Math.max(...demoAccounts.map((row) => row.id), 0) + 1, ...values }); return demoAccounts.at(-1); }
-  if (input.id) { await db.update(accounts).set(values).where(eq(accounts.id, input.id)); return (await db.select().from(accounts).where(eq(accounts.id, input.id)).limit(1))[0]; }
-  const inserted = await db.insert(accounts).values(values).$returningId(); return (await db.select().from(accounts).where(eq(accounts.id, Number(inserted[0]?.id))).limit(1))[0];
-}
-
 export async function searchInvoices(search?: string, limit = 20) {
   const db = await getDb();
   const query = (search || "").trim();
@@ -523,11 +514,56 @@ export async function getItemTrace(itemId: number, warehouseId?: number) {
   return { item: { ...itemRow.item, unitCode: "EA", currencyCode: itemRow.company?.baseCurrency || "SAR", balances: balanceRows.map((row) => ({ ...row.balance, warehouseCode: row.warehouse?.code, warehouseName: row.warehouse?.name })) }, movements: movementRows };
 }
 
+type AccountInput = { id?: number; companyId?: number; code: string; name: string; accountType: string; parentCode?: string; currencyCode?: string; active?: number };
+const ACCOUNT_TYPES = new Set(["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE", "OTHER"]);
+function normalizeAccount(input: AccountInput) {
+  const code = input.code.trim().toUpperCase(); const name = input.name.trim(); const accountType = input.accountType.trim().toUpperCase(); const parentCode = input.parentCode?.trim().toUpperCase() || undefined; const currencyCode = (input.currencyCode || "SAR").trim().toUpperCase();
+  if (!code || !name) throw new Error("ACCOUNT_CODE_AND_NAME_REQUIRED");
+  if (!ACCOUNT_TYPES.has(accountType)) throw new Error("ACCOUNT_TYPE_INVALID");
+  if (!/^[A-Z0-9][A-Z0-9._/-]{0,79}$/.test(code)) throw new Error("ACCOUNT_CODE_INVALID");
+  if (!/^[A-Z]{3}$/.test(currencyCode)) throw new Error("ACCOUNT_CURRENCY_INVALID");
+  if (parentCode === code) throw new Error("ACCOUNT_PARENT_SELF_REFERENCE");
+  return { companyId: input.companyId || 1, code, name, accountType, parentCode, currencyCode, active: input.active === 0 ? 0 : 1 };
+}
+async function assertAccountParent(tx: any, values: ReturnType<typeof normalizeAccount>, id?: number) {
+  if (!values.parentCode) return;
+  const parent = (await tx.select().from(accounts).where(and(eq(accounts.companyId, values.companyId), eq(accounts.code, values.parentCode))).limit(1))[0];
+  if (!parent) throw new Error("ACCOUNT_PARENT_NOT_FOUND");
+  const seen = new Set([values.code]); let cursor: any = parent;
+  while (cursor?.parentCode) { if (seen.has(cursor.code)) throw new Error("ACCOUNT_HIERARCHY_CYCLE"); seen.add(cursor.code); cursor = (await tx.select().from(accounts).where(and(eq(accounts.companyId, values.companyId), eq(accounts.code, cursor.parentCode))).limit(1))[0]; }
+  if (id && parent.id === id) throw new Error("ACCOUNT_PARENT_SELF_REFERENCE");
+}
 export async function searchAccounts(search?: string, limit = 20) {
+  if (isCloudflareD1Enabled()) return getCloudAccounts(search);
   const db = await getDb(); const query = (search || "").trim();
   if (!db) return demoAccounts.filter((row) => !query || `${row.code} ${row.name}`.toLowerCase().includes(query.toLowerCase())).slice(0, limit);
   const filters = query ? or(like(accounts.code, `%${query}%`), like(accounts.name, `%${query}%`)) : undefined;
   return db.select().from(accounts).where(filters).orderBy(accounts.code).limit(limit);
+}
+export async function getAccountCatalog(search?: string, limit = 500) {
+  const rows = await searchAccounts(search, limit) as any[]; const byParent = new Map<string, number>();
+  for (const row of rows) if (row.parentCode) byParent.set(row.parentCode, (byParent.get(row.parentCode) || 0) + 1);
+  return rows.map((row) => ({ ...row, depth: row.parentCode ? 1 : 0, hasChildren: (byParent.get(row.code) || 0) > 0 }));
+}
+export async function saveAccount(input: AccountInput) {
+  const values = normalizeAccount(input);
+  if (isCloudflareD1Enabled()) return saveCloudAccount(values);
+  const db = await getDb();
+  if (!db) { const existing = demoAccounts.find((row) => row.id === input.id || (row.companyId === values.companyId && row.code === values.code)); if (existing) { Object.assign(existing, values); return existing; } const row = { id: Math.max(...demoAccounts.map((row) => row.id), 0) + 1, ...values }; demoAccounts.push(row); return row; }
+  return db.transaction(async (tx) => {
+    await assertAccountParent(tx, values, input.id);
+    const duplicate = (await tx.select().from(accounts).where(and(eq(accounts.companyId, values.companyId), eq(accounts.code, values.code))).limit(1))[0];
+    if (duplicate && duplicate.id !== input.id) throw new Error("ACCOUNT_CODE_DUPLICATE");
+    if (input.id) {
+      const current = (await tx.select().from(accounts).where(eq(accounts.id, input.id)).limit(1))[0]; if (!current) throw new Error("ACCOUNT_NOT_FOUND");
+      if (current.code !== values.code) { const ref = (await tx.select().from(journalEntryLines).where(eq(journalEntryLines.accountCode, current.code)).limit(1))[0]; if (ref) throw new Error("ACCOUNT_CODE_HAS_JOURNAL_REFERENCES"); }
+      await tx.update(accounts).set(values).where(eq(accounts.id, input.id)); await tx.insert(auditEvents).values({ actor: "workbench.user", actionCode: "UPDATE", entityType: "ACCOUNT", entityId: String(input.id), requestId: `ACCOUNT:UPDATE:${input.id}` });
+      return (await tx.select().from(accounts).where(eq(accounts.id, input.id)).limit(1))[0];
+    }
+    const inserted = await tx.insert(accounts).values(values).$returningId(); const id = Number(inserted[0]?.id); if (!id) throw new Error("ACCOUNT_CREATE_FAILED");
+    await tx.insert(auditEvents).values({ actor: "workbench.user", actionCode: "CREATE", entityType: "ACCOUNT", entityId: String(id), requestId: `ACCOUNT:CREATE:${id}` });
+    return (await tx.select().from(accounts).where(eq(accounts.id, id)).limit(1))[0];
+  });
 }
 
 export async function saveItem(input: { id?: number; companyId: number; code: string; description: string; stockFlag?: number; unitCost?: string; revenueAccount?: string; inventoryAccount?: string; cogsAccount?: string; active?: number }) {
@@ -1283,10 +1319,19 @@ export async function saveCurrency(input: { code: string; name: string; decimalS
   return { ...input, code: input.code.toUpperCase(), decimalScale: input.decimalScale ?? 2, active: input.active ?? 1 };
 }
 
-export async function importAccounts(input: { companyId?: number; actor?: string; rows: Array<{ code: string; name: string; accountType: string; parentCode?: string; currencyCode?: string; active?: number }> }) {
-  if (isCloudflareD1Enabled()) return importCloudAccounts(input);
-  for (const row of input.rows) await saveAccount({ ...row, companyId: input.companyId || 1 });
-  return { ok: true, imported: input.rows.length };
+export async function importAccounts(input: { companyId?: number; actor?: string; rows: Array<AccountInput> }) {
+  const companyId = input.companyId || 1; const normalized = input.rows.map((row) => normalizeAccount({ ...row, companyId })); const codes = new Set<string>();
+  for (const row of normalized) { if (codes.has(row.code)) throw new Error("ACCOUNT_IMPORT_DUPLICATE_CODE"); codes.add(row.code); if (row.parentCode && row.parentCode === row.code) throw new Error("ACCOUNT_PARENT_SELF_REFERENCE"); }
+  if (isCloudflareD1Enabled()) return importCloudAccounts({ ...input, companyId, rows: normalized });
+  const db = await getDb();
+  if (!db) { for (const row of normalized) await saveAccount(row); return { ok: true, imported: normalized.length, codes: normalized.map((row) => row.code) }; }
+  return db.transaction(async (tx) => {
+    const existing = await tx.select().from(accounts).where(eq(accounts.companyId, companyId)); const available = new Set(existing.map((row: any) => row.code));
+    for (const row of normalized) if (row.parentCode && !available.has(row.parentCode) && !codes.has(row.parentCode)) throw new Error(`ACCOUNT_PARENT_NOT_FOUND:${row.parentCode}`);
+    for (const row of normalized) { const current = existing.find((item: any) => item.code === row.code); if (current) await tx.update(accounts).set(row).where(eq(accounts.id, current.id)); else await tx.insert(accounts).values(row); available.add(row.code); }
+    await tx.insert(auditEvents).values({ actor: input.actor || "workbench.user", actionCode: "IMPORT", entityType: "ACCOUNT_CATALOG", entityId: "BATCH", requestId: `ACCOUNT:IMPORT:${Date.now()}` });
+    return { ok: true, imported: normalized.length, codes: normalized.map((row) => row.code) };
+  });
 }
 
 export async function searchCurrencies() { return getCurrencies(); }
