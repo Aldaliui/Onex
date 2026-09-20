@@ -7,6 +7,7 @@ import { accounts, adjustmentNoteLines, adjustmentNotes, auditEvents, banks, bra
 import { buildPurchaseJournal, buildReversalJournal, buildSaleJournal, calculateInvoice, canPostToPeriod, validateJournal } from "./accountingCore";
 import { getLegacyWindowContract } from "./legacyWindowContracts";
 import { assertStockRule, calculateMovingAverage } from "./inventoryKernel";
+import { createCloudSalesInvoice, getCloudMasterData, isCloudflareD1Enabled, postCloudSalesInvoice, reverseCloudSalesInvoice } from "./cloudflareD1";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let demoInvoiceSequence = 1000;
@@ -318,6 +319,7 @@ export async function getDashboard() {
 }
 
 export async function getMasterData() {
+  if (isCloudflareD1Enabled()) return getCloudMasterData();
   const db = await getDb();
   if (!db) return {
     companies: [{ id: 1, code: "ONEX", name: "شركة Onyx التجريبية", baseCurrency: "SAR" }],
@@ -565,6 +567,7 @@ function validateLinkedInvoiceLines(lines: LinkedInvoiceLine[]) { for (const lin
 function applyDemoInvoiceTrace(lines: LinkedInvoiceLine[], warehouseId: number, direction: "IN" | "OUT") { for (const line of lines) { const quantity = Number(line.quantity); if (line.batchNo) { const key = `${line.itemId}:${warehouseId}:${line.batchNo}`; const batch = demoBatchBalances.get(key) || { quantity: 0, unitCost: Number(line.unitPrice) }; const after = direction === "IN" ? batch.quantity + quantity : batch.quantity - quantity; if (after < -0.000001) throw new Error("INSUFFICIENT_BATCH_STOCK"); demoBatchBalances.set(key, { quantity: after, unitCost: Number(line.unitPrice) || batch.unitCost }); } if (line.locationId) { const key = `${line.itemId}:${warehouseId}:${line.locationId}`; const before = demoLocationBalances.get(key) || 0; const after = direction === "IN" ? before + quantity : before - quantity; if (after < -0.000001) throw new Error("INSUFFICIENT_LOCATION_STOCK"); demoLocationBalances.set(key, after); } for (const serialNo of line.serials || []) { const key = `${line.itemId}:${serialNo}`; if (direction === "IN") { if (demoSerialStatuses.has(key)) throw new Error("DUPLICATE_SERIAL_NUMBER"); demoSerialStatuses.set(key, { warehouseId, status: "AVAILABLE" }); } else { const serial = demoSerialStatuses.get(key); if (!serial || serial.warehouseId !== warehouseId || serial.status !== "AVAILABLE") throw new Error("SERIAL_NOT_AVAILABLE"); serial.status = "SOLD"; } } } }
 
 export async function createInvoice(input: { docNo: string; customerId: number; warehouseId: number; currencyCode?: string; exchangeRate?: string; paymentMethod?: string; paidAmount?: string; paymentReference?: string; lines: LinkedInvoiceLine[]; actor: string; }) {
+  if (isCloudflareD1Enabled()) return createCloudSalesInvoice(input as unknown as Record<string, unknown>);
   const db = await getDb();
   validateLinkedInvoiceLines(input.lines);
   const calculated = calculateInvoice(input.lines, input.paidAmount || "0");
@@ -790,6 +793,7 @@ export async function receiveStock(input: { itemId: number; warehouseId: number;
 }
 
 export async function postInvoice(invoiceId: number, actor: string) {
+  if (isCloudflareD1Enabled()) return postCloudSalesInvoice(invoiceId);
   const db = await getDb();
   if (!db) {
     const invoice = demoInvoices.get(invoiceId);
@@ -842,6 +846,7 @@ export async function postInvoice(invoiceId: number, actor: string) {
 }
 
 export async function reverseInvoice(invoiceId: number, actor: string) {
+  if (isCloudflareD1Enabled()) return reverseCloudSalesInvoice(invoiceId);
   const db = await getDb();
   if (!db) {
     const invoice = demoInvoices.get(invoiceId);
