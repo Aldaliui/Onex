@@ -94,15 +94,18 @@ async function health(env, request) {
 }
 
 async function masterData(env, request) {
-  const [companies, customers, suppliers, items, warehouses, currencies] = await env.ONEX_DB.batch([
+  const [companies, customers, suppliers, items, warehouses, currencies, cashBoxes, banks, accountingDefaults] = await env.ONEX_DB.batch([
     env.ONEX_DB.prepare("SELECT id, code, name, baseCurrency FROM companies ORDER BY id LIMIT 20"),
-    env.ONEX_DB.prepare("SELECT id, companyId, code, legalName, currencyCode, status FROM customers ORDER BY code LIMIT 100"),
-    env.ONEX_DB.prepare("SELECT id, companyId, code, legalName, currencyCode, status FROM suppliers ORDER BY code LIMIT 100"),
-    env.ONEX_DB.prepare("SELECT id, companyId, code, COALESCE(NULLIF(description, ''), name) AS description, stockFlag, unitCost, revenueAccount, inventoryAccount, cogsAccount, active FROM items ORDER BY code LIMIT 100"),
+    env.ONEX_DB.prepare("SELECT id, companyId, accountId, code, legalName, currencyCode, status FROM customers ORDER BY code LIMIT 100"),
+    env.ONEX_DB.prepare("SELECT id, companyId, accountId, code, legalName, currencyCode, status FROM suppliers ORDER BY code LIMIT 100"),
+    env.ONEX_DB.prepare("SELECT id, companyId, code, COALESCE(NULLIF(description, ''), name) AS description, currencyCode, stockFlag, unitCost, revenueAccount, inventoryAccount, cogsAccount, active FROM items ORDER BY code LIMIT 100"),
     env.ONEX_DB.prepare("SELECT id, companyId, code, name, active FROM warehouses ORDER BY code LIMIT 50"),
     env.ONEX_DB.prepare("SELECT code, name, decimalScale, active FROM currencies WHERE active = 1 ORDER BY code"),
+    env.ONEX_DB.prepare("SELECT id, companyId, code, name, accountId, currencyCode, active FROM cash_boxes ORDER BY code LIMIT 50"),
+    env.ONEX_DB.prepare("SELECT id, companyId, code, name, accountId, accountNumber, currencyCode, active FROM banks ORDER BY code LIMIT 50"),
+    env.ONEX_DB.prepare("SELECT * FROM accounting_defaults WHERE companyId = 1 LIMIT 1"),
   ]);
-  return json({ companies: companies.results ?? [], customers: customers.results ?? [], suppliers: suppliers.results ?? [], items: items.results ?? [], warehouses: warehouses.results ?? [], currencies: currencies.results ?? [] }, 200, request);
+  return json({ companies: companies.results ?? [], customers: customers.results ?? [], suppliers: suppliers.results ?? [], items: items.results ?? [], warehouses: warehouses.results ?? [], currencies: currencies.results ?? [], cashBoxes: cashBoxes.results ?? [], banks: banks.results ?? [], accountingDefaults: accountingDefaults.results?.[0] ?? null }, 200, request);
 }
 
 async function listCustomers(env, request) {
@@ -110,7 +113,7 @@ async function listCustomers(env, request) {
   const search = (url.searchParams.get("search") || "").trim();
   const limit = boundedLimit(url);
   const result = await env.ONEX_DB.prepare(`
-    SELECT id, companyId, code, legalName, currencyCode, status
+    SELECT id, companyId, accountId, code, legalName, currencyCode, status
     FROM customers
     WHERE ? = '' OR code LIKE '%' || ? || '%' OR legalName LIKE '%' || ? || '%'
     ORDER BY code
@@ -1204,6 +1207,18 @@ async function inventoryDispatch(request, env, path, auth) {
 const cloudJson = (data, status = 200) => Response.json(data, { status, headers: { "cache-control": "no-store", "x-onex-deployment": "cloudflare-worker", "access-control-allow-origin": "*" } });
 const readBody = async (request) => { try { return await request.json(); } catch { return {}; } };
 const limitOf = (url) => Math.min(Number(url.searchParams.get("limit") || 100), 200);
+async function ensurePartyAccount(env, table, id) {
+  const party = await env.ONEX_DB.prepare(`SELECT id, companyId, legalName, currencyCode, accountId FROM ${table} WHERE id=? LIMIT 1`).bind(id).first();
+  if (!party || party.accountId) return party?.accountId || null;
+  const prefix = table === "customers" ? "1210-" : "2100-";
+  const type = table === "customers" ? "ASSET" : "LIABILITY";
+  const parent = table === "customers" ? "1210" : "2100";
+  const code = `${prefix}${String(id).padStart(4, "0")}`;
+  await env.ONEX_DB.prepare("INSERT OR IGNORE INTO accounts(companyId,code,name,accountType,parentCode,currencyCode,active) VALUES(?,?,?,?,?,?,1)").bind(party.companyId, code, party.legalName, type, parent, party.currencyCode || "SAR").run();
+  const account = await env.ONEX_DB.prepare("SELECT id FROM accounts WHERE companyId=? AND code=? LIMIT 1").bind(party.companyId, code).first();
+  if (account?.id) await env.ONEX_DB.prepare(`UPDATE ${table} SET accountId=? WHERE id=?`).bind(account.id, id).run();
+  return account?.id || null;
+}
 
 async function api(request, env, url) {
   const writeRoute = ["POST", "PUT", "PATCH", "DELETE"].includes(request.method);
@@ -1513,6 +1528,19 @@ async function api(request, env, url) {
     ]);
     return cloudJson({ ok: true, id, deleted: true, result });
   }
+  if (url.pathname === "/api/cloud/accounting/defaults" && request.method === "GET") {
+    const result = await env.ONEX_DB.prepare("SELECT * FROM accounting_defaults WHERE companyId=1 LIMIT 1").first();
+    const tree = await env.ONEX_DB.prepare("SELECT id,code,name,accountType,parentCode,currencyCode,active FROM accounts WHERE companyId=1 ORDER BY code").all();
+    return cloudJson({ defaults: result, accounts: tree.results ?? [] });
+  }
+  if (url.pathname === "/api/cloud/cash-boxes" && request.method === "GET") {
+    const result = await env.ONEX_DB.prepare("SELECT c.*, a.code AS accountCode, a.name AS accountName FROM cash_boxes c LEFT JOIN accounts a ON a.id=c.accountId WHERE c.companyId=1 ORDER BY c.code").all();
+    return cloudJson(result.results ?? []);
+  }
+  if (url.pathname === "/api/cloud/banks" && request.method === "GET") {
+    const result = await env.ONEX_DB.prepare("SELECT b.*, a.code AS accountCode, a.name AS accountName FROM banks b LEFT JOIN accounts a ON a.id=b.accountId WHERE b.companyId=1 ORDER BY b.code").all();
+    return cloudJson(result.results ?? []);
+  }
   const collection = { items: ["items", "code", "name"], customers: ["customers", "code", "legalName"], suppliers: ["suppliers", "code", "legalName"] };
   for (const [route, [table, codeField, nameField]] of Object.entries(collection)) {
     if (url.pathname.startsWith(`/api/cloud/${route}/`) && request.method === "DELETE") {
@@ -1544,13 +1572,13 @@ async function api(request, env, url) {
     if (url.pathname === `/api/cloud/${route}` && request.method === "POST") {
       const x = await readBody(request); if (!x.code || !x[nameField]) return cloudJson({ error: `code and ${nameField} are required` }, 400);
       if (positiveInteger(Number(x.id))) {
-        const sql = table === "items" ? "UPDATE items SET companyId=?,code=?,name=?,description=?,itemType=?,unitCode=?,stockFlag=?,unitCost=?,revenueAccount=?,inventoryAccount=?,cogsAccount=?,active=? WHERE id=?" : `UPDATE ${table} SET companyId=?,code=?,legalName=?,currencyCode=?,status=? WHERE id=?`;
-        const values = table === "items" ? [x.companyId || 1, x.code, x.name || x.description, x.description || x.name, x.itemType || "STOCK", x.unitCode || "EA", x.stockFlag ?? 1, x.unitCost || "0", x.revenueAccount || "4100", x.inventoryAccount || "1300", x.cogsAccount || "5100", x.active ?? 1, Number(x.id)] : [x.companyId || 1, x.code, x[nameField], x.currencyCode || "SAR", x.status || "ACTIVE", Number(x.id)];
-        return cloudJson({ ok: true, result: await env.ONEX_DB.prepare(sql).bind(...values).run(), updated: true });
+        const sql = table === "items" ? "UPDATE items SET companyId=?,code=?,name=?,description=?,itemType=?,unitCode=?,stockFlag=?,unitCost=?,revenueAccount=?,inventoryAccount=?,cogsAccount=?,currencyCode=?,active=? WHERE id=?" : `UPDATE ${table} SET companyId=?,code=?,legalName=?,currencyCode=?,status=? WHERE id=?`;
+        const values = table === "items" ? [x.companyId || 1, x.code, x.name || x.description, x.description || x.name, x.itemType || "STOCK", x.unitCode || "EA", x.stockFlag ?? 1, x.unitCost || "0", x.revenueAccount || "4100", x.inventoryAccount || "1300", x.cogsAccount || "5100", x.currencyCode || "SAR", x.active ?? 1, Number(x.id)] : [x.companyId || 1, x.code, x[nameField], x.currencyCode || "SAR", x.status || "ACTIVE", Number(x.id)];
+        const updateResult = await env.ONEX_DB.prepare(sql).bind(...values).run(); if (table !== "items") await ensurePartyAccount(env, table, Number(x.id)); return cloudJson({ ok: true, result: updateResult, updated: true });
       }
-      const sql = table === "items" ? "INSERT INTO items(companyId,code,name,description,itemType,unitCode,stockFlag,unitCost,revenueAccount,inventoryAccount,cogsAccount,active) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,description=excluded.description,itemType=excluded.itemType,unitCode=excluded.unitCode,stockFlag=excluded.stockFlag,unitCost=excluded.unitCost,revenueAccount=excluded.revenueAccount,inventoryAccount=excluded.inventoryAccount,cogsAccount=excluded.cogsAccount,active=excluded.active" : `INSERT INTO ${table}(companyId,code,legalName,currencyCode,status) VALUES(?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET legalName=excluded.legalName,currencyCode=excluded.currencyCode,status=excluded.status`;
-      const values = table === "items" ? [x.companyId || 1, x.code, x.name || x.description, x.description || x.name, x.itemType || "STOCK", x.unitCode || "EA", x.stockFlag ?? 1, x.unitCost || "0", x.revenueAccount || "4100", x.inventoryAccount || "1300", x.cogsAccount || "5100", x.active ?? 1] : [x.companyId || 1, x.code, x[nameField], x.currencyCode || "SAR", x.status || "ACTIVE"];
-      return cloudJson({ ok: true, result: await env.ONEX_DB.prepare(sql).bind(...values).run() });
+      const sql = table === "items" ? "INSERT INTO items(companyId,code,name,description,itemType,unitCode,stockFlag,unitCost,revenueAccount,inventoryAccount,cogsAccount,currencyCode,active) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,description=excluded.description,itemType=excluded.itemType,unitCode=excluded.unitCode,stockFlag=excluded.stockFlag,unitCost=excluded.unitCost,revenueAccount=excluded.revenueAccount,inventoryAccount=excluded.inventoryAccount,cogsAccount=excluded.cogsAccount,currencyCode=excluded.currencyCode,active=excluded.active" : `INSERT INTO ${table}(companyId,code,legalName,currencyCode,status) VALUES(?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET legalName=excluded.legalName,currencyCode=excluded.currencyCode,status=excluded.status`;
+      const values = table === "items" ? [x.companyId || 1, x.code, x.name || x.description, x.description || x.name, x.itemType || "STOCK", x.unitCode || "EA", x.stockFlag ?? 1, x.unitCost || "0", x.revenueAccount || "4100", x.inventoryAccount || "1300", x.cogsAccount || "5100", x.currencyCode || "SAR", x.active ?? 1] : [x.companyId || 1, x.code, x[nameField], x.currencyCode || "SAR", x.status || "ACTIVE"];
+      const insertResult = await env.ONEX_DB.prepare(sql).bind(...values).run(); if (table !== "items") { const created = await env.ONEX_DB.prepare(`SELECT id FROM ${table} WHERE companyId=? AND code=? LIMIT 1`).bind(x.companyId || 1, x.code).first(); if (created?.id) await ensurePartyAccount(env, table, Number(created.id)); } return cloudJson({ ok: true, result: insertResult });
     }
   }
   if (url.pathname === "/api/cloud/journals" && request.method === "GET") { const r = await env.ONEX_DB.prepare("SELECT * FROM journal_entries ORDER BY createdAt DESC LIMIT ?").bind(limitOf(url)).all(); return cloudJson(r.results); }
