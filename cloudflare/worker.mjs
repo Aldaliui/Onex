@@ -1206,6 +1206,9 @@ const readBody = async (request) => { try { return await request.json(); } catch
 const limitOf = (url) => Math.min(Number(url.searchParams.get("limit") || 100), 200);
 
 async function api(request, env, url) {
+  const writeRoute = ["POST", "PUT", "PATCH", "DELETE"].includes(request.method);
+  const publicWrite = url.pathname === "/api/cloud/auth/logout";
+  if (writeRoute && !publicWrite && !request.headers.get("x-onex-actor")?.trim()) return cloudJson({ error: "CLOUD_ACTOR_REQUIRED" }, 403);
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { "access-control-allow-origin": "*", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type,authorization" } });
   if (url.pathname === "/api/cloud/persistent-test-suite" && request.method === "POST") {
     const existing = await env.ONEX_DB.prepare("SELECT id FROM customers WHERE code = 'TEST-PERSIST-CUST-001' LIMIT 1").first();
@@ -1436,7 +1439,22 @@ async function api(request, env, url) {
     }
     return cloudJson({ error: "WINDOW_DELETE_NOT_SUPPORTED" }, 400);
   }
-  if (url.pathname === "/api/cloud/windows/action" && request.method === "POST") return cloudJson({ ok: true, status: "SIMULATED", source: "cloud-d1" });
+  if (url.pathname === "/api/cloud/windows/action" && request.method === "POST") {
+    const x = await readBody(request);
+    const form = String(x.legacyForm || "").replace(/\.fmx$/i, "").toUpperCase();
+    const action = String(x.action || "").toLowerCase();
+    const actor = String(x.actor || request.headers.get("x-onex-actor") || "").trim();
+    const requestId = String(x.requestId || `${form}:${action}:${Date.now()}`).trim();
+    const allowed = new Set(["initialize", "query", "new", "validate", "save", "update", "delete", "post", "reverse", "refresh", "print", "exit"]);
+    if (!form || !actor || !allowed.has(action)) return cloudJson({ error: "WINDOW_ACTION_NOT_AUTHORIZED" }, 403);
+    const table = await env.ONEX_DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='window_executions' LIMIT 1").first();
+    if (!table) return cloudJson({ error: "WINDOW_EXECUTIONS_TABLE_NOT_FOUND" }, 503);
+    const existing = await env.ONEX_DB.prepare("SELECT id, status, responseJson FROM window_executions WHERE requestId=? LIMIT 1").bind(requestId).first();
+    if (existing) return cloudJson({ ok: true, status: existing.status, idempotent: true, executionId: existing.id, response: existing.responseJson ? JSON.parse(existing.responseJson) : null });
+    const response = { form: `${form}.fmx`, action, source: "cloud-d1", live: true };
+    const result = await env.ONEX_DB.prepare("INSERT INTO window_executions(legacyForm,actionCode,requestId,actor,mode,status,responseJson) VALUES(?,?,?,?,?,?,?) RETURNING id,legacyForm,actionCode,requestId,actor,status,createdAt").bind(`${form}.fmx`, action.toUpperCase(), requestId, actor, "CLOUD_D1", "COMMITTED", JSON.stringify(response)).first();
+    return cloudJson({ ok: true, status: "COMMITTED", live: true, execution: result, response });
+  }
   if (url.pathname === "/api/cloud/ai/assist" && request.method === "POST") return cloudJson({ answer: "تم تحويل الطلب إلى طبقة Cloudflare D1. هذه إجابة تشغيلية أولية من Worker، ويمكن ربط نموذج الذكاء الاصطناعي لاحقًا." });
   if (url.pathname === "/api/cloud/users" && request.method === "GET") {
     const q = (url.searchParams.get("search") || "").trim(); const lim = limitOf(url); const like = `%${q}%`;
@@ -1558,8 +1576,10 @@ async function api(request, env, url) {
   if (url.pathname === "/api/cloud/invoices" && request.method === "POST") {
     const x = await readBody(request); if (!x.docNo || !x.customerId || !x.warehouseId || !Array.isArray(x.lines) || !x.lines.length) return cloudJson({ error: "docNo, customerId, warehouseId and lines are required" }, 400);
     const subtotal = x.lines.reduce((n, l) => n + Number(l.quantity || 0) * Number(l.unitPrice || 0), 0); const tax = x.lines.reduce((n, l) => n + Number(l.taxAmount || 0), 0); const total = subtotal + tax; const key = x.idempotencyKey || `D1:${x.docNo}`;
-    const batch = [{ sql: "INSERT INTO invoices(docNo,customerId,warehouseId,subtotal,taxTotal,grandTotal,status,idempotencyKey,sourceForm,createdBy) VALUES(?,?,?,?,?,?,?,?,?,?)", params: [x.docNo, x.customerId, x.warehouseId, subtotal.toFixed(6), tax.toFixed(6), total.toFixed(6), "DRAFT", key, x.sourceForm || "ARST004", x.actor || "workbench.user"] }, ...x.lines.map((l) => ({ sql: "INSERT INTO invoice_lines(invoiceId,itemId,quantity,unitPrice,taxAmount,lineTotal) VALUES((SELECT id FROM invoices WHERE docNo=?),?,?,?,?,?)", params: [x.docNo, l.itemId, l.quantity, l.unitPrice, l.taxAmount || "0", (Number(l.quantity) * Number(l.unitPrice) + Number(l.taxAmount || 0)).toFixed(6)] }))];
-    return cloudJson({ ok: true, result: await env.ONEX_DB.batch(batch) }, 201);
+    const paidAmount = Number(x.paidAmount || 0); const exchangeRate = Number(x.exchangeRate || 1);
+    const batch = [{ sql: "INSERT INTO invoices(docNo,invoiceType,customerId,warehouseId,currencyCode,exchangeRate,subtotal,taxTotal,grandTotal,status,paymentMethod,paidAmount,remainingAmount,paymentReference,idempotencyKey,sourceForm,createdBy) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", params: [x.docNo, "SALE", x.customerId, x.warehouseId, x.currencyCode || "SAR", exchangeRate.toFixed(8), subtotal.toFixed(6), tax.toFixed(6), total.toFixed(6), "DRAFT", x.paymentMethod || "CASH", paidAmount.toFixed(6), (total - paidAmount).toFixed(6), x.paymentReference || null, key, x.sourceForm || "ARST004", x.actor || "workbench.user"] }, ...x.lines.map((l) => ({ sql: "INSERT INTO invoice_lines(invoiceId,itemId,quantity,unitPrice,taxAmount,lineTotal) VALUES((SELECT id FROM invoices WHERE docNo=?),?,?,?,?,?)", params: [x.docNo, l.itemId, l.quantity, l.unitPrice, l.taxAmount || "0", (Number(l.quantity) * Number(l.unitPrice) + Number(l.taxAmount || 0)).toFixed(6)] }))];
+    const result = await env.ONEX_DB.batch(batch);
+    return cloudJson({ ok: true, docNo: x.docNo, invoiceId: result[0]?.meta?.last_row_id || 0, result }, 201);
   }
   if (url.pathname.startsWith("/api/cloud/invoices/") && request.method === "POST") {
     const id = Number(url.pathname.split("/").pop()); const action = url.searchParams.get("action"); if (!id || !["post", "reverse"].includes(action)) return cloudJson({ error: "use ?action=post or ?action=reverse" }, 400); const status = action === "post" ? "POSTED" : "REVERSED"; const r = await env.ONEX_DB.prepare("UPDATE invoices SET status=?,postedAt=CASE WHEN ?='POSTED' THEN CURRENT_TIMESTAMP ELSE postedAt END WHERE id=?").bind(status, status, id).run(); return cloudJson({ ok: true, invoiceId: id, status, result: r });

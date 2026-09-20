@@ -65,7 +65,7 @@ export default function Home() {
     try {
       const created = await createInvoice.mutateAsync({ docNo, customerId: customers[0].id, warehouseId: warehouses[0].id, actor: "demo.user", lines: [{ itemId: items[0].id, quantity, unitPrice, taxAmount: tax }] });
       toast.success(`تم إنشاء ${created.docNo} كمسودة`);
-      await postInvoice.mutateAsync({ invoiceId: created.invoiceId, actor: "demo.user" });
+      await postInvoice.mutateAsync({ invoiceId: Number(created.invoiceId), actor: "demo.user" });
       toast.success("تم الترحيل: المخزون + COGS + AR/GL داخل معاملة واحدة");
       dashboard.refetch();
     } catch (error) { toast.error(error instanceof Error ? error.message : "تعذر تنفيذ العملية"); }

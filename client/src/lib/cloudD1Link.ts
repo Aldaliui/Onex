@@ -12,7 +12,7 @@ const request = async (path: string, method: "GET" | "POST" | "DELETE", input?: 
       if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
     }
   } else if (method === "POST") body = JSON.stringify(input ?? {});
-  const response = await fetch(url, { method, body, credentials: "include", headers: { "content-type": "application/json" } });
+  const response = await fetch(url, { method, body, credentials: "include", headers: { "content-type": "application/json", "x-onex-actor": "workbench.user" } });
   const payload = (await response.json().catch(() => ({}))) as CloudResponse;
   if (!response.ok) throw new Error(payload.error?.message || `Cloud API error (${response.status})`);
   return payload.data ?? payload;
@@ -35,7 +35,6 @@ const mapOperation = (op: Operation) => {
     case "windows.list": return ["/windows", "GET"] as const;
     case "windows.tree": return ["/windows/tree", "GET"] as const;
     case "windows.contract": return [`/windows/contract/${encodeURIComponent(String(input?.legacyForm || ""))}`, "GET"] as const;
-    case "windows.records": return ["/windows/records", "GET"] as const;
     case "windows.records": return ["/windows/records", "GET"] as const;
     case "windows.saveCustomer": return ["/customers", "POST"] as const;
     case "windows.deleteCustomer": return [`/customers/${encodeURIComponent(String(input?.id || ""))}`, "DELETE"] as const;
@@ -67,8 +66,9 @@ const mapInput = (op: Operation) => {
 
 const mapOutput = (op: Operation, data: unknown) => {
   if (op.path === "invoices.create" && data && typeof data === "object") {
-    const result = (data as { result?: Array<{ meta?: { last_row_id?: number } }> }).result;
-    return { docNo: (op.input as { docNo?: string })?.docNo, invoiceId: result?.[0]?.meta?.last_row_id ?? 0 };
+    const payload = data as { invoiceId?: number; result?: Array<{ meta?: { last_row_id?: number } }> };
+    const invoiceId = Number(payload.invoiceId || payload.result?.[0]?.meta?.last_row_id || 0);
+    return { docNo: (op.input as { docNo?: string })?.docNo, invoiceId };
   }
   return data;
 };

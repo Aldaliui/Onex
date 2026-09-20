@@ -318,7 +318,7 @@ export async function getDashboard() {
   return { windows: Number(windowCount[0]?.count ?? 0), domains: Number(domainCount[0]?.count ?? 0), invoices: Number(invoiceCount[0]?.count ?? 0), stockValue: String(stockValue[0]?.total ?? "0"), journals: Number(journalCount[0]?.count ?? 0), recentInvoices };
 }
 
-export async function getMasterData() {
+export async function getMasterData(): Promise<any> {
   if (isCloudflareD1Enabled()) return getCloudMasterData();
   const db = await getDb();
   if (!db) return {
