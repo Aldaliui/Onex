@@ -326,8 +326,6 @@ nav { display: grid; gap: 5px; }.nav-item { width: 100%; height: 42px; border: 0
   .legacy-form-toolbar { overflow-x: auto; }
   .legacy-form-caption { font-size: 15px; }
 }
-
-
 /* Governed contract window panel */
 .contract-window-panel { padding: 24px 22px 28px; background: #101b30; color: #dce8f8; }
 .contract-window-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding-bottom: 18px; border-bottom: 1px solid #2a4162; }
