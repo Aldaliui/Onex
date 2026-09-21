@@ -70,6 +70,16 @@ export type PostedInvoiceResult = {
   costTotal: number;
 };
 
+export type DraftInvoiceResult = {
+  invoiceId: number;
+  docNo: string;
+  idempotencyKey: string;
+  status: "DRAFT";
+  subtotal: number;
+  taxTotal: number;
+  grandTotal: number;
+};
+
 export type InvoicePostingTransaction = {
   findPostedByIdempotencyKey(key: string): Promise<PostedInvoiceResult | undefined>;
   insertInvoice(input: {
@@ -112,6 +122,36 @@ export type InvoicePostingTransaction = {
 export type InvoicePostingRepository = {
   transaction<T>(callback: (tx: InvoicePostingTransaction) => Promise<T>): Promise<T>;
 };
+
+export async function createInvoiceDraftWithTransaction(repository: InvoicePostingRepository, input: InvoicePostingInput): Promise<DraftInvoiceResult> {
+  const plan = buildInvoicePostingPlan(input);
+  const idempotencyKey = `INVOICE:${plan.invoiceType}:${plan.docNo}:DRAFT:${plan.requestId}`;
+  return repository.transaction(async (tx) => {
+    const invoice = await tx.insertInvoice({
+      invoiceType: plan.invoiceType,
+      docNo: plan.docNo,
+      companyId: plan.context.companyId,
+      branchId: plan.context.branchId,
+      fiscalPeriodId: plan.context.fiscalPeriodId,
+      customerId: input.customerId,
+      supplierId: input.supplierId,
+      warehouseId: plan.warehouseId,
+      currencyCode: plan.currencyCode,
+      exchangeRate: plan.exchangeRate,
+      paymentMethod: input.paymentMethod || (plan.invoiceType === "SALE" ? "CASH" : "CREDIT"),
+      paidAmount: plan.calculated.paidAmount,
+      remainingAmount: plan.calculated.remainingAmount,
+      subtotal: plan.calculated.subtotal,
+      taxTotal: plan.calculated.taxTotal,
+      grandTotal: plan.calculated.grandTotal,
+      idempotencyKey,
+      actor: plan.actor,
+    });
+    await tx.insertInvoiceLines(invoice.invoiceId, plan.calculated.lines);
+    await tx.insertAuditEvent({ actor: plan.actor, actionCode: "CREATE_DRAFT", entityId: String(invoice.invoiceId), requestId: plan.requestId });
+    return { invoiceId: invoice.invoiceId, docNo: plan.docNo, idempotencyKey, status: "DRAFT", subtotal: plan.calculated.subtotal, taxTotal: plan.calculated.taxTotal, grandTotal: plan.calculated.grandTotal };
+  });
+}
 
 function positiveInteger(value: number | undefined, field: string): number {
   if (!Number.isInteger(value) || Number(value) <= 0) throw new Error(`${field}_REQUIRED`);

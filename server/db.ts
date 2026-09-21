@@ -12,6 +12,7 @@ import { createCloudSalesInvoice, getCloudAccounts, getCloudCurrencies, getCloud
 import { buildEInvoicePayload, getEInvoiceProvider, type EInvoiceStatus } from "./eInvoicing";
 import { postInvoiceWithDrizzleTransaction } from "./drizzleInvoicePostingRepository";
 import { buildPurchaseIntegrationReport, type PurchaseIntegrationReportInput } from "./purchaseIntegrationReport";
+import { createInvoiceDraftWithDrizzleTransaction, postExistingInvoiceWithDrizzleTransaction, postInvoiceWithDrizzleTransaction, reverseInvoiceWithDrizzleTransaction } from "./drizzleInvoicePostingRepository";
 import type { InvoicePostingInput } from "./invoicePostingService";
 import { requireErpExecutionContext, type ErpExecutionContext } from "./erpContext";
 
@@ -599,12 +600,23 @@ export async function searchJournals(search?: string, limit = 20) {
   return db.select().from(journalEntries).where(filters).orderBy(desc(journalEntries.createdAt)).limit(limit);
 }
 
-export async function saveJournal(input: { journalNo: string; entryType: string; actor: string; lines: { accountCode: string; accountName?: string; description?: string; debit: string; credit: string }[] }) {
-  const journal = validateJournal({ description: input.entryType, source: "MANUAL", lines: input.lines });
-  const debit = journal.totalDebit; const credit = journal.totalCredit;
+function legacyExecutionContext(fiscalPeriodId = 1): ErpExecutionContext {
+  return { companyId: 1, branchId: 1, warehouseId: 1, fiscalPeriodId, currencyCode: "SAR", languageCode: "ar" };
+}
+
+export async function createInvoiceDraftWithTypedService(input: Parameters<typeof createInvoice>[0], requestId: string) {
   const db = await getDb();
-  if (!db) { const id = demoJournals.length + 1; const result = { id, journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6), status: "POSTED" as const }; demoJournals.push(result); return result; }
-  return db.transaction(async (tx) => { const inserted = await tx.insert(journalEntries).values({ journalNo: input.journalNo, entryType: input.entryType, sourceType: "MANUAL", totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6), idempotencyKey: `JOURNAL:MANUAL:${input.journalNo}`, createdBy: input.actor }).$returningId(); const id = Number(inserted[0]?.id); if (!id) throw new Error("JOURNAL_CREATE_FAILED"); await tx.insert(journalEntryLines).values(journal.lines.map((line, lineNo) => ({ journalEntryId: id, lineNo: lineNo + 1, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: line.debit.toFixed(6), credit: line.credit.toFixed(6), baseDebit: line.debit.toFixed(6), baseCredit: line.credit.toFixed(6) }))); await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE", entityType: "GL_JOURNAL", entityId: String(id), requestId: `JOURNAL:${input.journalNo}` }); return { id, journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6), status: "POSTED" as const }; });
+  if (!db) return createInvoice(input);
+  const typedInput: InvoicePostingInput = { invoiceType: "SALE", docNo: input.docNo, customerId: input.customerId, context: legacyExecutionContext(), currencyCode: input.currencyCode, exchangeRate: input.exchangeRate, paymentMethod: input.paymentMethod, paidAmount: input.paidAmount, actor: input.actor, requestId, lines: input.lines };
+  return db.transaction((tx) => createInvoiceDraftWithDrizzleTransaction(tx, typedInput));
+}
+
+export async function saveJournal(input: { journalNo: string; entryType: string; actor: string; lines: { accountCode: string; accountName?: string; description?: string; debit: string; credit: string }[] }) {
+  const draft = await createJournalDraft({ journalNo: input.journalNo, entryType: input.entryType, actor: input.actor, context: legacyExecutionContext(), lines: input.lines });
+  await validateJournalEntry(draft.id, input.actor);
+  await approveJournalEntry(draft.id, input.actor);
+  const posted = await postJournalEntry(draft.id, input.actor);
+  return { ...draft, status: posted.status as "POSTED" };
 }
 
 export async function executeGlWindowAction(input: {
@@ -1130,7 +1142,7 @@ export async function executeSalesWindowAction(input: {
     else if (input.action === "query") response = { legacyForm: `${form}.fmx`, action: input.action, rows: await searchInvoices(input.search, input.limit || 20), mode: "DATABASE_CONTRACT" };
     else if (["new", "save"].includes(input.action)) {
       if (!input.invoice) throw new Error("SALES_INVOICE_PAYLOAD_REQUIRED");
-      response = await createInvoice(input.invoice);
+      response = await createInvoiceDraftWithTypedService(input.invoice, input.requestId);
     } else if (input.action === "post") {
       if (!input.invoiceId) throw new Error("SALES_INVOICE_ID_REQUIRED");
       response = await postInvoice(input.invoiceId, input.actor, input.requestId);

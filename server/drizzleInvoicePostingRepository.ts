@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { auditEvents, invoiceLines, invoices, items, journalEntries, journalEntryLines, stockBalances, stockMovements } from "../drizzle/schema";
-import { postInvoiceWithTransaction, type InvoicePostingRepository, type InvoicePostingTransaction, type InvoicePostingPlan, type InvoicePostingInput, type PostedInvoiceResult } from "./invoicePostingService";
+import { createInvoiceDraftWithTransaction, postInvoiceWithTransaction, type InvoicePostingRepository, type InvoicePostingTransaction, type InvoicePostingPlan, type InvoicePostingInput, type PostedInvoiceResult } from "./invoicePostingService";
 
 /**
  * The transaction type is intentionally structural. Drizzle's concrete transaction
@@ -174,4 +174,8 @@ export function createDrizzleInvoicePostingRepository(transaction: DrizzleTransa
 
 export async function postInvoiceWithDrizzleTransaction(transaction: DrizzleTransaction, input: InvoicePostingInput, options: DrizzleInvoicePostingOptions = {}) {
   return postInvoiceWithTransaction(createDrizzleInvoicePostingRepository(transaction, options), input);
+}
+
+export async function createInvoiceDraftWithDrizzleTransaction(transaction: DrizzleTransaction, input: InvoicePostingInput) {
+  return createInvoiceDraftWithTransaction(createDrizzleInvoicePostingRepository(transaction), input);
 }
