@@ -1,0 +1,37 @@
+{
+  "sourceRepository": "aldalistor/mido",
+  "sourceCommit": "873bcda3bbe12830e6b322723ad66966292fa232",
+  "sourceTests": ["test-accounting-core.js", "test-invoice-posting-core.js"],
+  "currency": "SAR",
+  "journals": [
+    {
+      "name": "balanced-sale",
+      "description": "قيد اختبار",
+      "source": "TEST",
+      "lines": [
+        { "accountCode": "1101", "debit": 125.5, "credit": 0 },
+        { "accountCode": "4101", "debit": 0, "credit": 125.5 }
+      ],
+      "total": 125.5
+    }
+  ],
+  "yearClose": {
+    "input": { "revenue": 1000, "expenses": 250, "openingYear": 2025 },
+    "source": "YEAR_CLOSE",
+    "totalDebit": 2000,
+    "totalCredit": 2000,
+    "retainedEarningsAccount": "3201",
+    "netProfit": 750
+  },
+  "saleInvoice": {
+    "lines": [{ "itemId": 1, "quantity": 2, "unitPrice": 100, "taxAmount": 0, "unitCost": 60 }],
+    "subtotal": 200,
+    "grandTotal": 200,
+    "costTotal": 120
+  },
+  "negativeCases": [
+    { "name": "unbalanced-journal", "error": "JOURNAL_NOT_BALANCED" },
+    { "name": "empty-invoice", "error": "INVOICE_NEEDS_LINES" },
+    { "name": "zero-quantity", "error": "INVOICE_QUANTITY_MUST_BE_POSITIVE" }
+  ]
+}
