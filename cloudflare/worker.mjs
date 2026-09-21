@@ -1550,6 +1550,28 @@ async function api(request, env, url) {
     statements.push(env.ONEX_DB.prepare("INSERT INTO audit_events(actor,actionCode,entityType,entityId,requestId) VALUES(?,?,?,?,?)").bind(x.actor || "cloud-user", "IMPORT", "ACCOUNT_CATALOG", "BATCH", `ACCOUNT:IMPORT:${Date.now()}`));
     const result = await env.ONEX_DB.batch(statements); return cloudJson({ ok: true, imported: rows.length, result });
   }
+  if (url.pathname === "/api/cloud/items/import" && request.method === "POST") {
+    const x = await readBody(request); const rows = Array.isArray(x.rows) ? x.rows.slice(0, 500) : [];
+    if (!rows.length) return cloudJson({ error: "ITEM_IMPORT_ROWS_REQUIRED" }, 400);
+    const statements = [];
+    for (const row of rows) {
+      if (!row?.code || !row?.name) return cloudJson({ error: "ITEM_IMPORT_ROW_INVALID" }, 400);
+      statements.push(env.ONEX_DB.prepare("INSERT INTO items(companyId,code,name,description,currencyCode,unitCode,stockFlag,unitCost,salePrice,revenueAccount,inventoryAccount,cogsAccount,active) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,description=excluded.description,currencyCode=excluded.currencyCode,unitCode=excluded.unitCode,stockFlag=excluded.stockFlag,unitCost=excluded.unitCost,salePrice=excluded.salePrice,revenueAccount=excluded.revenueAccount,inventoryAccount=excluded.inventoryAccount,cogsAccount=excluded.cogsAccount,active=excluded.active").bind(x.companyId || 1, String(row.code), String(row.name), String(row.description || row.name), row.currencyCode || "SAR", row.unitCode || "EA", row.stockFlag ?? 1, String(row.unitCost || "0"), String(row.salePrice || "0"), row.revenueAccount || "4100", row.inventoryAccount || "1300", row.cogsAccount || "5100", row.active ?? 1));
+    }
+    statements.push(env.ONEX_DB.prepare("INSERT INTO audit_events(actor,actionCode,entityType,entityId,requestId) VALUES(?,?,?,?,?)").bind(x.actor || "cloud-user", "IMPORT", "ITEM_CATALOG", "BATCH", `ITEM:IMPORT:${Date.now()}`));
+    const result = await env.ONEX_DB.batch(statements); return cloudJson({ ok: true, imported: rows.length, result });
+  }
+  if (url.pathname === "/api/cloud/customers/import" && request.method === "POST") {
+    const x = await readBody(request); const rows = Array.isArray(x.rows) ? x.rows.slice(0, 500) : [];
+    if (!rows.length) return cloudJson({ error: "CUSTOMER_IMPORT_ROWS_REQUIRED" }, 400);
+    const statements = [];
+    for (const row of rows) {
+      if (!row?.code || !row?.legalName) return cloudJson({ error: "CUSTOMER_IMPORT_ROW_INVALID" }, 400);
+      statements.push(env.ONEX_DB.prepare("INSERT INTO customers(companyId,code,legalName,currencyCode,status) VALUES(?,?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET legalName=excluded.legalName,currencyCode=excluded.currencyCode,status=excluded.status").bind(x.companyId || 1, String(row.code), String(row.legalName), row.currencyCode || "SAR", row.status || "ACTIVE"));
+    }
+    statements.push(env.ONEX_DB.prepare("INSERT INTO audit_events(actor,actionCode,entityType,entityId,requestId) VALUES(?,?,?,?,?)").bind(x.actor || "cloud-user", "IMPORT", "CUSTOMER_CATALOG", "BATCH", `CUSTOMER:IMPORT:${Date.now()}`));
+    const result = await env.ONEX_DB.batch(statements); return cloudJson({ ok: true, imported: rows.length, result });
+  }
   if (url.pathname.startsWith("/api/cloud/accounts/") && request.method === "DELETE") {
     const id = Number(url.pathname.split("/").pop());
     if (!positiveInteger(id)) return cloudJson({ error: "ACCOUNT_ID_REQUIRED" }, 400);

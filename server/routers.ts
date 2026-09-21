@@ -9,6 +9,7 @@ import { executeOracleAction, getOracleBridgeStatus } from "./_core/oracleBridge
 import { createBackupSnapshot, getBackupDownloadUrl, restoreBackupSnapshot, uploadBackupSnapshot } from "./backup";
 import { createAdjustmentNote, createInventoryCount, createInventoryTransfer, createInvoice, createPaymentVoucher, createPurchaseInvoice, createReceiptVoucher, deleteAccount, deleteCustomer, deleteItem, deleteSupplier, deleteWindowRecord, executeGlWindowAction, executeSalesWindowAction, getAccountCatalog, getCatalogSources, getCurrencies, getDashboard, getEInvoiceStatus, getErpControlData, getFinancialReportCatalog, getInvoiceReturnSource, getItemTrace, getMasterData, getSystemSettings, getSystemTree, getWindowCatalog, getWindowContract, getWindowDomains, importAccounts, listWarehouses, nextAdjustmentNumber, postAdjustmentNote, postInventoryCount, postInventoryTransfer, postPaymentVoucher, postPurchaseInvoice, postReceiptVoucher, postInvoice, receiveStock, reverseInvoice, reversePurchaseInvoice, runFinancialReport, saveAccount, saveBank, saveBranch, saveCashBox, saveCurrency, saveCustomer, saveItem, saveJournal, saveSupplier, saveSystemSettings, saveSystemUser, saveWarehouse, searchAccounts, searchAuditEvents, searchBranches, searchCustomers, searchInvoices, searchItems, searchJournals, searchSuppliers, searchSystemUsers, searchWarehouses, searchWindowExecutions, submitEInvoice } from "./db";
 import { isEInvoiceProviderConfigured } from "./eInvoicing";
+import { buildOpeningBalances, closeFiscalYear } from "./accountingCore";
 
 const invoiceLine = z.object({ itemId: z.number().int().positive(), quantity: z.string().min(1), unitPrice: z.string().min(1), taxAmount: z.string().default("0"), unitCode: z.string().max(30).default("EA"), batchNo: z.string().max(100).optional(), expireDate: z.string().optional(), locationId: z.number().int().positive().optional(), serials: z.array(z.string().min(1).max(160)).optional() });
 const partyInput = z.object({ id: z.number().int().positive().optional(), companyId: z.number().int().positive().default(1), code: z.string().min(1).max(50), legalName: z.string().min(1).max(250), currencyCode: z.string().length(3).default("SAR"), status: z.enum(["ACTIVE", "BLOCKED", "CLOSED"]).default("ACTIVE") });
@@ -25,6 +26,10 @@ export const appRouter = router({
   }),
   dashboard: publicProcedure.query(() => getDashboard()),
   masterData: publicProcedure.query(() => getMasterData()),
+  accounting: router({
+    previewYearClose: protectedProcedure.input(z.object({ revenue: z.union([z.string(), z.number()]), expenses: z.union([z.string(), z.number()]), retainedEarningsAccount: z.string().max(80).optional(), openingYear: z.string().max(20).optional(), date: z.string().max(40).optional() })).mutation(({ input }) => closeFiscalYear(input)),
+    previewOpeningBalances: protectedProcedure.input(z.object({ accounts: z.array(z.object({ code: z.string().min(1).max(80), type: z.string().max(30).optional(), balance: z.union([z.string(), z.number()]) })).min(1).max(5000) })).mutation(({ input }) => buildOpeningBalances(input.accounts)),
+  }),
   systemSettings: router({ get: publicProcedure.query(() => getSystemSettings()), save: protectedProcedure.input(z.object({ engine: z.string().min(1).max(30), host: z.string().max(255).optional(), port: z.number().int().min(1).max(65535), databaseName: z.string().max(160).optional(), ssl: z.number().int().min(0).max(1), updatedBy: z.string().min(1).max(100) })).mutation(({ input }) => saveSystemSettings(input)) }),
   controlData: publicProcedure.query(() => getErpControlData()),
   oracle: router({ status: publicProcedure.query(() => getOracleBridgeStatus()) }),
