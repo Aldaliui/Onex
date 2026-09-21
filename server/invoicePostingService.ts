@@ -47,6 +47,7 @@ export type InvoicePostingPlan = {
   journal: NormalizedJournal;
   stockMovements: Array<{
     itemId: number;
+    warehouseId: number;
     quantity: number;
     unitCost: number;
     movementType: "SALE" | "PURCHASE";
@@ -159,6 +160,7 @@ export function buildInvoicePostingPlan(input: InvoicePostingInput): InvoicePost
     journal,
     stockMovements: calculated.lines.map((line) => ({
       itemId: line.itemId,
+      warehouseId: input.warehouseId,
       quantity: input.invoiceType === "SALE" ? -line.quantity : line.quantity,
       unitCost: input.invoiceType === "SALE" ? line.unitCost : line.unitPrice,
       movementType: input.invoiceType,

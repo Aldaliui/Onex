@@ -10,6 +10,8 @@ import { getLegacyWindowContract } from "./legacyWindowContracts";
 import { assertStockRule, calculateMovingAverage } from "./inventoryKernel";
 import { createCloudSalesInvoice, getCloudAccounts, getCloudCurrencies, getCloudItemTrace, getCloudMasterData, importCloudAccounts, isCloudflareD1Enabled, postCloudSalesInvoice, reverseCloudSalesInvoice, saveCloudAccount, saveCloudBank, saveCloudCashBox, saveCloudCurrency, saveCloudWarehouse } from "./cloudflareD1";
 import { buildEInvoicePayload, getEInvoiceProvider, type EInvoiceStatus } from "./eInvoicing";
+import { postInvoiceWithDrizzleTransaction } from "./drizzleInvoicePostingRepository";
+import type { InvoicePostingInput } from "./invoicePostingService";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let demoInvoiceSequence = 1000;
@@ -935,6 +937,17 @@ export async function postInvoice(invoiceId: number, actor: string, requestId?: 
     await tx.insert(auditEvents).values({ actor, actionCode: "POST", entityType: "AR_DOC", entityId: String(invoiceId), requestId: `POST:${invoice.docNo}` });
     return { invoiceId, status: "POSTED" as const, totalCogs };
   });
+}
+
+/**
+ * Typed atomic posting entry point. Existing create/post UI routes remain
+ * backward-compatible; new callers can use this entry point to create and
+ * post a complete invoice through the Drizzle adapter in one transaction.
+ */
+export async function postInvoiceWithTypedService(input: InvoicePostingInput) {
+  const db = await getDb();
+  if (!db) throw new Error("DATABASE_REQUIRED_FOR_TYPED_POSTING");
+  return db.transaction((tx) => postInvoiceWithDrizzleTransaction(tx, input));
 }
 
 export async function submitEInvoice(invoiceId: number, actor: string, requestId?: string) {
