@@ -551,6 +551,32 @@ export const fiscalPeriodClosures = mysqlTable("fiscal_period_closures", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const erpUserContexts = mysqlTable("erp_user_contexts", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().unique(),
+  companyId: int("companyId").notNull(),
+  branchId: int("branchId"),
+  warehouseId: int("warehouseId"),
+  fiscalPeriodId: int("fiscalPeriodId"),
+  currencyCode: varchar("currencyCode", { length: 3 }).notNull().default("SAR"),
+  languageCode: varchar("languageCode", { length: 10 }).notNull().default("ar"),
+  updatedBy: varchar("updatedBy", { length: 100 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({ companyIdx: index("erp_context_company_idx").on(table.companyId), periodIdx: index("erp_context_period_idx").on(table.fiscalPeriodId) }));
+
+export const erpContextEvents = mysqlTable("erp_context_events", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  contextId: int("contextId"),
+  actionCode: varchar("actionCode", { length: 40 }).notNull(),
+  previousJson: text("previousJson"),
+  nextJson: text("nextJson"),
+  actor: varchar("actor", { length: 100 }).notNull(),
+  requestId: varchar("requestId", { length: 160 }).notNull().unique(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({ userCreatedIdx: index("erp_context_event_user_created_idx").on(table.userId, table.createdAt) }));
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type WindowRegistry = typeof windowRegistry.$inferSelect;
