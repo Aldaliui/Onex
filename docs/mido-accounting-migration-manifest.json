@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "sourceRepository": "aldalistor/mido",
+  "targetRepository": "aldalistore2/cloud-onex",
+  "sourceCommit": "shallow-clone-reference-2026-09-21",
+  "targetBranch": "main",
+  "targetCommit": "97cea15",
+  "decisionPolicy": "Reuse domain behavior through typed cloud-onex contracts; do not copy Electron or database adapters.",
+  "modules": [
+    {
+      "source": "accounting-core.js",
+      "exports": ["EPSILON", "validateJournal", "postJournal", "closeFiscalYear", "buildOpeningBalances"],
+      "target": ["packages/erp-domain-core/accounting/journal.ts", "packages/erp-domain-core/accounting/closing.ts", "server/accountingCore.ts"],
+      "status": "reuse_existing_with_parity_gaps",
+      "reuse": ["validateJournal", "closeFiscalYear", "buildOpeningBalances", "EPSILON"],
+      "gap": ["postJournal repository transaction contract", "error-message compatibility", "accountId/currency/foreignAmount fields"],
+      "nextAction": "Add typed parity fixtures and define a storage-independent posting port."
+    },
+    {
+      "source": "invoice-posting-core.js",
+      "exports": ["buildInvoicePosting", "postInvoice"],
+      "target": ["server/accountingCore.ts", "server/documentLifecycle.ts", "server/routers.ts", "server/storage.ts"],
+      "status": "reuse_behavior_rebuild_in_target",
+      "reuse": ["balanced sale and purchase journal rules", "atomic invoice-journal-stock intent"],
+      "gap": ["legacy itemCode input versus target itemId schema", "idempotency and document state transitions", "database transaction adapter"],
+      "nextAction": "Implement a target-side posting service after parity fixtures are complete."
+    },
+    {
+      "source": "document-cycle-core.js",
+      "exports": ["TYPES", "TRANSITIONS", "FULFILLED_TYPES", "STOCK_TYPES", "validateTransition", "normalizeLines", "buildTradeDocument", "validateFulfillment", "stockEffect"],
+      "target": ["server/documentLifecycle.ts", "server/inventoryKernel.ts", "server/erpContracts.ts"],
+      "status": "reuse_concepts_not_file",
+      "reuse": ["document lifecycle intent", "fulfillment validation", "stock effects"],
+      "gap": ["mido states differ from target VALIDATED/APPROVED/POSTED/REVERSED states", "target contract uses numeric IDs and source references"],
+      "nextAction": "Create an explicit state mapping and parity tests; retain target state machine as canonical."
+    },
+    {
+      "source": "commercial-invoice-core.js",
+      "exports": ["EPSILON", "TYPES", "PAYMENT_METHODS", "calculateInvoice", "buildReturn"],
+      "target": ["packages/erp-domain-core/sales/invoice.ts", "server/routers.ts", "server/documentLifecycle.ts"],
+      "status": "reuse_existing_calculation_extend_returns",
+      "reuse": ["calculateInvoice", "invoice totals and tax behavior"],
+      "gap": ["buildReturn has no confirmed target equivalent", "itemCode and itemId contract mismatch", "discount and payment method mapping"],
+      "nextAction": "Extend typed invoice domain only after fixture comparison; add return domain contract separately."
+    },
+    {
+      "source": "commercial-accounting-core.js",
+      "exports": ["buildInvoiceJournal", "validatePeriodForPosting", "postCommercialInvoice", "buildTrialBalance", "buildAccountStatement"],
+      "target": ["server/accountingCore.ts", "server/erpPolicy.ts", "server/routers.ts"],
+      "status": "reuse_rules_rebuild_queries",
+      "reuse": ["invoice journal account roles", "open-period and permission intent"],
+      "gap": ["trial balance and account statement query services need target-side implementation", "commercial repository contract is not portable"],
+      "nextAction": "Keep posting in the target service layer and add read-model queries with reconciliation tests."
+    },
+    {
+      "source": "chart-of-accounts-core.js",
+      "exports": ["ACCOUNT_TYPES", "NORMAL_BALANCES", "normalizeAccount", "validateChart", "addAccount", "buildDefaultChart", "getChildren", "getPostableAccounts"],
+      "target": ["server/accountCatalog.test.ts", "server/routers.ts", "server/erpContracts.ts", "drizzle/schema.ts"],
+      "status": "reuse_rules_map_data_model",
+      "reuse": ["account types", "normal balance rules", "postable-account validation"],
+      "gap": ["target account schema has company and source references", "default chart must be migration-owned, not request-owned"],
+      "nextAction": "Add account contract parity cases and a deterministic seed/migration for the default chart."
+    },
+    {
+      "source": "business-operations-core.js",
+      "exports": ["EPSILON", "MOVEMENT_TYPES", "VOUCHER_TYPES", "buildStockMovement", "buildStockTransfer", "buildVoucher", "buildExpense", "buildIncome", "registerAsset", "calculateDepreciation"],
+      "target": ["server/inventoryKernel.ts", "server/routers.ts", "drizzle/schema.ts"],
+      "status": "partial_reuse_inventory_rebuild_finance",
+      "reuse": ["stock movement and transfer validation concepts"],
+      "gap": ["voucher, expense, income, asset, and depreciation services are not confirmed in target", "target inventory uses richer serial and unit rules"],
+      "nextAction": "Port stock contracts first; defer fixed assets until accounting dimensions and depreciation policy are approved."
+    },
+    {
+      "source": "receivables-core.js",
+      "exports": ["PAYMENT_TYPES", "buildPayment", "agingBucket"],
+      "target": ["server/routers.ts", "drizzle/schema.ts", "server/accountingCore.ts"],
+      "status": "reuse_behavior_rebuild_storage",
+      "reuse": ["payment allocation and aging rules"],
+      "gap": ["target AR payment persistence and allocation query must be verified", "payment status and journal linkage need target contract"],
+      "nextAction": "Add payment domain contract and aging fixtures before exposing a production mutation."
+    },
+    {
+      "source": "period-close-core.js",
+      "exports": ["PERIOD_STATUS", "CHECK_STATUS", "validatePeriodRange", "canPostToPeriod", "buildCloseChecklist", "summarizeCloseResult"],
+      "target": ["packages/erp-domain-core/accounting/fiscal-period.ts", "server/erpPolicy.ts", "server/routers.ts"],
+      "status": "reuse_existing_extend_checklist",
+      "reuse": ["open-period validation", "close summary semantics"],
+      "gap": ["date parsing and status representations differ", "full checklist is currently storage-specific"],
+      "nextAction": "Make period policy canonical in domain core and keep database checks in a service adapter."
+    },
+    {
+      "source": "invoice-cycle-core.js",
+      "exports": ["STATUSES", "TRANSITIONS", "transitionStatus", "stockDelta", "validateInvoiceBalance"],
+      "target": ["server/documentLifecycle.ts", "server/inventoryKernel.ts", "server/routers.ts"],
+      "status": "reuse_behavior_map_states",
+      "reuse": ["invoice transition intent", "stock delta sign rules", "balance invariant"],
+      "gap": ["target has additional VALIDATED and REVERSED states", "target uses atomic posting keys"],
+      "nextAction": "Add explicit legacy-to-target state mapping and retain target idempotency rules."
+    }
+  ]
+}
