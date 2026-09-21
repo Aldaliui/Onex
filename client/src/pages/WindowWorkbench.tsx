@@ -36,6 +36,27 @@ const modules: Array<{ id: ModuleKey; label: string; code: string; icon: typeof 
 ];
 const kindLabel = { transaction: "معاملة", inquiry: "استعلام", report: "تقرير" };
 
+function moduleForLegacyDomain(domain: string, formName = ""): ModuleKey {
+  const value = `${domain} ${formName}`.toUpperCase();
+  if (value.includes("ADMIN") || value.includes("ERP_DBA") || value.includes("ADMT")) return "admin";
+  if (value.includes("GL/") || value.includes("FINANCE") || value.includes("GLS") || value.includes("GLST") || value.includes("GLSI")) return "finance";
+  if (value.includes("AR/") || value.includes("RECEIVABLE") || value.includes("ARST") || value.includes("ARSI")) return "sales";
+  if (value.includes("AP/") || value.includes("PURCHAS") || value.includes("APST") || value.includes("APSI")) return "purchasing";
+  if (value.includes("INVENTORY") || value.includes("STOCK") || value.includes("INVT") || value.includes("INVI")) return "inventory";
+  if (value.includes("POS")) return "pos";
+  if (value.includes("REPORT") || value.includes("GLSR") || value.includes("ARSR") || value.includes("MRPREP")) return "reports";
+  if (value.includes("HR") || value.includes("EMPLOYEE")) return "hr";
+  if (value.includes("MRP") || value.includes("TREASURY")) return "mrp";
+  return "admin";
+}
+
+function kindForLegacyWindow(formName: string, itemType?: string): RuntimeWindow["kind"] {
+  const value = formName.toUpperCase();
+  if ((itemType || "").toUpperCase().includes("REPORT") || value.includes("REPORT") || value.startsWith("GLSR") || value.startsWith("ARSR") || value.startsWith("MRPREP")) return "report";
+  if ((itemType || "").toUpperCase().includes("INQUIRY") || value.includes("SI") || value.includes("SR") || value.includes("QUERY")) return "inquiry";
+  return "transaction";
+}
+
 function FieldControl({ field, value, disabled, onChange }: { field: LegacyField; value: string; disabled: boolean; onChange: (value: string) => void }) {
   if (field.type === "select") return <select value={value || "all"} disabled={disabled} onChange={(event) => onChange(event.target.value)}><option value="all">الكل</option><option value="1">نعم / الرئيسي</option><option value="0">لا / الفرع</option></select>;
   return <input type={field.type} value={value} disabled={disabled} required={field.required} onChange={(event) => onChange(event.target.value)} placeholder={field.id} />;
@@ -70,6 +91,7 @@ function AuthenticatedWorkbench() {
   const [editing, setEditing] = useState(false);
   const [values, setValues] = useState<Record<string, string>>({});
   const windowCatalog = trpc.windows.list.useQuery({ search: query || undefined, limit: 80 });
+  const systemTree = trpc.windows.tree.useQuery(undefined, { refetchOnWindowFocus: false });
   const inventoryCatalog = trpc.windows.list.useQuery({ search: query || undefined, domain: "inventory/stock", limit: 500 });
   const glCatalog = trpc.windows.list.useQuery({ search: query || undefined, domain: "GL", limit: 500 });
   const activeContract = trpc.windows.contract.useQuery({ legacyForm: manager.activeId ?? "__none__" }, { enabled: Boolean(manager.activeId) });
@@ -93,6 +115,13 @@ function AuthenticatedWorkbench() {
   const offline = useOfflineSync(async (operation) => { if (operation.type === "GL_WINDOW_ACTION") { await glExecute.mutateAsync(operation.payload as any); return "SYNCED"; } if (operation.type !== "WINDOW_ACTION") return "CONFLICT"; await executeWindowAction.mutateAsync(operation.payload as { legacyForm: string; action: "save" | "post" }); return "SYNCED"; });
   const inventoryRows = Array.isArray(inventoryCatalog.data) ? inventoryCatalog.data : ((inventoryCatalog.data as any)?.rows ?? []);
   const glRows = Array.isArray(glCatalog.data) ? glCatalog.data : ((glCatalog.data as any)?.rows ?? []);
+  const catalogWindows = useMemo<RuntimeWindow[]>(() => {
+    const branches = (systemTree.data ?? []) as Array<{ domain?: string; groups?: Array<{ windows?: Array<Record<string, unknown>> }> }>;
+    return branches.flatMap((branch) => (branch.groups ?? []).flatMap((group) => (group.windows ?? []).map((row) => {
+      const id = String(row.legacyForm || row.formName || row.screenName || "").replace(/\.fmx$/i, "");
+      return { id, label: String(row.screenName || id), module: moduleForLegacyDomain(String(branch.domain || row.domainCode || ""), id), kind: kindForLegacyWindow(id, String(row.itemType || "")) };
+    }))).filter((window) => window.id);
+  }, [systemTree.data]);
   const inventoryWindows = useMemo<RuntimeWindow[]>(() => inventoryRows.map((row: any) => {
     const id = String(row.legacyForm || row.formName || "").replace(/\.fmx$/i, "");
     const upper = id.toUpperCase();
@@ -106,9 +135,9 @@ function AuthenticatedWorkbench() {
     return { id, label: row.screenName || id, module: "finance", kind };
   }), [glRows]);
   const filteredModules = useMemo(() => modules.map((module) => {
-    const sourceWindows = module.id === "inventory" && inventoryWindows.length ? inventoryWindows : module.id === "finance" && glWindows.length ? glWindows : module.windows;
+    const sourceWindows = catalogWindows.length ? catalogWindows.filter((window) => window.module === module.id) : module.id === "inventory" && inventoryWindows.length ? inventoryWindows : module.id === "finance" && glWindows.length ? glWindows : module.windows;
     return { ...module, windows: sourceWindows.filter((w) => `${w.id} ${w.label}`.toLowerCase().includes(query.toLowerCase())) };
-  }).filter((module) => module.windows.length || module.label.includes(query)).filter((module) => !simpleMode || ["finance", "inventory", "sales", "ar", "stock"].some((token) => `${module.id} ${module.label} ${module.code}`.toLowerCase().includes(token))), [query, inventoryWindows, glWindows, simpleMode]);
+  }).filter((module) => module.windows.length || module.label.includes(query)).filter((module) => !simpleMode || ["finance", "inventory", "sales", "ar", "stock"].some((token) => `${module.id} ${module.label} ${module.code}`.toLowerCase().includes(token))), [query, inventoryWindows, glWindows, catalogWindows, simpleMode]);
   const active = manager.activeWindow;
   const activeRecords = (records.data || []) as GenericRecord[];
   const setField = (id: string, value: string) => { setValues((current) => ({ ...current, [id]: value })); if (active) manager.markDirty(active.id); };
