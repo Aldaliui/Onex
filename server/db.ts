@@ -10,7 +10,6 @@ import { getLegacyWindowContract } from "./legacyWindowContracts";
 import { assertStockRule, calculateMovingAverage } from "./inventoryKernel";
 import { createCloudSalesInvoice, getCloudAccounts, getCloudCurrencies, getCloudItemTrace, getCloudMasterData, importCloudAccounts, isCloudflareD1Enabled, postCloudSalesInvoice, reverseCloudSalesInvoice, saveCloudAccount, saveCloudBank, saveCloudCashBox, saveCloudCurrency, saveCloudWarehouse } from "./cloudflareD1";
 import { buildEInvoicePayload, getEInvoiceProvider, type EInvoiceStatus } from "./eInvoicing";
-import { postInvoiceWithDrizzleTransaction } from "./drizzleInvoicePostingRepository";
 import { buildPurchaseIntegrationReport, type PurchaseIntegrationReportInput } from "./purchaseIntegrationReport";
 import { createInvoiceDraftWithDrizzleTransaction, postExistingInvoiceWithDrizzleTransaction, postInvoiceWithDrizzleTransaction, reverseInvoiceWithDrizzleTransaction } from "./drizzleInvoicePostingRepository";
 import type { InvoicePostingInput } from "./invoicePostingService";
@@ -980,50 +979,7 @@ export async function postInvoice(invoiceId: number, actor: string, requestId?: 
     invoice.status = "POSTED";
     return { invoiceId, status: "POSTED" as const, totalCogs: 0 };
   }
-  return db.transaction(async (tx) => {
-    const invoice = (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1))[0];
-    if (!invoice) throw new Error("INVOICE_NOT_FOUND");
-    if (invoice.status !== "DRAFT") throw new Error("INVOICE_ALREADY_POSTED_OR_REVERSED");
-    assertAtomicPost({ documentType: "SALES_INVOICE", documentId: invoiceId, actor, requestId: `POST:${invoice.docNo}` });
-    const customer = invoice.customerId ? (await tx.select().from(customers).where(eq(customers.id, invoice.customerId)).limit(1))[0] : undefined;
-    if (!customer?.accountId) throw new Error("CUSTOMER_ACCOUNT_NOT_LINKED");
-    const customerAccount = (await tx.select().from(accounts).where(eq(accounts.id, customer.accountId)).limit(1))[0];
-    if (!customerAccount) throw new Error("CUSTOMER_ACCOUNT_NOT_FOUND");
-    const lines = await tx.select({ line: invoiceLines, item: items, balance: stockBalances }).from(invoiceLines).innerJoin(items, eq(invoiceLines.itemId, items.id)).leftJoin(stockBalances, and(eq(stockBalances.itemId, invoiceLines.itemId), eq(stockBalances.warehouseId, invoice.warehouseId))).where(eq(invoiceLines.invoiceId, invoiceId));
-    const periods = await tx.select().from(fiscalPeriods).where(and(eq(fiscalPeriods.companyId, 1), eq(fiscalPeriods.status, "OPEN"))).orderBy(desc(fiscalPeriods.startsOn));
-    const period = periods.find((candidate) => canPostToPeriod(candidate, invoice.createdAt).allowed);
-    const periodCheck = canPostToPeriod(period, invoice.createdAt);
-    if (!periodCheck.allowed) throw new Error(periodCheck.reason || "PERIOD_NOT_POSTABLE");
-    let totalCogs = 0;
-    if (invoice.goodsIssueId) { const issue = (await tx.select().from(goodsIssues).where(eq(goodsIssues.id, invoice.goodsIssueId)).limit(1))[0]; if (!issue || issue.status !== "POSTED" || issue.customerId !== invoice.customerId) throw new Error("GOODS_ISSUE_NOT_POSTED_OR_CUSTOMER_MISMATCH"); const issueLines = await tx.select().from(goodsIssueLines).where(eq(goodsIssueLines.goodsIssueId, invoice.goodsIssueId)); totalCogs = issueLines.reduce((sum, line) => sum + Number(line.quantity) * Number(line.unitCost), 0); }
-    for (const row of lines) {
-      if (invoice.goodsIssueId) continue;
-      const quantity = Number(row.line.quantity);
-      const balance = row.balance;
-      const beforeQty = Number(balance?.quantity ?? 0);
-      const unitCost = Number(balance?.unitCost ?? row.item.unitCost ?? 0);
-      if (row.item.stockFlag && beforeQty < quantity) throw new Error(`INSUFFICIENT_STOCK:${row.item.code}`);
-      const cost = row.item.stockFlag ? quantity * unitCost : 0;
-      totalCogs += cost;
-      if (row.item.stockFlag && balance) {
-        const afterQty = beforeQty - quantity;
-        const afterCost = Math.max(0, Number(balance.totalCost) - cost);
-        await tx.update(stockBalances).set({ quantity: afterQty.toFixed(6), totalCost: afterCost.toFixed(6), unitCost: afterQty ? (afterCost / afterQty).toFixed(6) : "0", versionNo: balance.versionNo + 1 }).where(eq(stockBalances.id, balance.id));
-        await tx.insert(stockMovements).values({ itemId: row.line.itemId, warehouseId: invoice.warehouseId, sourceInvoiceId: invoiceId, movementType: "SALES_ISSUE", quantityOut: quantity.toFixed(6), unitCost: unitCost.toFixed(6), totalCost: cost.toFixed(6), balanceAfter: afterQty.toFixed(6), createdBy: actor });
-        await applyInvoiceInventoryTrace(tx, row, invoice.warehouseId, quantity, unitCost, "OUT", actor);
-      }
-    }
-    const total = Number(invoice.grandTotal);
-    await validatePostingAccountMappings(1, [customerAccount.code, lines[0]?.item.revenueAccount || "4100", lines[0]?.item.cogsAccount || "5100", lines[0]?.item.inventoryAccount || "1300", "2200"]);
-    const saleJournal = buildSaleJournal({ total, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), totalCogs, receivableAccount: customerAccount.code, revenueAccount: lines[0]?.item.revenueAccount || "4100", cogsAccount: lines[0]?.item.cogsAccount || "5100", inventoryAccount: lines[0]?.item.inventoryAccount || "1300" });
-    const insertedJournal = await tx.insert(journalEntries).values({ journalNo: `AR-${invoice.docNo}`, sourceInvoiceId: invoiceId, sourceType: "AR_SALE", sourceDocumentNo: invoice.docNo, entryType: "AR_SALE", totalDebit: saleJournal.totalDebit.toFixed(6), totalCredit: saleJournal.totalCredit.toFixed(6), status: "POSTED", postedAt: new Date(), idempotencyKey: `JOURNAL:AR_SALE:${invoice.docNo}`, createdBy: actor }).$returningId();
-    const journalId = Number(insertedJournal[0]?.id);
-    if (!journalId) throw new Error("JOURNAL_CREATE_FAILED");
-    await tx.insert(journalEntryLines).values(saleJournal.lines.map((line) => ({ journalEntryId: journalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) })));
-    await tx.update(invoices).set({ status: "POSTED", postedAt: new Date() }).where(eq(invoices.id, invoiceId));
-    await tx.insert(auditEvents).values({ actor, actionCode: "POST", entityType: "AR_DOC", entityId: String(invoiceId), requestId: `POST:${invoice.docNo}` });
-    return { invoiceId, status: "POSTED" as const, totalCogs };
-  });
+  return db.transaction((tx) => postExistingInvoiceWithDrizzleTransaction(tx, invoiceId, actor, requestId));
 }
 
 /**
@@ -1089,33 +1045,7 @@ export async function reverseInvoice(invoiceId: number, actor: string, requestId
     invoice.status = "REVERSED";
     return { invoiceId, status: "REVERSED" as const };
   }
-  return db.transaction(async (tx) => {
-    const invoice = (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1))[0];
-    if (!invoice || invoice.status !== "POSTED") throw new Error("ONLY_POSTED_INVOICES_CAN_BE_REVERSED");
-    assertAtomicReverse({ documentType: "SALES_INVOICE", documentId: invoiceId, actor, requestId: `REV:${invoice.docNo}` });
-    const lines = await tx.select({ line: invoiceLines, item: items, balance: stockBalances }).from(invoiceLines).innerJoin(items, eq(invoiceLines.itemId, items.id)).leftJoin(stockBalances, and(eq(stockBalances.itemId, invoiceLines.itemId), eq(stockBalances.warehouseId, invoice.warehouseId))).where(eq(invoiceLines.invoiceId, invoiceId));
-    const originalJournal = (await tx.select().from(journalEntries).where(and(eq(journalEntries.sourceInvoiceId, invoiceId), eq(journalEntries.entryType, "AR_SALE"))).limit(1))[0];
-    for (const row of lines) {
-      if (!row.item.stockFlag || !row.balance) continue;
-      const quantity = Number(row.line.quantity);
-      const cost = quantity * Number(row.balance.unitCost);
-      const afterQty = Number(row.balance.quantity) + quantity;
-      const afterCost = Number(row.balance.totalCost) + cost;
-      await tx.update(stockBalances).set({ quantity: afterQty.toFixed(6), totalCost: afterCost.toFixed(6), unitCost: (afterCost / afterQty).toFixed(6), versionNo: row.balance.versionNo + 1 }).where(eq(stockBalances.id, row.balance.id));
-      await tx.insert(stockMovements).values({ itemId: row.line.itemId, warehouseId: invoice.warehouseId, sourceInvoiceId: invoiceId, movementType: "SALES_RETURN", quantityIn: quantity.toFixed(6), unitCost: Number(row.balance.unitCost).toFixed(6), totalCost: cost.toFixed(6), balanceAfter: afterQty.toFixed(6), createdBy: actor });
-    }
-    if (!originalJournal) throw new Error("ORIGINAL_JOURNAL_NOT_FOUND");
-    const originalLines = await tx.select().from(journalEntryLines).where(eq(journalEntryLines.journalEntryId, originalJournal.id));
-    const totalCogs = Number(originalLines.find((line) => line.accountCode === "5100")?.debit || 0);
-    const reversal = validateJournal({ description: "عكس فاتورة مبيعات", source: "SALE_INVOICE_REVERSAL", lines: originalLines.map((line) => ({ accountCode: line.accountCode, accountName: line.accountName || undefined, debit: Number(line.credit), credit: Number(line.debit), description: `عكس: ${line.description || ""}` })) });
-    const insertedReversal = await tx.insert(journalEntries).values({ journalNo: `REV-${invoice.docNo}`, sourceInvoiceId: invoiceId, sourceType: "REVERSAL", sourceDocumentNo: invoice.docNo, entryType: "REVERSAL", totalDebit: reversal.totalDebit.toFixed(6), totalCredit: reversal.totalCredit.toFixed(6), status: "REVERSED", reversedAt: new Date(), reversedBy: actor, idempotencyKey: `JOURNAL:REVERSAL:${invoice.docNo}`, createdBy: actor }).$returningId();
-    const reversalId = Number(insertedReversal[0]?.id);
-    if (!reversalId) throw new Error("REVERSAL_JOURNAL_CREATE_FAILED");
-    await tx.insert(journalEntryLines).values(reversal.lines.map((line) => ({ journalEntryId: reversalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) })));
-    await tx.update(invoices).set({ status: "REVERSED" }).where(eq(invoices.id, invoiceId));
-    await tx.insert(auditEvents).values({ actor, actionCode: "REVERSE", entityType: "AR_DOC", entityId: String(invoiceId), requestId: `REV:${invoice.docNo}` });
-    return { invoiceId, status: "REVERSED" as const };
-  });
+  return db.transaction((tx) => reverseInvoiceWithDrizzleTransaction(tx, invoiceId, actor, requestId));
 }
 
 export async function executeSalesWindowAction(input: {

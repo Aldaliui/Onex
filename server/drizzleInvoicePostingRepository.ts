@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
-import { auditEvents, invoiceLines, invoices, items, journalEntries, journalEntryLines, stockBalances, stockMovements } from "../drizzle/schema";
-import { createInvoiceDraftWithTransaction, postInvoiceWithTransaction, type InvoicePostingRepository, type InvoicePostingTransaction, type InvoicePostingPlan, type InvoicePostingInput, type PostedInvoiceResult } from "./invoicePostingService";
+import { accounts, auditEvents, customers, fiscalPeriods, invoiceLines, invoices, items, journalEntries, journalEntryLines, stockBalances, stockMovements, suppliers } from "../drizzle/schema";
+import { createInvoiceDraftWithTransaction, postExistingInvoiceWithTransaction, postInvoiceWithTransaction, reverseInvoiceWithTransaction, type InvoicePostingRepository, type InvoicePostingTransaction, type InvoicePostingPlan, type InvoicePostingInput, type PostedInvoiceResult, type InvoiceForReversal } from "./invoicePostingService";
 
 /**
  * The transaction type is intentionally structural. Drizzle's concrete transaction
@@ -40,6 +40,31 @@ export function createDrizzleInvoicePostingRepository(transaction: DrizzleTransa
       if (!invoice) return undefined;
       const lines = await transaction.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoice.id));
       return { ...toResult(invoice, journal, key), costTotal: lines.reduce((sum: number, line: any) => sum + Number(line.quantity) * Number(line.unitPrice), 0) };
+    },
+    async loadInvoiceForPosting(invoiceId) {
+      const invoice = (await transaction.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1))[0];
+      if (!invoice) return undefined;
+      if (!invoice.branchId || !invoice.fiscalPeriodId) throw new Error("INVOICE_EXECUTION_CONTEXT_REQUIRED");
+      const period = (await transaction.select().from(fiscalPeriods).where(and(eq(fiscalPeriods.id, invoice.fiscalPeriodId), eq(fiscalPeriods.companyId, invoice.companyId))).limit(1))[0];
+      if (!period || period.status !== "OPEN") throw new Error("INVOICE_PERIOD_NOT_OPEN");
+      const rows = await transaction.select({ line: invoiceLines, item: items, balance: stockBalances }).from(invoiceLines).innerJoin(items, eq(invoiceLines.itemId, items.id)).leftJoin(stockBalances, and(eq(stockBalances.itemId, invoiceLines.itemId), eq(stockBalances.warehouseId, invoice.warehouseId))).where(eq(invoiceLines.invoiceId, invoiceId));
+      const party = invoice.invoiceType === "SALE" && invoice.customerId ? (await transaction.select().from(customers).where(eq(customers.id, invoice.customerId)).limit(1))[0] : invoice.supplierId ? (await transaction.select().from(suppliers).where(eq(suppliers.id, invoice.supplierId)).limit(1))[0] : undefined;
+      const partyAccount = party?.accountId ? (await transaction.select().from(accounts).where(eq(accounts.id, party.accountId)).limit(1))[0] : undefined;
+      return { invoiceId, status: invoice.status, input: { invoiceType: invoice.invoiceType, docNo: invoice.docNo, customerId: invoice.customerId || undefined, supplierId: invoice.supplierId || undefined, context: { companyId: invoice.companyId, branchId: invoice.branchId, warehouseId: invoice.warehouseId, fiscalPeriodId: invoice.fiscalPeriodId, currencyCode: invoice.currencyCode, languageCode: "ar" }, currencyCode: invoice.currencyCode, exchangeRate: Number(invoice.exchangeRate), paymentMethod: invoice.paymentMethod, paidAmount: Number(invoice.paidAmount), lines: rows.map(({ line, item, balance }: any) => ({ itemId: line.itemId, quantity: Number(line.quantity), unitPrice: Number(line.unitPrice), taxAmount: Number(line.taxAmount), unitCost: Number(balance?.unitCost || item.unitCost || 0) })), accounts: invoice.invoiceType === "SALE" ? { receivableAccount: partyAccount?.code, revenueAccount: rows[0]?.item.revenueAccount, cogsAccount: rows[0]?.item.cogsAccount, inventoryAccount: rows[0]?.item.inventoryAccount } : { payableAccount: partyAccount?.code, inventoryAccount: rows[0]?.item.inventoryAccount } } };
+    },
+    async loadInvoiceForReversal(invoiceId) {
+      const invoice = (await transaction.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1))[0];
+      if (!invoice || !invoice.branchId || !invoice.fiscalPeriodId) return undefined;
+      const originalJournal = (await transaction.select().from(journalEntries).where(and(eq(journalEntries.sourceInvoiceId, invoiceId), eq(journalEntries.status, "POSTED"))).limit(1))[0];
+      if (!originalJournal) throw new Error("ORIGINAL_JOURNAL_NOT_FOUND");
+      const journalRows = await transaction.select().from(journalEntryLines).where(eq(journalEntryLines.journalEntryId, originalJournal.id));
+      const rows = await transaction.select({ line: invoiceLines, balance: stockBalances }).leftJoin(stockBalances, and(eq(stockBalances.itemId, invoiceLines.itemId), eq(stockBalances.warehouseId, invoice.warehouseId))).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
+      const journal = { description: "ترحيل فاتورة", source: originalJournal.sourceType || "SALE_INVOICE", totalDebit: Number(originalJournal.totalDebit), totalCredit: Number(originalJournal.totalCredit), lines: journalRows.map((line: any) => ({ accountCode: line.accountCode, accountName: line.accountName || undefined, description: line.description || undefined, debit: Number(line.debit), credit: Number(line.credit) })) };
+      return { invoiceId, docNo: invoice.docNo, status: invoice.status, context: { companyId: invoice.companyId, branchId: invoice.branchId, warehouseId: invoice.warehouseId, fiscalPeriodId: invoice.fiscalPeriodId, currencyCode: invoice.currencyCode, languageCode: "ar" }, lines: rows.map(({ line, balance }: any) => ({ itemId: line.itemId, quantity: Number(line.quantity), unitCost: Number(balance?.unitCost || 0) })), journal } satisfies InvoiceForReversal;
+    },
+    async findReversedByIdempotencyKey(key) {
+      const journal = (await transaction.select().from(journalEntries).where(and(eq(journalEntries.idempotencyKey, key), eq(journalEntries.status, "REVERSED"))).limit(1))[0];
+      return journal?.sourceInvoiceId ? { invoiceId: journal.sourceInvoiceId, reversalJournalId: journal.id, status: "REVERSED" as const, idempotencyKey: key } : undefined;
     },
     async insertInvoice(input) {
       const inserted = await transaction.insert(invoices).values({
@@ -148,7 +173,7 @@ export function createDrizzleInvoicePostingRepository(transaction: DrizzleTransa
         branchId: input.branchId,
         fiscalPeriodId: input.fiscalPeriodId,
         sourceInvoiceId: input.invoiceId,
-        movementType: input.movementType === "SALE" ? "SALES_ISSUE" : "PURCHASE_RECEIPT",
+        movementType: input.movementType === "SALE" ? "SALES_ISSUE" : input.movementType === "SALE_RETURN" ? "SALES_RETURN" : input.movementType === "PURCHASE_RETURN" ? "PURCHASE_RETURN" : "PURCHASE_RECEIPT",
         quantityIn: input.quantity > 0 ? toFixed(quantity) : "0",
         quantityOut: input.quantity < 0 ? toFixed(quantity) : "0",
         unitCost: toFixed(input.unitCost),
@@ -159,6 +184,16 @@ export function createDrizzleInvoicePostingRepository(transaction: DrizzleTransa
     },
     async markInvoicePosted(invoiceId, postedAt) {
       await transaction.update(invoices).set({ status: "POSTED", postedAt }).where(eq(invoices.id, invoiceId));
+    },
+    async insertReversalJournal(input) {
+      const inserted = await transaction.insert(journalEntries).values({ journalNo: `REV-${input.docNo}`, companyId: input.companyId, branchId: input.branchId, fiscalPeriodId: input.fiscalPeriodId, sourceInvoiceId: input.invoiceId, sourceType: "REVERSAL", sourceDocumentNo: input.docNo, entryType: "REVERSAL", totalDebit: toFixed(input.journal.totalDebit), totalCredit: toFixed(input.journal.totalCredit), status: "REVERSED", reversedAt: new Date(), reversedBy: input.actor, idempotencyKey: input.idempotencyKey, createdBy: input.actor }).$returningId();
+      const journalId = Number(inserted[0]?.id); if (!journalId) throw new Error("REVERSAL_JOURNAL_CREATE_FAILED");
+      await transaction.insert(journalEntryLines).values(input.journal.lines.map((line, index) => ({ journalEntryId: journalId, lineNo: index + 1, accountCode: line.accountCode, accountName: line.accountName || null, description: line.description || null, debit: toFixed(line.debit), credit: toFixed(line.credit), baseDebit: toFixed(line.debit), baseCredit: toFixed(line.credit) })));
+      return { journalId };
+    },
+    async markInvoiceReversed(invoiceId, reversedAt, actor) {
+      await transaction.update(invoices).set({ status: "REVERSED" }).where(eq(invoices.id, invoiceId));
+      void reversedAt; void actor;
     },
     async insertAuditEvent(input) {
       await transaction.insert(auditEvents).values({ actor: input.actor, actionCode: input.actionCode, entityType: "INVOICE", entityId: input.entityId, requestId: input.requestId });
@@ -178,4 +213,12 @@ export async function postInvoiceWithDrizzleTransaction(transaction: DrizzleTran
 
 export async function createInvoiceDraftWithDrizzleTransaction(transaction: DrizzleTransaction, input: InvoicePostingInput) {
   return createInvoiceDraftWithTransaction(createDrizzleInvoicePostingRepository(transaction), input);
+}
+
+export async function postExistingInvoiceWithDrizzleTransaction(transaction: DrizzleTransaction, invoiceId: number, actor: string, requestId?: string) {
+  return postExistingInvoiceWithTransaction(createDrizzleInvoicePostingRepository(transaction), invoiceId, actor, requestId);
+}
+
+export async function reverseInvoiceWithDrizzleTransaction(transaction: DrizzleTransaction, invoiceId: number, actor: string, requestId?: string) {
+  return reverseInvoiceWithTransaction(createDrizzleInvoicePostingRepository(transaction), invoiceId, actor, requestId);
 }

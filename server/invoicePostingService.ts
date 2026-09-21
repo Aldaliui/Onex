@@ -55,7 +55,7 @@ export type InvoicePostingPlan = {
     warehouseId: number;
     quantity: number;
     unitCost: number;
-    movementType: "SALE" | "PURCHASE";
+    movementType: "SALE" | "PURCHASE" | "SALE_RETURN" | "PURCHASE_RETURN";
   }>;
 };
 
@@ -79,6 +79,10 @@ export type DraftInvoiceResult = {
   taxTotal: number;
   grandTotal: number;
 };
+
+export type ReversedInvoiceResult = { invoiceId: number; reversalJournalId: number; status: "REVERSED"; idempotencyKey: string };
+export type ExistingInvoiceForPosting = { invoiceId: number; status: "DRAFT" | "POSTED" | "REVERSED"; input: Omit<InvoicePostingInput, "invoiceId" | "actor" | "requestId"> };
+export type InvoiceForReversal = { invoiceId: number; docNo: string; status: "POSTED" | "REVERSED"; context: ErpExecutionContext; lines: Array<{ itemId: number; quantity: number; unitCost: number }>; journal: NormalizedJournal };
 
 export type InvoicePostingTransaction = {
   findPostedByIdempotencyKey(key: string): Promise<PostedInvoiceResult | undefined>;
@@ -117,6 +121,11 @@ export type InvoicePostingTransaction = {
   insertStockMovement(input: InvoicePostingPlan["stockMovements"][number] & { invoiceId: number; actor: string }): Promise<void>;
   markInvoicePosted(invoiceId: number, postedAt: Date): Promise<void>;
   insertAuditEvent(input: { actor: string; actionCode: string; entityId: string; requestId: string }): Promise<void>;
+  loadInvoiceForPosting?(invoiceId: number): Promise<ExistingInvoiceForPosting | undefined>;
+  loadInvoiceForReversal?(invoiceId: number): Promise<InvoiceForReversal | undefined>;
+  findReversedByIdempotencyKey?(key: string): Promise<ReversedInvoiceResult | undefined>;
+  insertReversalJournal?(input: { invoiceId: number; docNo: string; companyId: number; branchId: number; fiscalPeriodId: number; journal: NormalizedJournal; idempotencyKey: string; actor: string }): Promise<{ journalId: number }>;
+  markInvoiceReversed?(invoiceId: number, reversedAt: Date, actor: string): Promise<void>;
 };
 
 export type InvoicePostingRepository = {
@@ -267,5 +276,41 @@ export async function postInvoiceWithTransaction(repository: InvoicePostingRepos
       grandTotal: plan.calculated.grandTotal,
       costTotal: plan.calculated.costTotal,
     };
+  });
+}
+
+export async function postExistingInvoiceWithTransaction(repository: InvoicePostingRepository, invoiceId: number, actor: string, requestId = `POST:INVOICE:${invoiceId}`): Promise<PostedInvoiceResult> {
+  return repository.transaction(async (tx) => {
+    if (!tx.loadInvoiceForPosting) throw new Error("TYPED_EXISTING_INVOICE_POSTING_UNAVAILABLE");
+    const existing = await tx.loadInvoiceForPosting(invoiceId);
+    if (!existing) throw new Error("INVOICE_NOT_FOUND");
+    if (existing.status !== "DRAFT") throw new Error("INVOICE_ALREADY_POSTED_OR_REVERSED");
+    const input: InvoicePostingInput = { ...existing.input, invoiceId, actor, requestId };
+    const plan = buildInvoicePostingPlan(input);
+    const alreadyPosted = await tx.findPostedByIdempotencyKey(plan.idempotencyKey);
+    if (alreadyPosted) return alreadyPosted;
+    assertAtomicPost({ documentType: `${plan.invoiceType}_INVOICE`, documentId: invoiceId, actor, requestId, from: "DRAFT" });
+    const journal = await tx.insertJournal({ invoiceId, docNo: plan.docNo, invoiceType: plan.invoiceType, companyId: plan.context.companyId, branchId: plan.context.branchId, fiscalPeriodId: plan.context.fiscalPeriodId, journal: plan.journal, idempotencyKey: `JOURNAL:${plan.idempotencyKey}`, actor });
+    for (const movement of plan.stockMovements) await tx.insertStockMovement({ ...movement, invoiceId, actor });
+    await tx.markInvoicePosted(invoiceId, new Date());
+    await tx.insertAuditEvent({ actor, actionCode: "POST", entityId: String(invoiceId), requestId });
+    return { invoiceId, journalId: journal.journalId, idempotencyKey: plan.idempotencyKey, status: "POSTED", subtotal: plan.calculated.subtotal, taxTotal: plan.calculated.taxTotal, grandTotal: plan.calculated.grandTotal, costTotal: plan.calculated.costTotal };
+  });
+}
+
+export async function reverseInvoiceWithTransaction(repository: InvoicePostingRepository, invoiceId: number, actor: string, requestId = `REV:INVOICE:${invoiceId}`): Promise<ReversedInvoiceResult> {
+  return repository.transaction(async (tx) => {
+    if (!tx.loadInvoiceForReversal || !tx.insertReversalJournal || !tx.markInvoiceReversed) throw new Error("TYPED_INVOICE_REVERSAL_UNAVAILABLE");
+    const target = await tx.loadInvoiceForReversal(invoiceId);
+    if (!target || target.status !== "POSTED") throw new Error("ONLY_POSTED_INVOICES_CAN_BE_REVERSED");
+    const idempotencyKey = `JOURNAL:REVERSAL:${target.docNo}:${requestId}`;
+    const existing = tx.findReversedByIdempotencyKey ? await tx.findReversedByIdempotencyKey(idempotencyKey) : undefined;
+    if (existing) return existing;
+    const journal: NormalizedJournal = { ...target.journal, description: "عكس فاتورة مبيعات", source: "SALE_INVOICE_REVERSAL", lines: target.journal.lines.map((line) => ({ ...line, debit: line.credit, credit: line.debit, description: `عكس: ${line.description || ""}` })) };
+    const reversalJournal = await tx.insertReversalJournal({ invoiceId, docNo: target.docNo, companyId: target.context.companyId, branchId: target.context.branchId, fiscalPeriodId: target.context.fiscalPeriodId, journal, idempotencyKey, actor });
+    for (const line of target.lines) await tx.insertStockMovement({ itemId: line.itemId, companyId: target.context.companyId, branchId: target.context.branchId, fiscalPeriodId: target.context.fiscalPeriodId, warehouseId: target.context.warehouseId, quantity: line.quantity, unitCost: line.unitCost, movementType: target.journal.source.includes("PURCHASE") ? "PURCHASE_RETURN" : "SALE_RETURN", invoiceId, actor });
+    await tx.markInvoiceReversed(invoiceId, new Date(), actor);
+    await tx.insertAuditEvent({ actor, actionCode: "REVERSE", entityId: String(invoiceId), requestId });
+    return { invoiceId, reversalJournalId: reversalJournal.journalId, status: "REVERSED", idempotencyKey };
   });
 }
