@@ -13,6 +13,7 @@ import { buildEInvoicePayload, getEInvoiceProvider, type EInvoiceStatus } from "
 import { postInvoiceWithDrizzleTransaction } from "./drizzleInvoicePostingRepository";
 import { buildPurchaseIntegrationReport, type PurchaseIntegrationReportInput } from "./purchaseIntegrationReport";
 import type { InvoicePostingInput } from "./invoicePostingService";
+import { requireErpExecutionContext, type ErpExecutionContext } from "./erpContext";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let demoInvoiceSequence = 1000;
@@ -925,23 +926,30 @@ export async function postInventoryCount(countId: number, actor: string) {
 export async function listWarehouses() { const db = await getDb(); if (!db) return [{ id: 1, companyId: 1, code: "MAIN", name: "المستودع الرئيسي", active: 1 }]; return db.select().from(warehouses).orderBy(warehouses.code); }
 
 
-export async function receiveStock(input: { itemId: number; warehouseId: number; quantity: string; unitCost: string; actor: string; reference: string }) {
+export async function receiveStock(input: { itemId: number; context: ErpExecutionContext; quantity: string; unitCost: string; actor: string; reference: string }) {
+  const context = requireErpExecutionContext(input.context);
   const quantity = Number(input.quantity); const unitCost = Number(input.unitCost);
   if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(unitCost) || unitCost < 0) throw new Error("INVALID_STOCK_RECEIPT");
   const db = await getDb();
-  if (!db) { const key = `${input.itemId}:${input.warehouseId}`; const before = demoInventoryBalances.get(key) || { quantity: 0, totalCost: 0, unitCost: 0 }; const next = calculateMovingAverage(before.quantity, before.totalCost, quantity, unitCost); demoInventoryBalances.set(key, next); return { itemId: input.itemId, warehouseId: input.warehouseId, quantity: input.quantity, unitCost: input.unitCost, totalCost: next.totalCost.toFixed(6), balanceAfter: next.quantity.toFixed(6), status: "RECEIVED" as const, reference: input.reference }; }
+  if (!db) { const key = `${input.itemId}:${context.warehouseId}`; const before = demoInventoryBalances.get(key) || { quantity: 0, totalCost: 0, unitCost: 0 }; const next = calculateMovingAverage(before.quantity, before.totalCost, quantity, unitCost); demoInventoryBalances.set(key, next); return { itemId: input.itemId, warehouseId: context.warehouseId, quantity: input.quantity, unitCost: input.unitCost, totalCost: next.totalCost.toFixed(6), balanceAfter: next.quantity.toFixed(6), status: "RECEIVED" as const, reference: input.reference }; }
   return db.transaction(async (tx) => {
-    const balance = (await tx.select().from(stockBalances).where(and(eq(stockBalances.itemId, input.itemId), eq(stockBalances.warehouseId, input.warehouseId))).limit(1))[0];
+    const warehouse = (await tx.select().from(warehouses).where(and(eq(warehouses.id, context.warehouseId), eq(warehouses.companyId, context.companyId))).limit(1))[0];
+    if (!warehouse) throw new Error("EXECUTION_CONTEXT_WAREHOUSE_NOT_IN_COMPANY");
+    const branch = (await tx.select().from(branches).where(and(eq(branches.id, context.branchId), eq(branches.companyId, context.companyId))).limit(1))[0];
+    if (!branch) throw new Error("EXECUTION_CONTEXT_BRANCH_NOT_IN_COMPANY");
+    const period = (await tx.select().from(fiscalPeriods).where(and(eq(fiscalPeriods.id, context.fiscalPeriodId), eq(fiscalPeriods.companyId, context.companyId))).limit(1))[0];
+    if (!period || period.status !== "OPEN") throw new Error("EXECUTION_CONTEXT_PERIOD_NOT_OPEN");
+    const balance = (await tx.select().from(stockBalances).where(and(eq(stockBalances.itemId, input.itemId), eq(stockBalances.warehouseId, context.warehouseId))).limit(1))[0];
     const beforeQty = Number(balance?.quantity ?? 0); const beforeCost = Number(balance?.totalCost ?? 0); const totalCost = quantity * unitCost;
     const afterQty = beforeQty + quantity; const afterCost = beforeCost + totalCost;
     if (balance) await tx.update(stockBalances).set({ quantity: afterQty.toFixed(6), totalCost: afterCost.toFixed(6), unitCost: (afterCost / afterQty).toFixed(6), versionNo: balance.versionNo + 1 }).where(eq(stockBalances.id, balance.id));
-    else await tx.insert(stockBalances).values({ itemId: input.itemId, warehouseId: input.warehouseId, quantity: quantity.toFixed(6), totalCost: totalCost.toFixed(6), unitCost: unitCost.toFixed(6), versionNo: 1 });
-    await tx.insert(stockMovements).values({ itemId: input.itemId, warehouseId: input.warehouseId, movementType: "PURCHASE_RECEIPT", quantityIn: quantity.toFixed(6), unitCost: unitCost.toFixed(6), totalCost: totalCost.toFixed(6), balanceAfter: afterQty.toFixed(6), createdBy: input.actor });
+    else await tx.insert(stockBalances).values({ itemId: input.itemId, warehouseId: context.warehouseId, quantity: quantity.toFixed(6), totalCost: totalCost.toFixed(6), unitCost: unitCost.toFixed(6), versionNo: 1 });
+    await tx.insert(stockMovements).values({ itemId: input.itemId, warehouseId: context.warehouseId, companyId: context.companyId, branchId: context.branchId, fiscalPeriodId: context.fiscalPeriodId, movementType: "PURCHASE_RECEIPT", quantityIn: quantity.toFixed(6), unitCost: unitCost.toFixed(6), totalCost: totalCost.toFixed(6), balanceAfter: afterQty.toFixed(6), createdBy: input.actor });
     const journalNo = `AP-RECEIPT-${input.reference}`;
-    const inserted = await tx.insert(journalEntries).values({ journalNo, entryType: "AP_RECEIPT", sourceType: "AP_RECEIPT", sourceDocumentNo: input.reference, totalDebit: totalCost.toFixed(6), totalCredit: totalCost.toFixed(6), status: "POSTED", postedAt: new Date(), idempotencyKey: `JOURNAL:AP_RECEIPT:${input.reference}`, createdBy: input.actor }).$returningId();
+    const inserted = await tx.insert(journalEntries).values({ journalNo, companyId: context.companyId, branchId: context.branchId, fiscalPeriodId: context.fiscalPeriodId, entryType: "AP_RECEIPT", sourceType: "AP_RECEIPT", sourceDocumentNo: input.reference, totalDebit: totalCost.toFixed(6), totalCredit: totalCost.toFixed(6), status: "POSTED", postedAt: new Date(), idempotencyKey: `JOURNAL:AP_RECEIPT:${input.reference}`, createdBy: input.actor }).$returningId();
     const journalId = Number(inserted[0]?.id); if (journalId) await tx.insert(journalEntryLines).values([{ journalEntryId: journalId, accountCode: "1300", accountName: "المخزون", debit: totalCost.toFixed(6), credit: "0", description: input.reference }, { journalEntryId: journalId, accountCode: "2100", accountName: "الموردون", debit: "0", credit: totalCost.toFixed(6), description: input.reference }]);
-    await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "RECEIVE", entityType: "STOCK", entityId: `${input.itemId}:${input.warehouseId}`, requestId: `RECEIVE:${input.reference}` });
-    return { itemId: input.itemId, warehouseId: input.warehouseId, quantity: input.quantity, unitCost: input.unitCost, totalCost: totalCost.toFixed(6), status: "RECEIVED" as const, reference: input.reference };
+    await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "RECEIVE", entityType: "STOCK", entityId: `${input.itemId}:${context.warehouseId}`, requestId: `RECEIVE:${input.reference}` });
+    return { itemId: input.itemId, warehouseId: context.warehouseId, quantity: input.quantity, unitCost: input.unitCost, totalCost: totalCost.toFixed(6), status: "RECEIVED" as const, reference: input.reference };
   });
 }
 
@@ -1446,14 +1454,15 @@ export async function importAccounts(input: { companyId?: number; actor?: string
 export async function searchCurrencies() { return getCurrencies(); }
 
 
-type JournalWorkflowInput = { journalNo: string; entryType: string; actor: string; companyId?: number; branchId?: number; fiscalPeriodId?: number; journalDate?: string; sourceType?: string; sourceDocumentNo?: string; description?: string; lines: { accountCode: string; accountName?: string; description?: string; currencyCode?: string; exchangeRate?: string; debit: string; credit: string }[] };
+type JournalWorkflowInput = { journalNo: string; entryType: string; actor: string; context: ErpExecutionContext; journalDate?: string; sourceType?: string; sourceDocumentNo?: string; description?: string; lines: { accountCode: string; accountName?: string; description?: string; currencyCode?: string; exchangeRate?: string; debit: string; credit: string }[] };
 
 export async function createJournalDraft(input: JournalWorkflowInput) {
+  const context = requireErpExecutionContext(input.context);
   const journal = validateJournal({ description: input.description || input.entryType, source: input.sourceType || "MANUAL", lines: input.lines });
   const db = await getDb();
-  if (!db) return { id: Date.now(), journalNo: input.journalNo, status: "DRAFT" as const, totalDebit: journal.totalDebit.toFixed(6), totalCredit: journal.totalCredit.toFixed(6) };
+  if (!db) return { id: Date.now(), journalNo: input.journalNo, companyId: context.companyId, branchId: context.branchId, fiscalPeriodId: context.fiscalPeriodId, status: "DRAFT" as const, totalDebit: journal.totalDebit.toFixed(6), totalCredit: journal.totalCredit.toFixed(6) };
   return db.transaction(async (tx) => {
-    const inserted = await tx.insert(journalEntries).values({ journalNo: input.journalNo, companyId: input.companyId || 1, branchId: input.branchId, fiscalPeriodId: input.fiscalPeriodId, sourceType: input.sourceType || "MANUAL", sourceDocumentNo: input.sourceDocumentNo, entryType: input.entryType, journalDate: input.journalDate ? new Date(input.journalDate) : new Date(), description: input.description, totalDebit: journal.totalDebit.toFixed(6), totalCredit: journal.totalCredit.toFixed(6), status: "DRAFT", idempotencyKey: `JOURNAL:DRAFT:${input.journalNo}`, createdBy: input.actor }).$returningId();
+    const inserted = await tx.insert(journalEntries).values({ journalNo: input.journalNo, companyId: context.companyId, branchId: context.branchId, fiscalPeriodId: context.fiscalPeriodId, sourceType: input.sourceType || "MANUAL", sourceDocumentNo: input.sourceDocumentNo, entryType: input.entryType, journalDate: input.journalDate ? new Date(input.journalDate) : new Date(), description: input.description, totalDebit: journal.totalDebit.toFixed(6), totalCredit: journal.totalCredit.toFixed(6), status: "DRAFT", idempotencyKey: `JOURNAL:DRAFT:${input.journalNo}`, createdBy: input.actor }).$returningId();
     const id = Number(inserted[0]?.id); if (!id) throw new Error("JOURNAL_CREATE_FAILED");
     await tx.insert(journalEntryLines).values(journal.lines.map((line, lineNo) => ({ journalEntryId: id, lineNo: lineNo + 1, accountCode: line.accountCode, accountName: line.accountName, description: line.description, currencyCode: input.lines[lineNo]?.currencyCode || "SAR", exchangeRate: input.lines[lineNo]?.exchangeRate || "1", debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6), baseDebit: Number(line.debit || 0).toFixed(6), baseCredit: Number(line.credit || 0).toFixed(6) })));
     await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE_DRAFT", entityType: "GL_JOURNAL", entityId: String(id), requestId: `JOURNAL:DRAFT:${input.journalNo}` });
@@ -1464,7 +1473,7 @@ export async function createJournalDraft(input: JournalWorkflowInput) {
 async function transitionJournal(id: number, actor: string, from: string, to: "VALIDATED" | "APPROVED" | "POSTED" | "REVERSED") {
   const db = await getDb(); if (!db) return { id, status: to };
   return db.transaction(async (tx) => {
-    const entry = (await tx.select().from(journalEntries).where(eq(journalEntries.id, id)).limit(1))[0]; if (!entry) throw new Error("JOURNAL_NOT_FOUND"); if (entry.status !== from) throw new Error(`JOURNAL_EXPECTED_${from}`);
+    const entry = (await tx.select().from(journalEntries).where(eq(journalEntries.id, id)).limit(1))[0]; if (!entry) throw new Error("JOURNAL_NOT_FOUND"); if (entry.status !== from) throw new Error(`JOURNAL_EXPECTED_${from}`); if (!entry.companyId || !entry.branchId || !entry.fiscalPeriodId) throw new Error("JOURNAL_EXECUTION_CONTEXT_REQUIRED");
     if (to === "VALIDATED") {
       const lines = await tx.select().from(journalEntryLines).where(eq(journalEntryLines.journalEntryId, id));
       const accountsByCode = new Map((await tx.select().from(accounts).where(eq(accounts.companyId, entry.companyId))).map((account) => [account.code, account]));

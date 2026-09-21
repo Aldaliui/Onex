@@ -16,7 +16,7 @@ describe("ERP control and inventory flows", () => {
     const api = appRouter.createCaller(ctx);
     const account = await api.windows.saveAccount({ code: `TEST-${Date.now()}`, name: "حساب اختبار", accountType: "ASSET" });
     expect(account?.code).toContain("TEST-");
-    const receipt = await api.inventory.receive({ itemId: 1, warehouseId: 1, quantity: "3", unitCost: "50", reference: `GRN-${Date.now()}` });
+    const receipt = await api.inventory.receive({ itemId: 1, context: { companyId: 1, branchId: 1, warehouseId: 1, fiscalPeriodId: 1, currencyCode: "SAR", languageCode: "ar" }, quantity: "3", unitCost: "50", reference: `GRN-${Date.now()}` });
     expect(receipt.status).toBe("RECEIVED");
   });
 

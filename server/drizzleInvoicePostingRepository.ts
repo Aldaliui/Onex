@@ -45,6 +45,9 @@ export function createDrizzleInvoicePostingRepository(transaction: DrizzleTransa
       const inserted = await transaction.insert(invoices).values({
         invoiceType: input.invoiceType,
         docNo: input.docNo,
+        companyId: input.companyId,
+        branchId: input.branchId,
+        fiscalPeriodId: input.fiscalPeriodId,
         customerId: input.customerId || null,
         supplierId: input.supplierId || null,
         warehouseId: input.warehouseId,
@@ -83,6 +86,9 @@ export function createDrizzleInvoicePostingRepository(transaction: DrizzleTransa
       const totalCogs = input.journal.lines.filter((line) => Number(line.debit) > 0 && String(line.description || "").includes("تكلفة")).reduce((sum, line) => sum + Number(line.debit), 0);
       const inserted = await transaction.insert(journalEntries).values({
         journalNo: `${input.invoiceType === "SALE" ? "AR" : "AP"}-${input.docNo}`,
+        companyId: input.companyId,
+        branchId: input.branchId,
+        fiscalPeriodId: input.fiscalPeriodId,
         sourceInvoiceId: input.invoiceId,
         sourceType: input.invoiceType === "SALE" ? "AR_SALE" : "AP_PURCHASE",
         sourceDocumentNo: input.docNo,
@@ -138,6 +144,9 @@ export function createDrizzleInvoicePostingRepository(transaction: DrizzleTransa
       await transaction.insert(stockMovements).values({
         itemId: input.itemId,
         warehouseId: input.warehouseId,
+        companyId: input.companyId,
+        branchId: input.branchId,
+        fiscalPeriodId: input.fiscalPeriodId,
         sourceInvoiceId: input.invoiceId,
         movementType: input.movementType === "SALE" ? "SALES_ISSUE" : "PURCHASE_RECEIPT",
         quantityIn: input.quantity > 0 ? toFixed(quantity) : "0",

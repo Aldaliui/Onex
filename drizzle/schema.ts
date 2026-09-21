@@ -206,6 +206,9 @@ export const invoices = mysqlTable("invoices", {
   id: int("id").autoincrement().primaryKey(),
   docNo: varchar("docNo", { length: 80 }).notNull().unique(),
   invoiceType: mysqlEnum("invoiceType", ["SALE", "PURCHASE"]).notNull().default("SALE"),
+  companyId: int("companyId").notNull().default(1),
+  branchId: int("branchId"),
+  fiscalPeriodId: int("fiscalPeriodId"),
   customerId: int("customerId"),
   supplierId: int("supplierId"),
   warehouseId: int("warehouseId").notNull(),
@@ -230,7 +233,7 @@ export const invoices = mysqlTable("invoices", {
   createdBy: varchar("createdBy", { length: 100 }).notNull().default("demo.user"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   postedAt: timestamp("postedAt"),
-}, (table) => ({ statusIdx: index("invoice_status_idx").on(table.status) }));
+}, (table) => ({ statusIdx: index("invoice_status_idx").on(table.status), contextIdx: index("invoice_context_idx").on(table.companyId, table.branchId, table.fiscalPeriodId) }));
 
 export const invoiceLines = mysqlTable("invoice_lines", {
   id: int("id").autoincrement().primaryKey(),
@@ -376,6 +379,9 @@ export const stockMovements = mysqlTable("stock_movements", {
   id: int("id").autoincrement().primaryKey(),
   itemId: int("itemId").notNull(),
   warehouseId: int("warehouseId").notNull(),
+  companyId: int("companyId").notNull().default(1),
+  branchId: int("branchId"),
+  fiscalPeriodId: int("fiscalPeriodId"),
   sourceInvoiceId: int("sourceInvoiceId"),
   movementType: varchar("movementType", { length: 40 }).notNull(),
   quantityIn: decimal("quantityIn", { precision: 20, scale: 6 }).notNull().default("0"),

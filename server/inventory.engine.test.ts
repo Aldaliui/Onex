@@ -21,7 +21,7 @@ describe("integrated inventory engine", () => {
   it("receives and transfers stock atomically in local mode", async () => {
     const api = caller();
     const suffix = Date.now();
-    await api.inventory.receive({ itemId: 1, warehouseId: 1, quantity: "10", unitCost: "25", actor: "inventory-test", reference: `RECEIVE-${suffix}` });
+    await api.inventory.receive({ itemId: 1, context: { companyId: 1, branchId: 1, warehouseId: 1, fiscalPeriodId: 1, currencyCode: "SAR", languageCode: "ar" }, quantity: "10", unitCost: "25", actor: "inventory-test", reference: `RECEIVE-${suffix}` });
     const transfer = await api.inventory.transferCreate({ transferNo: `TR-${suffix}`, sourceWarehouseId: 1, destinationWarehouseId: 2, actor: "inventory-test", lines: [{ itemId: 1, quantity: "4" }] });
     expect(transfer.status).toBe("DRAFT");
     expect((await api.inventory.transferPost({ transferId: transfer.id, actor: "inventory-test" })).status).toBe("POSTED");

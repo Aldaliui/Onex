@@ -101,7 +101,7 @@ function saleInput(requestId = "mido-parity-1") {
     invoiceType: "SALE" as const,
     docNo: "MIDO-PARITY-001",
     customerId: 7,
-    warehouseId: 3,
+    context: { companyId: 1, branchId: 2, warehouseId: 3, fiscalPeriodId: 4, currencyCode: "SAR", languageCode: "ar" },
     actor: "tester",
     requestId,
     lines: fixture.saleInvoice.lines,
@@ -152,6 +152,12 @@ describe("typed invoice posting service", () => {
   it("rejects invalid invoice identity before opening a transaction", async () => {
     const state = makeRepository();
     await expect(postInvoiceWithTransaction(state.repository, { ...saleInput(), customerId: 0 })).rejects.toThrow("INVOICE_CUSTOMER_REQUIRED");
+    expect(state.invoices).toHaveLength(0);
+  });
+
+  it("rejects posting without a complete ERP execution context", async () => {
+    const state = makeRepository();
+    await expect(postInvoiceWithTransaction(state.repository, { ...saleInput(), context: { companyId: 1, branchId: null, warehouseId: 3, fiscalPeriodId: 4 } })).rejects.toThrow("EXECUTION_CONTEXT_BRANCH_REQUIRED");
     expect(state.invoices).toHaveLength(0);
   });
 });

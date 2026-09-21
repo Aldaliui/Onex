@@ -1,6 +1,7 @@
 import { calculateInvoice, type InvoiceLineInput } from "../packages/erp-domain-core/sales/invoice";
 import { buildPurchaseJournal, buildSaleJournal, type NormalizedJournal } from "./accountingCore";
 import { assertAtomicPost } from "./documentLifecycle";
+import { requireErpExecutionContext, type ErpExecutionContext } from "./erpContext";
 
 export type InvoicePostingType = "SALE" | "PURCHASE";
 
@@ -10,7 +11,7 @@ export type InvoicePostingInput = {
   invoiceId?: number;
   customerId?: number;
   supplierId?: number;
-  warehouseId: number;
+  context: ErpExecutionContext;
   currencyCode?: string;
   exchangeRate?: string | number;
   paymentMethod?: string;
@@ -38,6 +39,7 @@ export type InvoicePostingPlan = {
   idempotencyKey: string;
   invoiceType: InvoicePostingType;
   docNo: string;
+  context: ErpExecutionContext;
   warehouseId: number;
   currencyCode: string;
   exchangeRate: number;
@@ -47,6 +49,9 @@ export type InvoicePostingPlan = {
   journal: NormalizedJournal;
   stockMovements: Array<{
     itemId: number;
+    companyId: number;
+    branchId: number;
+    fiscalPeriodId: number;
     warehouseId: number;
     quantity: number;
     unitCost: number;
@@ -72,6 +77,9 @@ export type InvoicePostingTransaction = {
     docNo: string;
     customerId?: number;
     supplierId?: number;
+    companyId: number;
+    branchId: number;
+    fiscalPeriodId: number;
     warehouseId: number;
     currencyCode: string;
     exchangeRate: number;
@@ -89,6 +97,9 @@ export type InvoicePostingTransaction = {
     invoiceId: number;
     docNo: string;
     invoiceType: InvoicePostingType;
+    companyId: number;
+    branchId: number;
+    fiscalPeriodId: number;
     journal: NormalizedJournal;
     idempotencyKey: string;
     actor: string;
@@ -117,7 +128,7 @@ export function buildInvoicePostingPlan(input: InvoicePostingInput): InvoicePost
   if (!input.docNo.trim()) throw new Error("INVOICE_DOCNO_REQUIRED");
   if (!input.actor.trim()) throw new Error("DOCUMENT_ACTOR_REQUIRED");
   if (!input.requestId.trim()) throw new Error("DOCUMENT_REQUEST_ID_REQUIRED");
-  positiveInteger(input.warehouseId, "INVOICE_WAREHOUSE");
+  const context = requireErpExecutionContext(input.context);
   if (input.invoiceType === "SALE") positiveInteger(input.customerId, "INVOICE_CUSTOMER");
   if (input.invoiceType === "PURCHASE") positiveInteger(input.supplierId, "INVOICE_SUPPLIER");
 
@@ -151,7 +162,8 @@ export function buildInvoicePostingPlan(input: InvoicePostingInput): InvoicePost
     idempotencyKey: `INVOICE:${input.invoiceType}:${input.docNo}:POST:${input.requestId}`,
     invoiceType: input.invoiceType,
     docNo: input.docNo.trim(),
-    warehouseId: input.warehouseId,
+    context,
+    warehouseId: context.warehouseId,
     currencyCode: String(input.currencyCode || "SAR").trim().toUpperCase(),
     exchangeRate,
     actor: input.actor.trim(),
@@ -160,7 +172,10 @@ export function buildInvoicePostingPlan(input: InvoicePostingInput): InvoicePost
     journal,
     stockMovements: calculated.lines.map((line) => ({
       itemId: line.itemId,
-      warehouseId: input.warehouseId,
+      companyId: context.companyId,
+      branchId: context.branchId,
+      fiscalPeriodId: context.fiscalPeriodId,
+      warehouseId: context.warehouseId,
       quantity: input.invoiceType === "SALE" ? -line.quantity : line.quantity,
       unitCost: input.invoiceType === "SALE" ? line.unitCost : line.unitPrice,
       movementType: input.invoiceType,
@@ -177,6 +192,9 @@ export async function postInvoiceWithTransaction(repository: InvoicePostingRepos
     const invoice = await tx.insertInvoice({
       invoiceType: plan.invoiceType,
       docNo: plan.docNo,
+      companyId: plan.context.companyId,
+      branchId: plan.context.branchId,
+      fiscalPeriodId: plan.context.fiscalPeriodId,
       customerId: input.customerId,
       supplierId: input.supplierId,
       warehouseId: plan.warehouseId,
@@ -194,7 +212,7 @@ export async function postInvoiceWithTransaction(repository: InvoicePostingRepos
 
     assertAtomicPost({ documentType: `${plan.invoiceType}_INVOICE`, documentId: invoice.invoiceId, actor: plan.actor, requestId: plan.requestId, from: "DRAFT" });
     await tx.insertInvoiceLines(invoice.invoiceId, plan.calculated.lines);
-    const journal = await tx.insertJournal({ invoiceId: invoice.invoiceId, docNo: plan.docNo, invoiceType: plan.invoiceType, journal: plan.journal, idempotencyKey: `JOURNAL:${plan.idempotencyKey}`, actor: plan.actor });
+    const journal = await tx.insertJournal({ invoiceId: invoice.invoiceId, docNo: plan.docNo, invoiceType: plan.invoiceType, companyId: plan.context.companyId, branchId: plan.context.branchId, fiscalPeriodId: plan.context.fiscalPeriodId, journal: plan.journal, idempotencyKey: `JOURNAL:${plan.idempotencyKey}`, actor: plan.actor });
     for (const movement of plan.stockMovements) await tx.insertStockMovement({ ...movement, invoiceId: invoice.invoiceId, actor: plan.actor });
     await tx.markInvoicePosted(invoice.invoiceId, new Date());
     await tx.insertAuditEvent({ actor: plan.actor, actionCode: "POST", entityId: String(invoice.invoiceId), requestId: plan.requestId });

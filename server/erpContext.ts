@@ -16,6 +16,12 @@ export type NormalizedErpContext = {
   languageCode: string;
 };
 
+export type ErpExecutionContext = Omit<NormalizedErpContext, "branchId" | "warehouseId" | "fiscalPeriodId"> & {
+  branchId: number;
+  warehouseId: number;
+  fiscalPeriodId: number;
+};
+
 export type ErpContextEvent = {
   userId: number;
   actor: string;
@@ -45,6 +51,14 @@ export function normalizeErpContext(input: ErpContextInput): NormalizedErpContex
     currencyCode,
     languageCode,
   };
+}
+
+export function requireErpExecutionContext(input: ErpContextInput): ErpExecutionContext {
+  const context = normalizeErpContext(input);
+  if (context.branchId === null) throw new Error("EXECUTION_CONTEXT_BRANCH_REQUIRED");
+  if (context.warehouseId === null) throw new Error("EXECUTION_CONTEXT_WAREHOUSE_REQUIRED");
+  if (context.fiscalPeriodId === null) throw new Error("EXECUTION_CONTEXT_PERIOD_REQUIRED");
+  return { ...context, branchId: context.branchId, warehouseId: context.warehouseId, fiscalPeriodId: context.fiscalPeriodId };
 }
 
 export function buildContextEvent(input: { userId: number; actor: string; requestId: string; previous: NormalizedErpContext | null; next: NormalizedErpContext | null }): ErpContextEvent {
