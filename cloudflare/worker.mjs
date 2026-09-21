@@ -63,10 +63,6 @@ async function readJson(request) {
 }
 
 function requireWriteAuth(request, env) {
-  // /api/cloud/* is already protected by the actor gate in api().
-  // Keep the bearer-token requirement for /api/erp/* while allowing the authenticated
-  // workbench actor to use the same atomic domain functions through the cloud route.
-  if (request.headers.get("x-onex-actor")?.trim()) return;
   const expected = env.ONEX_API_TOKEN;
   const authorization = request.headers.get("authorization") || "";
   if (!expected) throw new Response(JSON.stringify({ error: "WRITE_AUTH_NOT_CONFIGURED" }), { status: 503, headers: JSON_HEADERS });
@@ -167,15 +163,22 @@ async function createInvoice(env, request) {
   const idempotencyKey = `ARST004:${docNo}`;
 
   const references = await env.ONEX_DB.batch([
-    env.ONEX_DB.prepare("SELECT id FROM customers WHERE id = ? LIMIT 1").bind(customerId),
-    env.ONEX_DB.prepare("SELECT id FROM warehouses WHERE id = ? LIMIT 1").bind(warehouseId),
-    env.ONEX_DB.prepare(`SELECT id FROM items WHERE id IN (${normalizedLines.map(() => "?").join(",")})`).bind(...normalizedLines.map((line) => line.itemId)),
+    env.ONEX_DB.prepare("SELECT id, companyId, status FROM customers WHERE id = ? LIMIT 1").bind(customerId),
+    env.ONEX_DB.prepare("SELECT id, companyId, active FROM warehouses WHERE id = ? LIMIT 1").bind(warehouseId),
+    env.ONEX_DB.prepare(`SELECT id, companyId, active FROM items WHERE id IN (${normalizedLines.map(() => "?").join(",")})`).bind(...normalizedLines.map((line) => line.itemId)),
     env.ONEX_DB.prepare("SELECT code FROM currencies WHERE code = ? AND active = 1 LIMIT 1").bind(currencyCode),
     env.ONEX_DB.prepare("SELECT id, docNo, subtotal, taxTotal, grandTotal, status FROM invoices WHERE idempotencyKey = ? LIMIT 1").bind(idempotencyKey),
   ]);
-  if (!references[0].results?.length) return errorResponse("CUSTOMER_NOT_FOUND", 400, request);
-  if (!references[1].results?.length) return errorResponse("WAREHOUSE_NOT_FOUND", 400, request);
+  const customer = references[0].results?.[0];
+  const warehouse = references[1].results?.[0];
+  if (!customer) return errorResponse("CUSTOMER_NOT_FOUND", 400, request);
+  if (customer.status !== "ACTIVE") return errorResponse("CUSTOMER_NOT_ACTIVE", 409, request);
+  if (!warehouse) return errorResponse("WAREHOUSE_NOT_FOUND", 400, request);
+  if (!Number(warehouse.active)) return errorResponse("WAREHOUSE_NOT_ACTIVE", 409, request);
+  if (Number(customer.companyId) !== Number(warehouse.companyId)) return errorResponse("CROSS_COMPANY_REFERENCE", 409, request);
   if ((references[2].results ?? []).length !== new Set(normalizedLines.map((line) => line.itemId)).size) return errorResponse("ITEM_NOT_FOUND", 400, request);
+  if ((references[2].results ?? []).some((item) => Number(item.companyId) !== Number(warehouse.companyId))) return errorResponse("CROSS_COMPANY_ITEM_REFERENCE", 409, request);
+  if ((references[2].results ?? []).some((item) => !Number(item.active))) return errorResponse("ITEM_NOT_ACTIVE", 409, request);
   if (!references[3].results?.length) return errorResponse("CURRENCY_NOT_FOUND", 400, request);
   const existing = references[4].results?.[0];
   if (existing) return json({ invoiceId: existing.id, docNo: existing.docNo, subtotal: Number(existing.subtotal), taxTotal: Number(existing.taxTotal), grandTotal: Number(existing.grandTotal), status: existing.status, idempotent: true }, 200, request);
@@ -434,6 +437,25 @@ async function postSalesInvoice(env, request, invoiceId) {
   if (invoice.status === "POSTED") return json({ invoiceId, status: "POSTED", idempotent: true }, 200, request);
   if (invoice.status !== "DRAFT") return errorResponse("INVALID_INVOICE_STATE", 409, request);
 
+  const ownership = await env.ONEX_DB.prepare(`
+    SELECT c.companyId AS customerCompanyId, w.companyId AS warehouseCompanyId, c.status AS customerStatus, w.active AS warehouseActive
+    FROM customers c JOIN warehouses w ON w.id = ?
+    WHERE c.id = ? LIMIT 1
+  `).bind(invoice.warehouseId, invoice.customerId).first();
+  if (!ownership || Number(ownership.customerCompanyId) !== Number(ownership.warehouseCompanyId)) return errorResponse("CROSS_COMPANY_REFERENCE", 409, request);
+  if (ownership.customerStatus !== "ACTIVE") return errorResponse("CUSTOMER_NOT_ACTIVE", 409, request);
+  if (!Number(ownership.warehouseActive)) return errorResponse("WAREHOUSE_NOT_ACTIVE", 409, request);
+  const openPeriod = await env.ONEX_DB.prepare(`
+    SELECT id FROM fiscal_periods
+    WHERE companyId = ? AND status = 'OPEN'
+    LIMIT 1
+  `).bind(ownership.customerCompanyId).first();
+  if (!openPeriod) return errorResponse("NO_OPEN_FISCAL_PERIOD", 409, request);
+  const requiredAccounts = await env.ONEX_DB.prepare(
+    "SELECT code FROM accounts WHERE companyId = ? AND active = 1 AND code IN ('1100', '2200', '4100', '5100', '1300')",
+  ).bind(ownership.customerCompanyId).all();
+  if ((requiredAccounts.results ?? []).length !== 5) return errorResponse("POSTING_ACCOUNTS_NOT_CONFIGURED", 409, request);
+
   const linesResult = await env.ONEX_DB.prepare(`
     SELECT id, itemId, quantity, unitPrice, taxAmount FROM invoice_lines
     WHERE invoiceId = ? ORDER BY id
@@ -529,14 +551,99 @@ async function postSalesInvoice(env, request, invoiceId) {
 async function updateInvoiceStatus(env, request, invoiceId, targetStatus) {
   requireWriteAuth(request, env);
   if (!positiveInteger(invoiceId)) return errorResponse("INVALID_INVOICE_ID", 400, request);
-  const current = await env.ONEX_DB.prepare("SELECT id, docNo, status, grandTotal FROM invoices WHERE id = ? LIMIT 1").bind(invoiceId).first();
+  const current = await env.ONEX_DB.prepare("SELECT id, docNo, status, grandTotal, warehouseId FROM invoices WHERE id = ? LIMIT 1").bind(invoiceId).first();
   if (!current) return errorResponse("INVOICE_NOT_FOUND", 404, request);
-  const expected = targetStatus === "POSTED" ? "DRAFT" : "POSTED";
   if (targetStatus === "POSTED") return postSalesInvoice(env, request, invoiceId);
-  if (current.status !== expected) return errorResponse("INVALID_INVOICE_STATE", 409, request);
-  await env.ONEX_DB.prepare("UPDATE invoices SET status = ?, postedAt = CASE WHEN ? = 'POSTED' THEN CURRENT_TIMESTAMP ELSE postedAt END WHERE id = ? AND status = ?").bind(targetStatus, targetStatus, invoiceId, expected).run();
-  await env.ONEX_DB.prepare("INSERT INTO audit_events (actor, actionCode, entityType, entityId, requestId) VALUES (?, ?, 'AR_DOC', ?, ?)").bind("cloudflare-worker", targetStatus === "POSTED" ? "POST" : "REVERSE", String(invoiceId), `${targetStatus}:${current.docNo}`).run();
-  return json({ invoiceId, status: targetStatus }, 200, request);
+  if (targetStatus !== "REVERSED") return errorResponse("INVALID_INVOICE_ACTION", 400, request);
+  if (current.status === "REVERSED") {
+    const existing = await env.ONEX_DB.prepare("SELECT journalNo FROM journal_entries WHERE sourceInvoiceId = ? AND entryType = 'REVERSAL' LIMIT 1").bind(invoiceId).first();
+    return json({ invoiceId, status: "REVERSED", reversalJournalNo: existing?.journalNo || `REV-${current.docNo}`, idempotent: true }, 200, request);
+  }
+  if (current.status !== "POSTED") return errorResponse("ONLY_POSTED_INVOICES_CAN_BE_REVERSED", 409, request);
+
+  const originalJournals = await env.ONEX_DB.prepare(
+    "SELECT id, journalNo, entryType FROM journal_entries WHERE sourceInvoiceId = ? AND entryType IN ('AR_SALE', 'AR_COGS') ORDER BY id",
+  ).bind(invoiceId).all();
+  if ((originalJournals.results ?? []).length !== 2) return errorResponse("ORIGINAL_SALES_AND_COGS_JOURNALS_REQUIRED", 409, request);
+
+  const originalLines = [];
+  for (const journal of originalJournals.results) {
+    const lines = await env.ONEX_DB.prepare(
+      "SELECT accountCode, description, debit, credit FROM journal_entry_lines WHERE journalNo = ? ORDER BY id",
+    ).bind(journal.journalNo).all();
+    originalLines.push(...(lines.results ?? []));
+  }
+  if (!originalLines.length) return errorResponse("ORIGINAL_JOURNAL_LINES_NOT_FOUND", 409, request);
+
+  const invoiceLines = await env.ONEX_DB.prepare(
+    "SELECT itemId, quantity, appliedUnitCost, appliedCostTotal FROM invoice_lines WHERE invoiceId = ? ORDER BY id",
+  ).bind(invoiceId).all();
+  if (!invoiceLines.results?.length) return errorResponse("INVOICE_HAS_NO_LINES", 409, request);
+
+  const balances = new Map();
+  for (const line of invoiceLines.results) {
+    const quantity = Number(line.quantity);
+    const cost = Number(line.appliedCostTotal || 0);
+    if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(cost) || cost < 0) {
+      return errorResponse("INVOICE_COST_TRACE_REQUIRED_FOR_REVERSAL", 409, request);
+    }
+    const key = String(line.itemId);
+    const aggregate = balances.get(key) || { itemId: Number(line.itemId), quantity: 0, totalCost: 0 };
+    aggregate.quantity += quantity;
+    aggregate.totalCost += cost;
+    balances.set(key, aggregate);
+  }
+
+  const stockPlans = [];
+  for (const aggregate of balances.values()) {
+    const balance = await env.ONEX_DB.prepare(
+      "SELECT id, quantity, totalCost, versionNo FROM stock_balances WHERE itemId = ? AND warehouseId = ? LIMIT 1",
+    ).bind(aggregate.itemId, current.warehouseId).first();
+    if (!balance) return errorResponse("STOCK_BALANCE_NOT_FOUND_FOR_REVERSAL", 409, request, { itemId: aggregate.itemId });
+    const beforeQuantity = Number(balance.quantity);
+    const beforeCost = Number(balance.totalCost);
+    const afterQuantity = beforeQuantity + aggregate.quantity;
+    const afterCost = beforeCost + aggregate.totalCost;
+    stockPlans.push({ ...aggregate, balance, afterQuantity, afterCost, afterUnitCost: afterQuantity > 0 ? afterCost / afterQuantity : 0 });
+  }
+
+  const reversalJournalNo = `REV-${current.docNo}`;
+  const reversalRequestId = `REV:${current.docNo}`;
+  const reversalLines = originalLines.map((line) => ({
+    accountCode: line.accountCode,
+    description: `عكس: ${line.description || current.docNo}`,
+    debit: Number(line.credit || 0).toFixed(6),
+    credit: Number(line.debit || 0).toFixed(6),
+  }));
+  const totalDebit = reversalLines.reduce((sum, line) => sum + Number(line.debit), 0).toFixed(6);
+  const totalCredit = reversalLines.reduce((sum, line) => sum + Number(line.credit), 0).toFixed(6);
+  const statements = [
+    env.ONEX_DB.prepare(`
+      INSERT INTO journal_entries (journalNo, entryType, sourceRef, sourceInvoiceId, totalDebit, totalCredit, status, createdBy)
+      VALUES (?, 'REVERSAL', ?, ?, ?, ?, 'REVERSED', ?)
+    `).bind(reversalJournalNo, current.docNo, invoiceId, totalDebit, totalCredit, "cloudflare-worker"),
+  ];
+  for (const line of reversalLines) {
+    statements.push(env.ONEX_DB.prepare(`
+      INSERT INTO journal_entry_lines (journalNo, accountCode, debit, credit, description)
+      VALUES (?, ?, ?, ?, ?)
+    `).bind(reversalJournalNo, line.accountCode, line.debit, line.credit, line.description));
+  }
+  for (const plan of stockPlans) {
+    statements.push(env.ONEX_DB.prepare(`
+      UPDATE stock_balances SET quantity = ?, totalCost = ?, unitCost = ?, versionNo = versionNo + 1
+      WHERE id = ? AND versionNo = ?
+    `).bind(plan.afterQuantity.toFixed(6), plan.afterCost.toFixed(6), plan.afterUnitCost.toFixed(6), plan.balance.id, plan.balance.versionNo));
+    statements.push(env.ONEX_DB.prepare(`
+      INSERT INTO stock_movements
+        (itemId, warehouseId, sourceInvoiceId, movementType, quantityIn, quantityOut, unitCost, totalCost, balanceAfter, createdBy)
+      VALUES (?, ?, ?, 'SALES_RETURN', ?, '0', ?, ?, ?, ?)
+    `).bind(plan.itemId, current.warehouseId, invoiceId, plan.quantity.toFixed(6), (plan.totalCost / plan.quantity).toFixed(6), plan.totalCost.toFixed(6), plan.afterQuantity.toFixed(6), "cloudflare-worker"));
+  }
+  statements.push(env.ONEX_DB.prepare("UPDATE invoices SET status = 'REVERSED', updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND status = 'POSTED'").bind(invoiceId));
+  statements.push(env.ONEX_DB.prepare("INSERT INTO audit_events (actor, actionCode, entityType, entityId, requestId) VALUES (?, 'REVERSE', 'AR_DOC', ?, ?)").bind("cloudflare-worker", String(invoiceId), reversalRequestId));
+  await env.ONEX_DB.batch(statements);
+  return json({ invoiceId, status: "REVERSED", reversalJournalNo, restoredItems: stockPlans.length }, 200, request);
 }
 
 async function receiveStock(env, request) {
@@ -1239,7 +1346,7 @@ async function ensurePartyAccount(env, table, id) {
 async function api(request, env, url) {
   const writeRoute = ["POST", "PUT", "PATCH", "DELETE"].includes(request.method);
   const publicWrite = url.pathname === "/api/cloud/auth/logout";
-  if (writeRoute && !publicWrite && !request.headers.get("x-onex-actor")?.trim()) return cloudJson({ error: "CLOUD_ACTOR_REQUIRED" }, 403);
+  if (writeRoute && !publicWrite) requireWriteAuth(request, env);
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { "access-control-allow-origin": "*", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type,authorization" } });
   if (url.pathname === "/api/cloud/persistent-test-suite" && request.method === "POST") {
     const existing = await env.ONEX_DB.prepare("SELECT id FROM customers WHERE code = 'TEST-PERSIST-CUST-001' LIMIT 1").first();
@@ -1474,7 +1581,7 @@ async function api(request, env, url) {
     const x = await readBody(request);
     const form = String(x.legacyForm || "").replace(/\.fmx$/i, "").toUpperCase();
     const action = String(x.action || "").toLowerCase();
-    const actor = String(x.actor || request.headers.get("x-onex-actor") || "").trim();
+    const actor = String(request.headers.get("x-onex-actor") || "").trim();
     const requestId = String(x.requestId || `${form}:${action}:${Date.now()}`).trim();
     const allowed = new Set(["initialize", "query", "new", "validate", "save", "update", "delete", "post", "reverse", "refresh", "print", "exit"]);
     if (!form || !actor || !allowed.has(action)) return cloudJson({ error: "WINDOW_ACTION_NOT_AUTHORIZED" }, 403);
@@ -1727,3 +1834,5 @@ export default {
     }
   },
 };
+
+export { requireWriteAuth };
