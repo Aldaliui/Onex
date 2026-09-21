@@ -1,41 +1,19 @@
-export type ErpAction =
-  | "INVOICE_CREATE"
-  | "INVOICE_APPROVE"
-  | "INVOICE_POST"
-  | "INVOICE_REVERSE"
-  | "PAYMENT_CREATE"
-  | "PERIOD_CLOSE"
-  | "MASTER_DATA_EDIT"
-  | "MIGRATION_RUN";
+import { currencyPolicy, roundCurrency, type CurrencyPolicy } from "../packages/erp-domain-core/shared/money";
 
+export type ErpAction = "INVOICE_CREATE" | "INVOICE_APPROVE" | "INVOICE_POST" | "INVOICE_REVERSE" | "PAYMENT_CREATE" | "PERIOD_CLOSE" | "MASTER_DATA_EDIT" | "MIGRATION_RUN";
 export type ErpRole = "user" | "admin" | string | undefined;
-
-export type CurrencyPolicy = {
-  code: string;
-  decimalScale: number;
-  rounding: "HALF_UP";
-  baseCurrency: string;
-};
+export { currencyPolicy, roundCurrency };
+export type { CurrencyPolicy };
 
 const defaultPermissions: Record<string, ErpAction[]> = {
   user: ["INVOICE_CREATE", "INVOICE_APPROVE", "INVOICE_POST", "PAYMENT_CREATE", "MASTER_DATA_EDIT"],
   admin: ["INVOICE_CREATE", "INVOICE_APPROVE", "INVOICE_POST", "INVOICE_REVERSE", "PAYMENT_CREATE", "PERIOD_CLOSE", "MASTER_DATA_EDIT", "MIGRATION_RUN"],
 };
 
-export function currencyPolicy(input: { code?: string; decimalScale?: number; baseCurrency?: string }): CurrencyPolicy {
-  const code = String(input.code || "SAR").trim().toUpperCase();
-  const baseCurrency = String(input.baseCurrency || process.env.ONEX_BASE_CURRENCY || "SAR").trim().toUpperCase();
-  const decimalScale = input.decimalScale ?? 2;
-  if (!/^[A-Z]{3}$/.test(code) || !/^[A-Z]{3}$/.test(baseCurrency)) throw new Error("CURRENCY_CODE_INVALID");
-  if (!Number.isInteger(decimalScale) || decimalScale < 0 || decimalScale > 6) throw new Error("CURRENCY_SCALE_INVALID");
-  return { code, decimalScale, rounding: "HALF_UP", baseCurrency };
-}
-
-export function roundCurrency(value: number | string, policy: CurrencyPolicy): number {
-  const amount = Number(value);
-  if (!Number.isFinite(amount)) throw new Error("CURRENCY_AMOUNT_INVALID");
-  const factor = 10 ** policy.decimalScale;
-  return Math.sign(amount) * Math.round(Math.abs(amount) * factor + Number.EPSILON) / factor;
+export function assertExchangeRate(value: number | string): number {
+  const rate = Number(value);
+  if (!Number.isFinite(rate) || rate <= 0) throw new Error("EXCHANGE_RATE_INVALID");
+  return rate;
 }
 
 export function assertLicensed(module = "ERP"): void {
@@ -46,8 +24,7 @@ export function assertLicensed(module = "ERP"): void {
 }
 
 export function assertPermission(role: ErpRole, action: ErpAction): void {
-  const roleName = String(role || "user");
-  const permissions = defaultPermissions[roleName] || [];
+  const permissions = defaultPermissions[String(role || "user")] || [];
   const extra = String(process.env.ONEX_ROLE_PERMISSIONS || "").split(",").map((item) => item.trim()).filter(Boolean);
   if (!permissions.includes(action) && !extra.includes(action) && process.env.ONEX_ENFORCE_PERMISSIONS === "1") throw new Error(`PERMISSION_DENIED:${action}`);
 }

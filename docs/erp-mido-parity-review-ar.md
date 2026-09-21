@@ -4,6 +4,8 @@
 
 **مصدر الاختبارات:** مستودع `aldalistor/mido`، الاختبارات التنفيذية `test-accounting-core.js` و`test-invoice-posting-core.js`. تم حفظ متجهات المقارنة في [`test/fixtures/mido/accounting-parity.json`](../test/fixtures/mido/accounting-parity.json)، وتُشغّل آليًا عبر `server/midoParity.test.ts`.
 
+تم استخراج القواعد النقية إلى [`packages/erp-domain-core`](../packages/erp-domain-core/index.ts)، وتشمل المال والعملات، القيود، الفترات، إقفال السنة، وحساب فاتورة المبيعات. الحزمة لا تستورد React أو Express أو Drizzle أو D1 أو Oracle أو `process.env`. ويعمل [`server/accountingCore.ts`](../server/accountingCore.ts) كواجهة توافقية للخدمات الحالية حتى يتم نقل بقية الخدمات تدريجيًا دون كسر عقود API القائمة.
+
 ## نموذج الحقيقة
 
 يُعتمد **cloud-onex** مصدرًا لبيانات التشغيل الجديدة والمعاملات التي تُنشأ بعد الترحيل. تُستخدم قواعد mido كمرجع سلوكي مؤقت إلى أن يوقّع مالك المجال المحاسبي على فروق السلوك. لا ينبغي إبقاء Oracle أو Electron مسار كتابة ثانٍ للفواتير أو القيود بعد التحويل النهائي.
