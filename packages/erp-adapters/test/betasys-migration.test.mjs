@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { buildMigrationPlan, parseSnapshot, mapAccount, mapItem, mapOperation, mapParty } from '../dist/betasys/index.js';
 
-const snapshot = '/home/ubuntu/betasys-source/data/database_snapshot.sql';
+const snapshot = fileURLToPath(new URL('./fixtures/betasys-mini.sql', import.meta.url));
 
 test('reads the BetaSys snapshot into the four migration domains', () => {
   const sql = "INSERT INTO `legacy_accounts` (`id`, `sourceId`, `accountNo`, `parentId`, `name`, `balance`) VALUES (1, '1', '1', '0', 'الأصول', '0.00');";
@@ -11,12 +12,12 @@ test('reads the BetaSys snapshot into the four migration domains', () => {
   assert.equal(parsed.get('legacy_accounts')[0].sourceId, 1);
 });
 
-test('maps valid BetaSys records into staging without loading production tables', () => {
+test('maps the checked-in fixture into staging without loading production tables', () => {
   const plan = buildMigrationPlan(snapshot, 'VALIDATE_ONLY');
-  assert.deepEqual(plan.summary.read, { accounts: 785, items: 4548, parties: 336, operations: 210 });
-  assert.deepEqual(plan.summary.valid, { accounts: 785, items: 4548, parties: 336, operations: 210 });
+  assert.deepEqual(plan.summary.read, { accounts: 1, items: 2, parties: 1, operations: 1 });
+  assert.deepEqual(plan.summary.valid, { accounts: 1, items: 2, parties: 1, operations: 1 });
   assert.equal(plan.summary.inventoryValueApproved, false);
-  assert.equal(plan.summary.duplicateSourceIds, 3);
+  assert.equal(plan.summary.duplicateSourceIds, 1);
 });
 
 test('maps the four legacy row shapes and preserves source identity', () => {
