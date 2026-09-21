@@ -16,4 +16,10 @@ describe("invoice inventory traceability", () => {
     const api = caller();
     await expect(api.purchases.create({ docNo: `TRACE-BAD-${Date.now()}`, supplierId: 1, warehouseId: 1, actor: "trace-test", lines: [{ itemId: 1, quantity: "2", unitPrice: "50", taxAmount: "0", serials: ["DUP", "DUP"] }] })).rejects.toThrow("DUPLICATE_SERIAL_NUMBER");
   });
+
+  it("rejects invalid purchase quantities and overpayments before creating a draft", async () => {
+    const api = caller();
+    await expect(api.purchases.create({ docNo: `TRACE-QTY-${Date.now()}`, supplierId: 1, warehouseId: 1, actor: "trace-test", lines: [{ itemId: 1, quantity: "0", unitPrice: "50", taxAmount: "0" }] })).rejects.toThrow("PURCHASE_QUANTITY_INVALID");
+    await expect(api.purchases.create({ docNo: `TRACE-PAY-${Date.now()}`, supplierId: 1, warehouseId: 1, paidAmount: "999", actor: "trace-test", lines: [{ itemId: 1, quantity: "1", unitPrice: "50", taxAmount: "0" }] })).rejects.toThrow("PAID_AMOUNT_EXCEEDS_PURCHASE_INVOICE");
+  });
 });

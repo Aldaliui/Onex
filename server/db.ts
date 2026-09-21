@@ -669,9 +669,15 @@ export async function createInvoice(input: { docNo: string; customerId: number; 
 }
 
 export async function createPurchaseInvoice(input: { docNo: string; supplierId: number; warehouseId: number; currencyCode?: string; exchangeRate?: string; paymentMethod?: string; paidAmount?: string; paymentReference?: string; lines: LinkedInvoiceLine[]; actor: string; }) {
+  if (!input.docNo.trim()) throw new Error("PURCHASE_INVOICE_DOCNO_REQUIRED");
+  if (!Number(input.supplierId) || !Number(input.warehouseId)) throw new Error("PURCHASE_PARTY_AND_WAREHOUSE_REQUIRED");
+  if (!Number.isFinite(Number(input.exchangeRate || 1)) || Number(input.exchangeRate || 1) <= 0) throw new Error("EXCHANGE_RATE_INVALID");
+  if (!input.lines.length) throw new Error("PURCHASE_INVOICE_LINES_REQUIRED");
+  for (const line of input.lines) { if (!Number.isFinite(Number(line.quantity)) || Number(line.quantity) <= 0) throw new Error("PURCHASE_QUANTITY_INVALID"); if (!Number.isFinite(Number(line.unitPrice)) || Number(line.unitPrice) < 0) throw new Error("PURCHASE_PRICE_INVALID"); if (!Number.isFinite(Number(line.taxAmount)) || Number(line.taxAmount) < 0) throw new Error("PURCHASE_TAX_INVALID"); }
   validateLinkedInvoiceLines(input.lines);
-  const calculated = calculateInvoice(input.lines, input.paidAmount || "0");
+  const calculated = calculateInvoice(input.lines, "0");
   const { subtotal, taxTotal, grandTotal } = calculated;
+  if (Number(input.paidAmount || 0) < 0 || Number(input.paidAmount || 0) > grandTotal) throw new Error("PAID_AMOUNT_EXCEEDS_PURCHASE_INVOICE");
   const idempotencyKey = `APST003:${input.docNo}`;
   const db = await getDb();
   if (!db) {
