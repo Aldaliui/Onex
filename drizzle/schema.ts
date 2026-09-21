@@ -420,6 +420,21 @@ export const fiscalPeriods = mysqlTable("fiscal_periods", {
   status: mysqlEnum("status", ["OPEN", "CLOSED"]).notNull().default("OPEN"),
 }, (table) => ({ companyCode: unique("period_company_code").on(table.companyId, table.code) }));
 
+export const fiscalPeriodClosures = mysqlTable("fiscal_period_closures", {
+  id: int("id").autoincrement().primaryKey(),
+  periodId: int("periodId").notNull().unique(),
+  companyId: int("companyId").notNull(),
+  status: mysqlEnum("status", ["STARTED", "COMPLETED", "REOPENED"]).notNull().default("STARTED"),
+  checklistJson: text("checklistJson").notNull(),
+  closingJournalId: int("closingJournalId"),
+  actor: varchar("actor", { length: 100 }).notNull(),
+  requestId: varchar("requestId", { length: 160 }).notNull().unique(),
+  closedAt: timestamp("closedAt"),
+  reopenedAt: timestamp("reopenedAt"),
+  reopenedBy: varchar("reopenedBy", { length: 100 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type WindowRegistry = typeof windowRegistry.$inferSelect;

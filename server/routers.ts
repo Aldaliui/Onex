@@ -11,6 +11,7 @@ import { approveJournalEntry, createAdjustmentNote, createInventoryCount, create
 import { isEInvoiceProviderConfigured } from "./eInvoicing";
 import { buildOpeningBalances, closeFiscalYear } from "./accountingCore";
 import { assertErpAction } from "./erpPolicy";
+import { assignRolePermission, assignUserRole, closeFiscalPeriod, createFiscalPeriod, listFiscalPeriods, listWorkspacePermissions, listWorkspaceRoles, reopenFiscalPeriod } from "./erpWorkspaceDb";
 
 const invoiceLine = z.object({ itemId: z.number().int().positive(), quantity: z.string().min(1), unitPrice: z.string().min(1), taxAmount: z.string().default("0"), unitCode: z.string().max(30).default("EA"), batchNo: z.string().max(100).optional(), expireDate: z.string().optional(), locationId: z.number().int().positive().optional(), serials: z.array(z.string().min(1).max(160)).optional() });
 const partyInput = z.object({ id: z.number().int().positive().optional(), companyId: z.number().int().positive().default(1), code: z.string().min(1).max(50), legalName: z.string().min(1).max(250), currencyCode: z.string().length(3).default("SAR"), status: z.enum(["ACTIVE", "BLOCKED", "CLOSED"]).default("ACTIVE") });
@@ -31,6 +32,16 @@ export const appRouter = router({
   accounting: router({
     previewYearClose: protectedProcedure.input(z.object({ revenue: z.union([z.string(), z.number()]), expenses: z.union([z.string(), z.number()]), retainedEarningsAccount: z.string().max(80).optional(), openingYear: z.string().max(20).optional(), date: z.string().max(40).optional() })).mutation(({ input }) => closeFiscalYear(input)),
     previewOpeningBalances: protectedProcedure.input(z.object({ accounts: z.array(z.object({ code: z.string().min(1).max(80), type: z.string().max(30).optional(), balance: z.union([z.string(), z.number()]) })).min(1).max(5000) })).mutation(({ input }) => buildOpeningBalances(input.accounts)),
+  }),
+  erpWorkspace: router({
+    fiscalPeriods: publicProcedure.input(z.object({ companyId: z.number().int().positive().default(1) }).optional()).query(({ input }) => listFiscalPeriods(input?.companyId || 1)),
+    createFiscalPeriod: protectedProcedure.input(z.object({ companyId: z.number().int().positive().default(1), code: z.string().min(1).max(30), startsOn: z.string(), endsOn: z.string(), actor: z.string().min(1).max(100), role: z.string().min(1).max(60) })).mutation(({ input }) => createFiscalPeriod(input)),
+    closeFiscalPeriod: protectedProcedure.input(z.object({ periodId: z.number().int().positive(), actor: z.string().min(1).max(100), role: z.string().min(1).max(60), requestId: z.string().min(1).max(160) })).mutation(({ input }) => closeFiscalPeriod(input)),
+    reopenFiscalPeriod: protectedProcedure.input(z.object({ periodId: z.number().int().positive(), actor: z.string().min(1).max(100), role: z.string().min(1).max(60), requestId: z.string().min(1).max(160) })).mutation(({ input }) => reopenFiscalPeriod(input)),
+    roles: publicProcedure.query(() => listWorkspaceRoles()),
+    permissions: publicProcedure.query(() => listWorkspacePermissions()),
+    assignUserRole: protectedProcedure.input(z.object({ userId: z.number().int().positive(), roleId: z.number().int().positive(), branchId: z.number().int().positive().optional(), actor: z.string().min(1).max(100), role: z.string().min(1).max(60) })).mutation(({ input }) => assignUserRole(input)),
+    assignRolePermission: protectedProcedure.input(z.object({ roleId: z.number().int().positive(), permissionId: z.number().int().positive(), actor: z.string().min(1).max(100), role: z.string().min(1).max(60) })).mutation(({ input }) => assignRolePermission(input)),
   }),
   systemSettings: router({ get: publicProcedure.query(() => getSystemSettings()), save: protectedProcedure.input(z.object({ engine: z.string().min(1).max(30), host: z.string().max(255).optional(), port: z.number().int().min(1).max(65535), databaseName: z.string().max(160).optional(), ssl: z.number().int().min(0).max(1), updatedBy: z.string().min(1).max(100) })).mutation(({ input }) => saveSystemSettings(input)) }),
   controlData: publicProcedure.query(() => getErpControlData()),
