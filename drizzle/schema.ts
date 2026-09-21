@@ -185,6 +185,8 @@ export const invoices = mysqlTable("invoices", {
   sourceForm: varchar("sourceForm", { length: 80 }).notNull().default("ARST004"),
   purchaseOrderId: int("purchaseOrderId"),
   goodsReceiptId: int("goodsReceiptId"),
+  salesOrderId: int("salesOrderId"),
+  goodsIssueId: int("goodsIssueId"),
   createdBy: varchar("createdBy", { length: 100 }).notNull().default("demo.user"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   postedAt: timestamp("postedAt"),
@@ -269,6 +271,13 @@ export const grniPostings = mysqlTable("grni_postings", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   settledAt: timestamp("settledAt"),
 }, (table) => ({ supplierStatusIdx: index("grni_supplier_status_idx").on(table.supplierId, table.status) }));
+
+export const salesOrders = mysqlTable("sales_orders", {
+  id: int("id").autoincrement().primaryKey(), orderNo: varchar("orderNo", { length: 80 }).notNull().unique(), customerId: int("customerId").notNull(), warehouseId: int("warehouseId").notNull(), currencyCode: varchar("currencyCode", { length: 3 }).notNull().default("SAR"), subtotal: decimal("subtotal", { precision: 20, scale: 6 }).notNull().default("0"), taxTotal: decimal("taxTotal", { precision: 20, scale: 6 }).notNull().default("0"), grandTotal: decimal("grandTotal", { precision: 20, scale: 6 }).notNull().default("0"), status: mysqlEnum("status", ["DRAFT", "APPROVED", "PARTIALLY_ISSUED", "FULLY_ISSUED", "CANCELLED"]).notNull().default("DRAFT"), actor: varchar("actor", { length: 100 }).notNull(), idempotencyKey: varchar("idempotencyKey", { length: 160 }).notNull().unique(), createdAt: timestamp("createdAt").defaultNow().notNull(), approvedAt: timestamp("approvedAt")
+}, (table) => ({ customerStatusIdx: index("sales_order_customer_status_idx").on(table.customerId, table.status) }));
+export const salesOrderLines = mysqlTable("sales_order_lines", { id: int("id").autoincrement().primaryKey(), salesOrderId: int("salesOrderId").notNull(), itemId: int("itemId").notNull(), quantity: decimal("quantity", { precision: 20, scale: 6 }).notNull(), issuedQuantity: decimal("issuedQuantity", { precision: 20, scale: 6 }).notNull().default("0"), unitPrice: decimal("unitPrice", { precision: 20, scale: 6 }).notNull(), taxAmount: decimal("taxAmount", { precision: 20, scale: 6 }).notNull().default("0"), lineTotal: decimal("lineTotal", { precision: 20, scale: 6 }).notNull() });
+export const goodsIssues = mysqlTable("goods_issues", { id: int("id").autoincrement().primaryKey(), issueNo: varchar("issueNo", { length: 80 }).notNull().unique(), salesOrderId: int("salesOrderId").notNull(), customerId: int("customerId").notNull(), warehouseId: int("warehouseId").notNull(), status: mysqlEnum("status", ["DRAFT", "POSTED", "CANCELLED"]).notNull().default("DRAFT"), actor: varchar("actor", { length: 100 }).notNull(), idempotencyKey: varchar("idempotencyKey", { length: 160 }).notNull().unique(), createdAt: timestamp("createdAt").defaultNow().notNull(), postedAt: timestamp("postedAt") });
+export const goodsIssueLines = mysqlTable("goods_issue_lines", { id: int("id").autoincrement().primaryKey(), goodsIssueId: int("goodsIssueId").notNull(), salesOrderLineId: int("salesOrderLineId").notNull(), itemId: int("itemId").notNull(), quantity: decimal("quantity", { precision: 20, scale: 6 }).notNull(), unitCost: decimal("unitCost", { precision: 20, scale: 6 }).notNull(), serialsJson: text("serialsJson") });
 
 export const eInvoiceSubmissions = mysqlTable("e_invoice_submissions", {
   id: int("id").autoincrement().primaryKey(),
