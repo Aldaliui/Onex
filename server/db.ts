@@ -1,4 +1,4 @@
-import { and, desc, eq, like, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, like, lte, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -34,7 +34,7 @@ const demoLocationBalances = new Map<string, number>();
 const demoSerialStatuses = new Map<string, { warehouseId: number; status: "AVAILABLE" | "SOLD" }>();
 const demoBranches = [{ id: 1, companyId: 1, code: "MAIN", name: "الفرع الرئيسي", active: 1 }];
 const demoWarehouses = [{ id: 1, companyId: 1, code: "MAIN", name: "المستودع الرئيسي", active: 1 }];
-const demoAccounts: Array<{ id: number; companyId: number; code: string; name: string; accountType: string; parentCode?: string; currencyCode: string; active: number }> = [{ id: 1, companyId: 1, code: "1100", name: "النقدية", accountType: "ASSET", currencyCode: "SAR", active: 1 }, { id: 2, companyId: 1, code: "4100", name: "إيرادات المبيعات", accountType: "REVENUE", currencyCode: "SAR", active: 1 }, { id: 3, companyId: 1, code: "5100", name: "تكلفة المبيعات", accountType: "EXPENSE", currencyCode: "SAR", active: 1 }, { id: 4, companyId: 1, code: "2100-0001", name: "مورد تجريبي", accountType: "LIABILITY", parentCode: "2100", currencyCode: "SAR", active: 1 }, { id: 5, companyId: 1, code: "1200-0001", name: "عميل تجريبي", accountType: "ASSET", parentCode: "1200", currencyCode: "SAR", active: 1 }];
+const demoAccounts: Array<{ id: number; companyId: number; code: string; name: string; accountType: string; parentCode?: string; currencyCode: string; active: number; status?: "ACTIVE" | "BLOCKED" | "CLOSED"; allowPosting?: number; levelNo?: number; normalBalance?: "DEBIT" | "CREDIT"; isControlAccount?: number; salesAccount?: number; purchaseAccount?: number; inventoryAccount?: number; cogsAccount?: number }> = [{ id: 1, companyId: 1, code: "1100", name: "النقدية", accountType: "ASSET", currencyCode: "SAR", active: 1, status: "ACTIVE", allowPosting: 1, levelNo: 1, normalBalance: "DEBIT" }, { id: 2, companyId: 1, code: "4100", name: "إيرادات المبيعات", accountType: "REVENUE", currencyCode: "SAR", active: 1, status: "ACTIVE", allowPosting: 1, levelNo: 1, normalBalance: "CREDIT", salesAccount: 1 }, { id: 3, companyId: 1, code: "5100", name: "تكلفة المبيعات", accountType: "EXPENSE", currencyCode: "SAR", active: 1, status: "ACTIVE", allowPosting: 1, levelNo: 1, normalBalance: "DEBIT", cogsAccount: 1 }, { id: 4, companyId: 1, code: "2100-0001", name: "مورد تجريبي", accountType: "LIABILITY", parentCode: "2100", currencyCode: "SAR", active: 1, status: "ACTIVE", allowPosting: 1, levelNo: 2, normalBalance: "CREDIT" }, { id: 5, companyId: 1, code: "1200-0001", name: "عميل تجريبي", accountType: "ASSET", parentCode: "1200", currencyCode: "SAR", active: 1, status: "ACTIVE", allowPosting: 1, levelNo: 2, normalBalance: "DEBIT" }];
 const demoPeriods = [{ id: 1, companyId: 1, code: "2026-01", startsOn: new Date("2026-01-01"), endsOn: new Date("2026-01-31"), status: "OPEN" as const }];
 
 type FallbackWindow = {
@@ -514,7 +514,7 @@ export async function getItemTrace(itemId: number, warehouseId?: number) {
   return { item: { ...itemRow.item, unitCode: "EA", currencyCode: itemRow.company?.baseCurrency || "SAR", balances: balanceRows.map((row) => ({ ...row.balance, warehouseCode: row.warehouse?.code, warehouseName: row.warehouse?.name })) }, movements: movementRows };
 }
 
-type AccountInput = { id?: number; companyId?: number; code: string; name: string; accountType: string; parentCode?: string; currencyCode?: string; active?: number };
+type AccountInput = { id?: number; companyId?: number; code: string; name: string; accountType: string; parentCode?: string; levelNo?: number; allowPosting?: number; normalBalance?: "DEBIT" | "CREDIT"; isControlAccount?: number; cashFlowCategory?: string | null; salesAccount?: number; purchaseAccount?: number; inventoryAccount?: number; cogsAccount?: number; currencyCode?: string; active?: number; status?: "ACTIVE" | "BLOCKED" | "CLOSED"; legacyCode?: string | null; legacySource?: string | null };
 const ACCOUNT_TYPES = new Set(["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE", "OTHER"]);
 function normalizeAccount(input: AccountInput) {
   const code = input.code.trim().toUpperCase(); const name = input.name.trim(); const accountType = input.accountType.trim().toUpperCase(); const parentCode = input.parentCode?.trim().toUpperCase() || undefined; const currencyCode = (input.currencyCode || "SAR").trim().toUpperCase();
@@ -523,7 +523,9 @@ function normalizeAccount(input: AccountInput) {
   if (!/^[A-Z0-9][A-Z0-9._/-]{0,79}$/.test(code)) throw new Error("ACCOUNT_CODE_INVALID");
   if (!/^[A-Z]{3}$/.test(currencyCode)) throw new Error("ACCOUNT_CURRENCY_INVALID");
   if (parentCode === code) throw new Error("ACCOUNT_PARENT_SELF_REFERENCE");
-  return { companyId: input.companyId || 1, code, name, accountType, parentCode, currencyCode, active: input.active === 0 ? 0 : 1 };
+  const status = input.status || (input.active === 0 ? "BLOCKED" : "ACTIVE");
+  if (status === "ACTIVE" && input.active === 0) throw new Error("ACCOUNT_STATUS_ACTIVE_CONFLICT");
+  return { companyId: input.companyId || 1, code, name, accountType, parentCode, levelNo: Math.max(0, Number(input.levelNo || 0)), allowPosting: input.allowPosting === 0 ? 0 : 1, normalBalance: input.normalBalance || (["LIABILITY", "EQUITY", "REVENUE"].includes(accountType) ? "CREDIT" : "DEBIT"), isControlAccount: input.isControlAccount === 1 ? 1 : 0, cashFlowCategory: input.cashFlowCategory?.trim() || null, salesAccount: input.salesAccount === 1 ? 1 : 0, purchaseAccount: input.purchaseAccount === 1 ? 1 : 0, inventoryAccount: input.inventoryAccount === 1 ? 1 : 0, cogsAccount: input.cogsAccount === 1 ? 1 : 0, currencyCode, active: status === "ACTIVE" ? 1 : 0, status, legacyCode: input.legacyCode?.trim() || null, legacySource: input.legacySource?.trim() || null };
 }
 async function assertAccountParent(tx: any, values: ReturnType<typeof normalizeAccount>, id?: number) {
   if (!values.parentCode) return;
@@ -542,8 +544,14 @@ export async function searchAccounts(search?: string, limit = 20) {
 }
 export async function getAccountCatalog(search?: string, limit = 500) {
   const rows = await searchAccounts(search, limit) as any[]; const byParent = new Map<string, number>();
+  const db = await getDb();
+  const usage = new Map<string, { journalLineCount: number; balance: number }>();
+  if (db) {
+    const stats = await db.select({ accountCode: journalEntryLines.accountCode, journalLineCount: sql<number>`count(*)`, balance: sql<number>`coalesce(sum(${journalEntryLines.debit}) - sum(${journalEntryLines.credit}), 0)` }).from(journalEntryLines).innerJoin(journalEntries, eq(journalEntryLines.journalEntryId, journalEntries.id)).where(or(eq(journalEntries.status, "POSTED"), eq(journalEntries.status, "REVERSED"))).groupBy(journalEntryLines.accountCode);
+    stats.forEach((row) => usage.set(row.accountCode, { journalLineCount: Number(row.journalLineCount || 0), balance: Number(row.balance || 0) }));
+  }
   for (const row of rows) if (row.parentCode) byParent.set(row.parentCode, (byParent.get(row.parentCode) || 0) + 1);
-  return rows.map((row) => ({ ...row, depth: row.parentCode ? 1 : 0, hasChildren: (byParent.get(row.code) || 0) > 0 }));
+  return rows.map((row) => ({ ...row, status: row.status || (row.active === 0 ? "BLOCKED" : "ACTIVE"), depth: row.levelNo ?? (row.parentCode ? 1 : 0), hasChildren: (byParent.get(row.code) || 0) > 0, ...(usage.get(row.code) || { journalLineCount: 0, balance: 0 }) }));
 }
 export async function saveAccount(input: AccountInput) {
   const values = normalizeAccount(input);
@@ -556,6 +564,7 @@ export async function saveAccount(input: AccountInput) {
     if (duplicate && duplicate.id !== input.id) throw new Error("ACCOUNT_CODE_DUPLICATE");
     if (input.id) {
       const current = (await tx.select().from(accounts).where(eq(accounts.id, input.id)).limit(1))[0]; if (!current) throw new Error("ACCOUNT_NOT_FOUND");
+      if (current.status === "CLOSED" && values.status !== "CLOSED") throw new Error("CLOSED_ACCOUNT_IMMUTABLE");
       if (current.code !== values.code) { const ref = (await tx.select().from(journalEntryLines).where(eq(journalEntryLines.accountCode, current.code)).limit(1))[0]; if (ref) throw new Error("ACCOUNT_CODE_HAS_JOURNAL_REFERENCES"); }
       await tx.update(accounts).set(values).where(eq(accounts.id, input.id)); await tx.insert(auditEvents).values({ actor: "workbench.user", actionCode: "UPDATE", entityType: "ACCOUNT", entityId: String(input.id), requestId: `ACCOUNT:UPDATE:${input.id}` });
       return (await tx.select().from(accounts).where(eq(accounts.id, input.id)).limit(1))[0];
@@ -570,6 +579,7 @@ export async function saveItem(input: { id?: number; companyId: number; code: st
   const db = await getDb();
   const values = { companyId: input.companyId, code: input.code, description: input.description, stockFlag: input.stockFlag ?? 1, unitCost: input.unitCost || "0", revenueAccount: input.revenueAccount || "4100", inventoryAccount: input.inventoryAccount || "1300", cogsAccount: input.cogsAccount || "5100", active: input.active ?? 1 };
   if (!db) { const existing = demoItems.find((row) => row.id === input.id || row.code === input.code); if (existing) Object.assign(existing, values); else demoItems.push({ id: Math.max(...demoItems.map((row) => row.id), 0) + 1, ...values }); return demoItems.at(-1); }
+  await validatePostingAccountMappings(input.companyId, [values.revenueAccount, values.inventoryAccount, values.cogsAccount]);
   if (input.id) { await db.update(items).set(values).where(eq(items.id, input.id)); return db.select().from(items).where(eq(items.id, input.id)).limit(1).then((rows) => rows[0]); }
   const inserted = await db.insert(items).values(values).$returningId(); return db.select().from(items).where(eq(items.id, Number(inserted[0]?.id))).limit(1).then((rows) => rows[0]);
 }
@@ -586,7 +596,7 @@ export async function saveJournal(input: { journalNo: string; entryType: string;
   const debit = journal.totalDebit; const credit = journal.totalCredit;
   const db = await getDb();
   if (!db) { const id = demoJournals.length + 1; const result = { id, journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6), status: "POSTED" as const }; demoJournals.push(result); return result; }
-  return db.transaction(async (tx) => { const inserted = await tx.insert(journalEntries).values({ journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6) }).$returningId(); const id = Number(inserted[0]?.id); if (!id) throw new Error("JOURNAL_CREATE_FAILED"); await tx.insert(journalEntryLines).values(journal.lines.map((line) => ({ journalEntryId: id, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: line.debit.toFixed(6), credit: line.credit.toFixed(6) }))); await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE", entityType: "GL_JOURNAL", entityId: String(id), requestId: `JOURNAL:${input.journalNo}` }); return { id, journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6), status: "POSTED" as const }; });
+  return db.transaction(async (tx) => { const inserted = await tx.insert(journalEntries).values({ journalNo: input.journalNo, entryType: input.entryType, sourceType: "MANUAL", totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6), idempotencyKey: `JOURNAL:MANUAL:${input.journalNo}`, createdBy: input.actor }).$returningId(); const id = Number(inserted[0]?.id); if (!id) throw new Error("JOURNAL_CREATE_FAILED"); await tx.insert(journalEntryLines).values(journal.lines.map((line, lineNo) => ({ journalEntryId: id, lineNo: lineNo + 1, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: line.debit.toFixed(6), credit: line.credit.toFixed(6), baseDebit: line.debit.toFixed(6), baseCredit: line.credit.toFixed(6) }))); await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE", entityType: "GL_JOURNAL", entityId: String(id), requestId: `JOURNAL:${input.journalNo}` }); return { id, journalNo: input.journalNo, entryType: input.entryType, totalDebit: debit.toFixed(6), totalCredit: credit.toFixed(6), status: "POSTED" as const }; });
 }
 
 export async function executeGlWindowAction(input: {
@@ -718,8 +728,9 @@ export async function postPurchaseInvoice(invoiceId: number, actor: string) {
       await tx.insert(stockMovements).values({ itemId: row.line.itemId, warehouseId: invoice.warehouseId, sourceInvoiceId: invoiceId, movementType: "PURCHASE_RECEIPT", quantityIn: quantity.toFixed(6), unitCost: unitCost.toFixed(6), totalCost: totalCost.toFixed(6), balanceAfter: afterQty.toFixed(6), createdBy: actor });
       await applyInvoiceInventoryTrace(tx, row, invoice.warehouseId, quantity, unitCost, "IN", actor);
     }
+    await validatePostingAccountMappings(1, [supplierAccount.code, lines[0]?.item.inventoryAccount || "1300", "1400"]);
     const purchaseJournal = buildPurchaseJournal({ total: Number(invoice.grandTotal), subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), payableAccount: supplierAccount.code, inventoryAccount: lines[0]?.item.inventoryAccount || "1300" });
-    const insertedJournal = await tx.insert(journalEntries).values({ journalNo: `AP-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "AP_PURCHASE", totalDebit: purchaseJournal.totalDebit.toFixed(6), totalCredit: purchaseJournal.totalCredit.toFixed(6) }).$returningId();
+    const insertedJournal = await tx.insert(journalEntries).values({ journalNo: `AP-${invoice.docNo}`, sourceInvoiceId: invoiceId, sourceType: "AP_PURCHASE", sourceDocumentNo: invoice.docNo, entryType: "AP_PURCHASE", totalDebit: purchaseJournal.totalDebit.toFixed(6), totalCredit: purchaseJournal.totalCredit.toFixed(6), status: "POSTED", postedAt: new Date(), idempotencyKey: `JOURNAL:AP_PURCHASE:${invoice.docNo}`, createdBy: actor }).$returningId();
     const journalId = Number(insertedJournal[0]?.id); if (!journalId) throw new Error("JOURNAL_CREATE_FAILED");
     await tx.insert(journalEntryLines).values(purchaseJournal.lines.map((line) => ({ journalEntryId: journalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) })));
     await tx.update(invoices).set({ status: "POSTED", postedAt: new Date() }).where(eq(invoices.id, invoiceId));
@@ -753,7 +764,7 @@ export async function reversePurchaseInvoice(invoiceId: number, actor: string) {
     if (!originalJournal) throw new Error("ORIGINAL_PURCHASE_JOURNAL_NOT_FOUND");
     const originalLines = await tx.select().from(journalEntryLines).where(eq(journalEntryLines.journalEntryId, originalJournal.id));
     const reversal = validateJournal({ description: "عكس فاتورة مشتريات", source: "PURCHASE_INVOICE_REVERSAL", lines: originalLines.map((line) => ({ accountCode: line.accountCode, accountName: line.accountName || undefined, debit: Number(line.credit), credit: Number(line.debit), description: `عكس: ${line.description || ""}` })) });
-    const insertedJournal = await tx.insert(journalEntries).values({ journalNo: `AP-REV-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "AP_REVERSAL", totalDebit: reversal.totalDebit.toFixed(6), totalCredit: reversal.totalCredit.toFixed(6) }).$returningId();
+    const insertedJournal = await tx.insert(journalEntries).values({ journalNo: `AP-REV-${invoice.docNo}`, sourceInvoiceId: invoiceId, sourceType: "AP_REVERSAL", sourceDocumentNo: invoice.docNo, entryType: "AP_REVERSAL", totalDebit: reversal.totalDebit.toFixed(6), totalCredit: reversal.totalCredit.toFixed(6), status: "REVERSED", reversedAt: new Date(), reversedBy: actor, idempotencyKey: `JOURNAL:AP_REVERSAL:${invoice.docNo}`, createdBy: actor }).$returningId();
     const journalId = Number(insertedJournal[0]?.id); if (!journalId) throw new Error("REVERSAL_JOURNAL_CREATE_FAILED");
     await tx.insert(journalEntryLines).values(reversal.lines.map((line) => ({ journalEntryId: journalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) })));
     await tx.update(invoices).set({ status: "REVERSED" }).where(eq(invoices.id, invoiceId));
@@ -792,7 +803,7 @@ export async function postAdjustmentNote(adjustmentId: number, actor: string) {
     const addition = note.documentKind.endsWith("ADDITION"); const subtotal = Number(note.subtotal); const tax = Number(note.taxTotal); const total = Number(note.grandTotal); const inventoryCode = lines[0]?.item.inventoryAccount || "1300"; const revenueCode = lines[0]?.item.revenueAccount || "4100"; const cogsCode = lines[0]?.item.cogsAccount || "5100"; let journalLines: any[];
     if (isSales) { journalLines = addition ? [{ accountCode: partyAccount.code, debit: total, credit: 0, description: "إشعار إضافة على العميل" }, { accountCode: revenueCode, debit: 0, credit: subtotal, description: "إضافة إيراد" }, { accountCode: "2200", debit: 0, credit: tax, description: "إضافة ضريبة" }] : [{ accountCode: partyAccount.code, debit: 0, credit: total, description: "إشعار خصم أو مرتجع للعميل" }, { accountCode: revenueCode, debit: subtotal, credit: 0, description: "تخفيض إيراد" }, { accountCode: "2200", debit: tax, credit: 0, description: "تخفيض ضريبة" }]; if (note.documentKind === "SALES_RETURN") journalLines.push({ accountCode: cogsCode, debit: totalCost, credit: 0, description: "إعادة تكلفة المبيعات" }, { accountCode: inventoryCode, debit: 0, credit: totalCost, description: "إعادة البضاعة للمخزون" }); }
     else { journalLines = addition ? [{ accountCode: inventoryCode, debit: subtotal, credit: 0, description: "إضافة تكلفة مشتريات" }, { accountCode: "1400", debit: tax, credit: 0, description: "إضافة ضريبة مشتريات" }, { accountCode: partyAccount.code, debit: 0, credit: total, description: "إشعار إضافة على المورد" }] : [{ accountCode: partyAccount.code, debit: total, credit: 0, description: "إشعار خصم أو مرتجع للمورد" }, { accountCode: inventoryCode, debit: 0, credit: subtotal, description: "تخفيض تكلفة المشتريات" }, { accountCode: "1400", debit: 0, credit: tax, description: "تخفيض ضريبة المشتريات" }]; }
-    const journal = validateJournal({ description: "ترحيل " + note.documentKind, source: "ADJUSTMENT_NOTE", lines: journalLines }); const insertedJournal = await tx.insert(journalEntries).values({ journalNo: "ADJ-" + note.docNo, sourceInvoiceId: note.originalInvoiceId, entryType: note.documentKind, totalDebit: journal.totalDebit.toFixed(6), totalCredit: journal.totalCredit.toFixed(6) }).$returningId(); const journalId = Number(insertedJournal[0]?.id); if (!journalId) throw new Error("ADJUSTMENT_JOURNAL_CREATE_FAILED"); await tx.insert(journalEntryLines).values(journal.lines.map((line) => ({ journalEntryId: journalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) }))); await tx.update(adjustmentNotes).set({ status: "POSTED", postedAt: new Date() }).where(eq(adjustmentNotes.id, adjustmentId)); await tx.insert(auditEvents).values({ actor, actionCode: "POST", entityType: "ADJUSTMENT_NOTE", entityId: String(adjustmentId), requestId: "POST:" + note.docNo }); return { adjustmentId, status: "POSTED" as const, journalId, totalCost };
+    const journal = validateJournal({ description: "ترحيل " + note.documentKind, source: "ADJUSTMENT_NOTE", lines: journalLines }); const insertedJournal = await tx.insert(journalEntries).values({ journalNo: "ADJ-" + note.docNo, sourceInvoiceId: note.originalInvoiceId, sourceType: "ADJUSTMENT_NOTE", sourceDocumentNo: note.docNo, entryType: note.documentKind, totalDebit: journal.totalDebit.toFixed(6), totalCredit: journal.totalCredit.toFixed(6), status: "POSTED", postedAt: new Date(), idempotencyKey: `JOURNAL:ADJUSTMENT:${note.docNo}`, createdBy: actor }).$returningId(); const journalId = Number(insertedJournal[0]?.id); if (!journalId) throw new Error("ADJUSTMENT_JOURNAL_CREATE_FAILED"); await tx.insert(journalEntryLines).values(journal.lines.map((line, lineNo) => ({ journalEntryId: journalId, lineNo: lineNo + 1, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6), baseDebit: Number(line.debit || 0).toFixed(6), baseCredit: Number(line.credit || 0).toFixed(6) }))); await tx.update(adjustmentNotes).set({ status: "POSTED", postedAt: new Date() }).where(eq(adjustmentNotes.id, adjustmentId)); await tx.insert(auditEvents).values({ actor, actionCode: "POST", entityType: "ADJUSTMENT_NOTE", entityId: String(adjustmentId), requestId: "POST:" + note.docNo }); return { adjustmentId, status: "POSTED" as const, journalId, totalCost };
   });
 }
 
@@ -833,7 +844,7 @@ export async function postInventoryCount(countId: number, actor: string) {
     const periods = await tx.select().from(fiscalPeriods).where(and(eq(fiscalPeriods.companyId, 1), eq(fiscalPeriods.status, "OPEN"))).orderBy(desc(fiscalPeriods.startsOn)); const period = periods.find((candidate) => canPostToPeriod(candidate, count.countedAt).allowed); const periodCheck = canPostToPeriod(period, count.countedAt); if (!periodCheck.allowed) throw new Error(periodCheck.reason || "PERIOD_NOT_POSTABLE");
     const journalLines: { accountCode: string; debit: number; credit: number; description: string }[] = []; let totalVariance = 0;
     for (const row of lines) { const counted = Number(row.line.countedQuantity); const system = Number(row.line.systemQuantity); const unitCost = Number(row.line.unitCost); const variance = counted - system; const value = variance * unitCost; totalVariance += value; if (!variance) continue; const balance = row.balance; const afterCost = counted * unitCost; if (balance) await tx.update(stockBalances).set({ quantity: counted.toFixed(6), totalCost: afterCost.toFixed(6), unitCost: unitCost.toFixed(6), versionNo: balance.versionNo + 1 }).where(eq(stockBalances.id, balance.id)); else await tx.insert(stockBalances).values({ itemId: row.line.itemId, warehouseId: count.warehouseId, quantity: counted.toFixed(6), totalCost: afterCost.toFixed(6), unitCost: unitCost.toFixed(6), versionNo: 1 }); await tx.insert(stockMovements).values({ itemId: row.line.itemId, warehouseId: count.warehouseId, movementType: variance > 0 ? "INVENTORY_GAIN" : "INVENTORY_LOSS", quantityIn: variance > 0 ? variance.toFixed(6) : "0", quantityOut: variance < 0 ? Math.abs(variance).toFixed(6) : "0", unitCost: unitCost.toFixed(6), totalCost: Math.abs(value).toFixed(6), balanceAfter: counted.toFixed(6), createdBy: actor }); if (variance > 0) journalLines.push({ accountCode: row.item.inventoryAccount || "1300", debit: value, credit: 0, description: "زيادة جرد " + row.item.code }, { accountCode: "4300", debit: 0, credit: value, description: "أرباح فروقات الجرد" }); else journalLines.push({ accountCode: "5300", debit: Math.abs(value), credit: 0, description: "خسائر فروقات الجرد" }, { accountCode: row.item.inventoryAccount || "1300", debit: 0, credit: Math.abs(value), description: "نقص جرد " + row.item.code }); }
-    if (journalLines.length) { const journal = validateJournal({ description: "ترحيل جرد " + count.countNo, source: "INVENTORY_COUNT", lines: journalLines }); const insertedJournal = await tx.insert(journalEntries).values({ journalNo: "COUNT-" + count.countNo, entryType: "INVENTORY_COUNT", totalDebit: journal.totalDebit.toFixed(6), totalCredit: journal.totalCredit.toFixed(6) }).$returningId(); const journalId = Number(insertedJournal[0]?.id); if (!journalId) throw new Error("INVENTORY_COUNT_JOURNAL_FAILED"); await tx.insert(journalEntryLines).values(journal.lines.map((line) => ({ journalEntryId: journalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) }))); }
+    if (journalLines.length) { const journal = validateJournal({ description: "ترحيل جرد " + count.countNo, source: "INVENTORY_COUNT", lines: journalLines }); const insertedJournal = await tx.insert(journalEntries).values({ journalNo: "COUNT-" + count.countNo, entryType: "INVENTORY_COUNT", sourceType: "INVENTORY_COUNT", sourceDocumentNo: count.countNo, totalDebit: journal.totalDebit.toFixed(6), totalCredit: journal.totalCredit.toFixed(6), status: "POSTED", postedAt: new Date(), idempotencyKey: `JOURNAL:COUNT:${count.countNo}`, createdBy: actor }).$returningId(); const journalId = Number(insertedJournal[0]?.id); if (!journalId) throw new Error("INVENTORY_COUNT_JOURNAL_FAILED"); await tx.insert(journalEntryLines).values(journal.lines.map((line, lineNo) => ({ journalEntryId: journalId, lineNo: lineNo + 1, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6), baseDebit: Number(line.debit || 0).toFixed(6), baseCredit: Number(line.credit || 0).toFixed(6) }))); }
     await tx.update(inventoryCounts).set({ status: "POSTED", postedAt: new Date() }).where(eq(inventoryCounts.id, countId)); await tx.insert(auditEvents).values({ actor, actionCode: "POST", entityType: "INVENTORY_COUNT", entityId: String(countId), requestId: "POST-COUNT:" + count.countNo }); return { countId, status: "POSTED" as const, totalVariance: totalVariance.toFixed(6) };
   });
 }
@@ -854,7 +865,7 @@ export async function receiveStock(input: { itemId: number; warehouseId: number;
     else await tx.insert(stockBalances).values({ itemId: input.itemId, warehouseId: input.warehouseId, quantity: quantity.toFixed(6), totalCost: totalCost.toFixed(6), unitCost: unitCost.toFixed(6), versionNo: 1 });
     await tx.insert(stockMovements).values({ itemId: input.itemId, warehouseId: input.warehouseId, movementType: "PURCHASE_RECEIPT", quantityIn: quantity.toFixed(6), unitCost: unitCost.toFixed(6), totalCost: totalCost.toFixed(6), balanceAfter: afterQty.toFixed(6), createdBy: input.actor });
     const journalNo = `AP-RECEIPT-${input.reference}`;
-    const inserted = await tx.insert(journalEntries).values({ journalNo, entryType: "AP_RECEIPT", totalDebit: totalCost.toFixed(6), totalCredit: totalCost.toFixed(6) }).$returningId();
+    const inserted = await tx.insert(journalEntries).values({ journalNo, entryType: "AP_RECEIPT", sourceType: "AP_RECEIPT", sourceDocumentNo: input.reference, totalDebit: totalCost.toFixed(6), totalCredit: totalCost.toFixed(6), status: "POSTED", postedAt: new Date(), idempotencyKey: `JOURNAL:AP_RECEIPT:${input.reference}`, createdBy: input.actor }).$returningId();
     const journalId = Number(inserted[0]?.id); if (journalId) await tx.insert(journalEntryLines).values([{ journalEntryId: journalId, accountCode: "1300", accountName: "المخزون", debit: totalCost.toFixed(6), credit: "0", description: input.reference }, { journalEntryId: journalId, accountCode: "2100", accountName: "الموردون", debit: "0", credit: totalCost.toFixed(6), description: input.reference }]);
     await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "RECEIVE", entityType: "STOCK", entityId: `${input.itemId}:${input.warehouseId}`, requestId: `RECEIVE:${input.reference}` });
     return { itemId: input.itemId, warehouseId: input.warehouseId, quantity: input.quantity, unitCost: input.unitCost, totalCost: totalCost.toFixed(6), status: "RECEIVED" as const, reference: input.reference };
@@ -908,8 +919,9 @@ export async function postInvoice(invoiceId: number, actor: string, requestId?: 
       }
     }
     const total = Number(invoice.grandTotal);
+    await validatePostingAccountMappings(1, [customerAccount.code, lines[0]?.item.revenueAccount || "4100", lines[0]?.item.cogsAccount || "5100", lines[0]?.item.inventoryAccount || "1300", "2200"]);
     const saleJournal = buildSaleJournal({ total, subtotal: Number(invoice.subtotal), taxTotal: Number(invoice.taxTotal), totalCogs, receivableAccount: customerAccount.code, revenueAccount: lines[0]?.item.revenueAccount || "4100", cogsAccount: lines[0]?.item.cogsAccount || "5100", inventoryAccount: lines[0]?.item.inventoryAccount || "1300" });
-    const insertedJournal = await tx.insert(journalEntries).values({ journalNo: `AR-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "AR_SALE", totalDebit: saleJournal.totalDebit.toFixed(6), totalCredit: saleJournal.totalCredit.toFixed(6) }).$returningId();
+    const insertedJournal = await tx.insert(journalEntries).values({ journalNo: `AR-${invoice.docNo}`, sourceInvoiceId: invoiceId, sourceType: "AR_SALE", sourceDocumentNo: invoice.docNo, entryType: "AR_SALE", totalDebit: saleJournal.totalDebit.toFixed(6), totalCredit: saleJournal.totalCredit.toFixed(6), status: "POSTED", postedAt: new Date(), idempotencyKey: `JOURNAL:AR_SALE:${invoice.docNo}`, createdBy: actor }).$returningId();
     const journalId = Number(insertedJournal[0]?.id);
     if (!journalId) throw new Error("JOURNAL_CREATE_FAILED");
     await tx.insert(journalEntryLines).values(saleJournal.lines.map((line) => ({ journalEntryId: journalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) })));
@@ -990,7 +1002,7 @@ export async function reverseInvoice(invoiceId: number, actor: string, requestId
     const originalLines = await tx.select().from(journalEntryLines).where(eq(journalEntryLines.journalEntryId, originalJournal.id));
     const totalCogs = Number(originalLines.find((line) => line.accountCode === "5100")?.debit || 0);
     const reversal = validateJournal({ description: "عكس فاتورة مبيعات", source: "SALE_INVOICE_REVERSAL", lines: originalLines.map((line) => ({ accountCode: line.accountCode, accountName: line.accountName || undefined, debit: Number(line.credit), credit: Number(line.debit), description: `عكس: ${line.description || ""}` })) });
-    const insertedReversal = await tx.insert(journalEntries).values({ journalNo: `REV-${invoice.docNo}`, sourceInvoiceId: invoiceId, entryType: "REVERSAL", totalDebit: reversal.totalDebit.toFixed(6), totalCredit: reversal.totalCredit.toFixed(6) }).$returningId();
+    const insertedReversal = await tx.insert(journalEntries).values({ journalNo: `REV-${invoice.docNo}`, sourceInvoiceId: invoiceId, sourceType: "REVERSAL", sourceDocumentNo: invoice.docNo, entryType: "REVERSAL", totalDebit: reversal.totalDebit.toFixed(6), totalCredit: reversal.totalCredit.toFixed(6), status: "REVERSED", reversedAt: new Date(), reversedBy: actor, idempotencyKey: `JOURNAL:REVERSAL:${invoice.docNo}`, createdBy: actor }).$returningId();
     const reversalId = Number(insertedReversal[0]?.id);
     if (!reversalId) throw new Error("REVERSAL_JOURNAL_CREATE_FAILED");
     await tx.insert(journalEntryLines).values(reversal.lines.map((line) => ({ journalEntryId: reversalId, accountCode: line.accountCode, accountName: line.accountName, description: line.description, debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6) })));
@@ -1157,7 +1169,11 @@ export async function deleteAccount(input: { id: number; actor?: string }) {
     const item = (await tx.select({ id: items.id }).from(items).where(or(eq(items.revenueAccount, current.code), eq(items.inventoryAccount, current.code), eq(items.cogsAccount, current.code))).limit(1))[0];
     const cashBox = (await tx.select({ id: cashBoxes.id }).from(cashBoxes).where(eq(cashBoxes.accountId, input.id)).limit(1))[0];
     const bank = (await tx.select({ id: banks.id }).from(banks).where(eq(banks.accountId, input.id)).limit(1))[0];
-    if (journalLine || customer || supplier || item || cashBox || bank) throw new Error("ACCOUNT_HAS_REFERENCES");
+    if (journalLine || customer || supplier || item || cashBox || bank) {
+      await tx.update(accounts).set({ status: "BLOCKED", active: 0 }).where(eq(accounts.id, input.id));
+      await tx.insert(auditEvents).values({ actor: input.actor || "workbench.user", actionCode: "BLOCK", entityType: "ACCOUNT", entityId: String(input.id), requestId: `ACCOUNT:BLOCK:${input.id}` });
+      return { id: input.id, deleted: false as const, blocked: true as const };
+    }
     await tx.delete(accounts).where(eq(accounts.id, input.id));
     await tx.insert(auditEvents).values({ actor: input.actor || "workbench.user", actionCode: "DELETE", entityType: "ACCOUNT", entityId: String(input.id), requestId: `ACCOUNT:DELETE:${input.id}` });
     return { id: input.id, deleted: true as const };
@@ -1341,3 +1357,86 @@ export async function importAccounts(input: { companyId?: number; actor?: string
 }
 
 export async function searchCurrencies() { return getCurrencies(); }
+
+
+type JournalWorkflowInput = { journalNo: string; entryType: string; actor: string; companyId?: number; branchId?: number; fiscalPeriodId?: number; journalDate?: string; sourceType?: string; sourceDocumentNo?: string; description?: string; lines: { accountCode: string; accountName?: string; description?: string; currencyCode?: string; exchangeRate?: string; debit: string; credit: string }[] };
+
+export async function createJournalDraft(input: JournalWorkflowInput) {
+  const journal = validateJournal({ description: input.description || input.entryType, source: input.sourceType || "MANUAL", lines: input.lines });
+  const db = await getDb();
+  if (!db) return { id: Date.now(), journalNo: input.journalNo, status: "DRAFT" as const, totalDebit: journal.totalDebit.toFixed(6), totalCredit: journal.totalCredit.toFixed(6) };
+  return db.transaction(async (tx) => {
+    const inserted = await tx.insert(journalEntries).values({ journalNo: input.journalNo, companyId: input.companyId || 1, branchId: input.branchId, fiscalPeriodId: input.fiscalPeriodId, sourceType: input.sourceType || "MANUAL", sourceDocumentNo: input.sourceDocumentNo, entryType: input.entryType, journalDate: input.journalDate ? new Date(input.journalDate) : new Date(), description: input.description, totalDebit: journal.totalDebit.toFixed(6), totalCredit: journal.totalCredit.toFixed(6), status: "DRAFT", idempotencyKey: `JOURNAL:DRAFT:${input.journalNo}`, createdBy: input.actor }).$returningId();
+    const id = Number(inserted[0]?.id); if (!id) throw new Error("JOURNAL_CREATE_FAILED");
+    await tx.insert(journalEntryLines).values(journal.lines.map((line, lineNo) => ({ journalEntryId: id, lineNo: lineNo + 1, accountCode: line.accountCode, accountName: line.accountName, description: line.description, currencyCode: input.lines[lineNo]?.currencyCode || "SAR", exchangeRate: input.lines[lineNo]?.exchangeRate || "1", debit: Number(line.debit || 0).toFixed(6), credit: Number(line.credit || 0).toFixed(6), baseDebit: Number(line.debit || 0).toFixed(6), baseCredit: Number(line.credit || 0).toFixed(6) })));
+    await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "CREATE_DRAFT", entityType: "GL_JOURNAL", entityId: String(id), requestId: `JOURNAL:DRAFT:${input.journalNo}` });
+    return { id, journalNo: input.journalNo, status: "DRAFT" as const, totalDebit: journal.totalDebit.toFixed(6), totalCredit: journal.totalCredit.toFixed(6) };
+  });
+}
+
+async function transitionJournal(id: number, actor: string, from: string, to: "VALIDATED" | "APPROVED" | "POSTED" | "REVERSED") {
+  const db = await getDb(); if (!db) return { id, status: to };
+  return db.transaction(async (tx) => {
+    const entry = (await tx.select().from(journalEntries).where(eq(journalEntries.id, id)).limit(1))[0]; if (!entry) throw new Error("JOURNAL_NOT_FOUND"); if (entry.status !== from) throw new Error(`JOURNAL_EXPECTED_${from}`);
+    if (to === "VALIDATED") {
+      const lines = await tx.select().from(journalEntryLines).where(eq(journalEntryLines.journalEntryId, id));
+      const accountsByCode = new Map((await tx.select().from(accounts).where(eq(accounts.companyId, entry.companyId))).map((account) => [account.code, account]));
+      const totalDebit = lines.reduce((sum, line) => sum + Number(line.debit), 0); const totalCredit = lines.reduce((sum, line) => sum + Number(line.credit), 0);
+      if (Math.abs(totalDebit - totalCredit) > 0.000001) throw new Error("JOURNAL_NOT_BALANCED");
+      for (const line of lines) { const account = accountsByCode.get(line.accountCode); if (!account) throw new Error(`ACCOUNT_NOT_FOUND:${line.accountCode}`); if (account.status !== "ACTIVE" || account.allowPosting === 0) throw new Error(`ACCOUNT_NOT_POSTABLE:${line.accountCode}`); }
+      await tx.update(journalEntries).set({ status: "VALIDATED", validatedAt: new Date(), validatedBy: actor }).where(eq(journalEntries.id, id));
+    } else if (to === "APPROVED") await tx.update(journalEntries).set({ status: "APPROVED", approvedAt: new Date(), approvedBy: actor }).where(eq(journalEntries.id, id));
+    else if (to === "POSTED") await tx.update(journalEntries).set({ status: "POSTED", postedAt: new Date() }).where(eq(journalEntries.id, id));
+    else await tx.update(journalEntries).set({ status: "REVERSED", reversedAt: new Date(), reversedBy: actor }).where(eq(journalEntries.id, id));
+    await tx.insert(auditEvents).values({ actor, actionCode: to, entityType: "GL_JOURNAL", entityId: String(id), requestId: `JOURNAL:${to}:${id}` });
+    return { id, status: to };
+  });
+}
+export const validateJournalEntry = (id: number, actor: string) => transitionJournal(id, actor, "DRAFT", "VALIDATED");
+export const approveJournalEntry = (id: number, actor: string) => transitionJournal(id, actor, "VALIDATED", "APPROVED");
+export const postJournalEntry = (id: number, actor: string) => transitionJournal(id, actor, "APPROVED", "POSTED");
+export const reverseJournalEntry = (id: number, actor: string) => transitionJournal(id, actor, "POSTED", "REVERSED");
+
+export async function getGeneralLedgerReport(input: { accountCode?: string; from?: string; to?: string; limit?: number }) {
+  const db = await getDb(); const limit = input.limit || 500;
+  if (!db) return { rows: [], totals: { debit: "0.000000", credit: "0.000000", balance: "0.000000" } };
+  const filters = [or(eq(journalEntries.status, "POSTED"), eq(journalEntries.status, "REVERSED"))!];
+  if (input.accountCode) filters.push(eq(journalEntryLines.accountCode, input.accountCode));
+  if (input.from) filters.push(gte(journalEntries.journalDate, new Date(input.from)));
+  if (input.to) filters.push(lte(journalEntries.journalDate, new Date(input.to)));
+  const rows = await db.select({ journalId: journalEntries.id, journalNo: journalEntries.journalNo, journalDate: journalEntries.journalDate, status: journalEntries.status, entryType: journalEntries.entryType, description: journalEntries.description, accountCode: journalEntryLines.accountCode, accountName: journalEntryLines.accountName, debit: journalEntryLines.debit, credit: journalEntryLines.credit }).from(journalEntryLines).innerJoin(journalEntries, eq(journalEntryLines.journalEntryId, journalEntries.id)).where(and(...filters)).orderBy(journalEntries.journalDate, journalEntries.id, journalEntryLines.lineNo).limit(limit);
+  const totals = rows.reduce((result, row) => { result.debit += Number(row.debit); result.credit += Number(row.credit); return result; }, { debit: 0, credit: 0 });
+  let balance = 0; const enriched = rows.map((row) => { balance += Number(row.debit) - Number(row.credit); return { ...row, runningBalance: balance.toFixed(6) }; });
+  return { rows: enriched, totals: { debit: totals.debit.toFixed(6), credit: totals.credit.toFixed(6), balance: (totals.debit - totals.credit).toFixed(6) } };
+}
+
+export async function getTrialBalanceReport(input: { from?: string; to?: string; limit?: number }) {
+  const ledger = await getGeneralLedgerReport({ from: input.from, to: input.to, limit: input.limit || 5000 }); const grouped = new Map<string, { accountCode: string; accountName?: string; debit: number; credit: number }>();
+  for (const row of ledger.rows) { const current = grouped.get(row.accountCode) || { accountCode: row.accountCode, accountName: row.accountName || undefined, debit: 0, credit: 0 }; current.debit += Number(row.debit); current.credit += Number(row.credit); grouped.set(row.accountCode, current); }
+  return { rows: Array.from(grouped.values()).map((row) => ({ ...row, balance: row.debit - row.credit, debit: row.debit.toFixed(6), credit: row.credit.toFixed(6), balanceText: (row.debit - row.credit).toFixed(6) })), totals: ledger.totals };
+}
+
+
+export async function validatePostingAccountMappings(companyId: number, codes: string[]) {
+  const db = await getDb();
+  if (!db) return { valid: true, codes };
+  const uniqueCodes = Array.from(new Set(codes.map((code) => code.trim()).filter(Boolean)));
+  const invalid: string[] = [];
+  for (const code of uniqueCodes) {
+    const account = (await db.select().from(accounts).where(and(eq(accounts.companyId, companyId), eq(accounts.code, code))).limit(1))[0];
+    if (!account || account.status !== "ACTIVE" || account.active === 0 || account.allowPosting === 0) invalid.push(code);
+  }
+  if (invalid.length) throw new Error(`ACCOUNT_MAPPING_NOT_POSTABLE:${invalid.join(",")}`);
+  return { valid: true, codes: uniqueCodes };
+}
+
+
+export async function getGlReconciliationSnapshot(companyId = 1) {
+  const db = await getDb();
+  if (!db) return { companyId, invoices: { count: 0, total: "0.000000" }, postedJournals: { count: 0, debit: "0.000000", credit: "0.000000" }, trialBalance: { debit: "0.000000", credit: "0.000000" }, differences: { journalBalance: "0.000000", invoiceJournalCount: 0, invoiceJournalTotal: "0.000000" }, status: "NO_DATABASE" as const };
+  const invoiceStats = (await db.select({ count: sql<number>`count(*)`, total: sql<number>`coalesce(sum(${invoices.grandTotal}), 0)` }).from(invoices).where(eq(invoices.status, "POSTED")))[0];
+  const journalStats = (await db.select({ count: sql<number>`count(*)`, debit: sql<number>`coalesce(sum(${journalEntries.totalDebit}), 0)`, credit: sql<number>`coalesce(sum(${journalEntries.totalCredit}), 0)` }).from(journalEntries).where(and(eq(journalEntries.companyId, companyId), eq(journalEntries.status, "POSTED"))))[0];
+  const lineStats = (await db.select({ debit: sql<number>`coalesce(sum(${journalEntryLines.debit}), 0)`, credit: sql<number>`coalesce(sum(${journalEntryLines.credit}), 0)` }).from(journalEntryLines).innerJoin(journalEntries, eq(journalEntryLines.journalEntryId, journalEntries.id)).where(and(eq(journalEntries.companyId, companyId), eq(journalEntries.status, "POSTED"))))[0];
+  const debit = Number(lineStats?.debit || 0); const credit = Number(lineStats?.credit || 0);
+  return { companyId, invoices: { count: Number(invoiceStats?.count || 0), total: Number(invoiceStats?.total || 0).toFixed(6) }, postedJournals: { count: Number(journalStats?.count || 0), debit: Number(journalStats?.debit || 0).toFixed(6), credit: Number(journalStats?.credit || 0).toFixed(6) }, trialBalance: { debit: debit.toFixed(6), credit: credit.toFixed(6) }, differences: { journalBalance: (debit - credit).toFixed(6), invoiceJournalCount: Number(invoiceStats?.count || 0) - Number(journalStats?.count || 0), invoiceJournalTotal: (Number(invoiceStats?.total || 0) - Number(journalStats?.debit || 0)).toFixed(6) }, status: Math.abs(debit - credit) < 0.000001 ? "BALANCED" as const : "REVIEW_REQUIRED" as const };
+}

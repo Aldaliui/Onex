@@ -284,24 +284,54 @@ export const stockLocationBalances = mysqlTable("stock_location_balances", {
 
 export const journalEntries = mysqlTable("journal_entries", {
   id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull().default(1),
+  branchId: int("branchId"),
+  fiscalPeriodId: int("fiscalPeriodId"),
   journalNo: varchar("journalNo", { length: 80 }).notNull().unique(),
   sourceInvoiceId: int("sourceInvoiceId"),
+  sourceType: varchar("sourceType", { length: 40 }).notNull().default("MANUAL"),
+  sourceDocumentNo: varchar("sourceDocumentNo", { length: 80 }),
   entryType: varchar("entryType", { length: 40 }).notNull(),
+  journalDate: timestamp("journalDate").defaultNow().notNull(),
+  description: text("description"),
   totalDebit: decimal("totalDebit", { precision: 20, scale: 6 }).notNull(),
   totalCredit: decimal("totalCredit", { precision: 20, scale: 6 }).notNull(),
-  status: mysqlEnum("status", ["POSTED", "REVERSED"]).notNull().default("POSTED"),
+  status: mysqlEnum("status", ["DRAFT", "VALIDATED", "APPROVED", "POSTED", "REVERSED", "CANCELLED"]).notNull().default("DRAFT"),
+  validatedAt: timestamp("validatedAt"),
+  validatedBy: varchar("validatedBy", { length: 100 }),
+  approvedAt: timestamp("approvedAt"),
+  approvedBy: varchar("approvedBy", { length: 100 }),
+  postedAt: timestamp("postedAt"),
+  reversedAt: timestamp("reversedAt"),
+  reversedBy: varchar("reversedBy", { length: 100 }),
+  idempotencyKey: varchar("idempotencyKey", { length: 160 }).notNull().unique(),
+  createdBy: varchar("createdBy", { length: 100 }).notNull().default("system"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  companyDateIdx: index("journal_company_date_idx").on(table.companyId, table.journalDate),
+  periodStatusIdx: index("journal_period_status_idx").on(table.fiscalPeriodId, table.status),
+  sourceIdx: index("journal_source_idx").on(table.sourceType, table.sourceDocumentNo),
+}));
 
 export const journalEntryLines = mysqlTable("journal_entry_lines", {
   id: int("id").autoincrement().primaryKey(),
   journalEntryId: int("journalEntryId").notNull(),
+  lineNo: int("lineNo").notNull().default(1),
   accountCode: varchar("accountCode", { length: 80 }).notNull(),
   accountName: varchar("accountName", { length: 240 }),
   description: varchar("description", { length: 500 }),
+  costCenterCode: varchar("costCenterCode", { length: 80 }),
+  currencyCode: varchar("currencyCode", { length: 3 }).notNull().default("SAR"),
+  exchangeRate: decimal("exchangeRate", { precision: 20, scale: 8 }).notNull().default("1"),
   debit: decimal("debit", { precision: 20, scale: 6 }).notNull().default("0"),
   credit: decimal("credit", { precision: 20, scale: 6 }).notNull().default("0"),
-});
+  baseDebit: decimal("baseDebit", { precision: 20, scale: 6 }).notNull().default("0"),
+  baseCredit: decimal("baseCredit", { precision: 20, scale: 6 }).notNull().default("0"),
+}, (table) => ({
+  journalLineIdx: index("journal_line_journal_idx").on(table.journalEntryId, table.lineNo),
+  accountLineIdx: index("journal_line_account_idx").on(table.accountCode),
+}));
 
 export const auditEvents = mysqlTable("audit_events", {
   id: int("id").autoincrement().primaryKey(),
@@ -356,9 +386,30 @@ export const accounts = mysqlTable("accounts", {
   name: varchar("name", { length: 240 }).notNull(),
   accountType: varchar("accountType", { length: 30 }).notNull(),
   parentCode: varchar("parentCode", { length: 80 }),
+  levelNo: int("levelNo").notNull().default(0),
+  allowPosting: int("allowPosting").notNull().default(1),
+  normalBalance: mysqlEnum("normalBalance", ["DEBIT", "CREDIT"]).notNull().default("DEBIT"),
+  isControlAccount: int("isControlAccount").notNull().default(0),
+  cashFlowCategory: varchar("cashFlowCategory", { length: 40 }),
+  salesAccount: int("salesAccount").notNull().default(0),
+  purchaseAccount: int("purchaseAccount").notNull().default(0),
+  inventoryAccount: int("inventoryAccount").notNull().default(0),
+  cogsAccount: int("cogsAccount").notNull().default(0),
   currencyCode: varchar("currencyCode", { length: 3 }).notNull().default("SAR"),
   active: int("active").notNull().default(1),
-}, (table) => ({ companyCode: unique("account_company_code").on(table.companyId, table.code) }));
+  status: mysqlEnum("status", ["ACTIVE", "BLOCKED", "CLOSED"]).notNull().default("ACTIVE"),
+  legacyCode: varchar("legacyCode", { length: 80 }),
+  legacySource: varchar("legacySource", { length: 120 }),
+  closedAt: timestamp("closedAt"),
+  closedBy: varchar("closedBy", { length: 100 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  companyCode: unique("account_company_code").on(table.companyId, table.code),
+  companyParentIdx: index("account_company_parent_idx").on(table.companyId, table.parentCode),
+  typeActiveIdx: index("account_type_active_idx").on(table.companyId, table.accountType, table.active),
+  postingIdx: index("account_posting_idx").on(table.companyId, table.allowPosting, table.active),
+}));
 
 export const fiscalPeriods = mysqlTable("fiscal_periods", {
   id: int("id").autoincrement().primaryKey(),
