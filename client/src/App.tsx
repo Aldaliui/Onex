@@ -9,6 +9,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 const Home = lazy(() => import("./pages/Home"));
 const WindowWorkbench = lazy(() => import("./pages/WindowWorkbench"));
 const SystemSetup = lazy(() => import("./pages/SystemSetup"));
+const SystemAdministration = lazy(() => import("./pages/SystemAdministration"));
 const ComponentShowcase = lazy(() => import("./pages/ComponentShowcase"));
 
 function RouteFallback() {
@@ -16,7 +17,7 @@ function RouteFallback() {
 }
 
 function Router() {
-  return <Suspense fallback={<RouteFallback />}><Switch><Route path="/" component={WindowWorkbench} /><Route path="/workbench" component={WindowWorkbench} /><Route path="/home" component={Home} /><Route path="/setup" component={SystemSetup} /><Route path="/showcase" component={ComponentShowcase} /><Route path="/404" component={NotFound} /><Route component={NotFound} /></Switch></Suspense>;
+  return <Suspense fallback={<RouteFallback />}><Switch><Route path="/" component={WindowWorkbench} /><Route path="/workbench" component={WindowWorkbench} /><Route path="/home" component={Home} /><Route path="/setup" component={SystemSetup} /><Route path="/system-administration" component={SystemAdministration} /><Route path="/showcase" component={ComponentShowcase} /><Route path="/404" component={NotFound} /><Route component={NotFound} /></Switch></Suspense>;
 }
 
 export default function App() {
