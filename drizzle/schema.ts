@@ -258,6 +258,18 @@ export const goodsReceiptLines = mysqlTable("goods_receipt_lines", {
   serialsJson: text("serialsJson"),
 });
 
+export const grniPostings = mysqlTable("grni_postings", {
+  id: int("id").autoincrement().primaryKey(),
+  goodsReceiptId: int("goodsReceiptId").notNull().unique(),
+  purchaseOrderId: int("purchaseOrderId").notNull(),
+  supplierId: int("supplierId").notNull(),
+  journalId: int("journalId"),
+  amount: decimal("amount", { precision: 20, scale: 6 }).notNull(),
+  status: mysqlEnum("status", ["OPEN", "SETTLED", "CANCELLED"]).notNull().default("OPEN"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  settledAt: timestamp("settledAt"),
+}, (table) => ({ supplierStatusIdx: index("grni_supplier_status_idx").on(table.supplierId, table.status) }));
+
 export const eInvoiceSubmissions = mysqlTable("e_invoice_submissions", {
   id: int("id").autoincrement().primaryKey(),
   invoiceId: int("invoiceId").notNull(),
