@@ -88,6 +88,46 @@ export const companies = mysqlTable("companies", {
   name: varchar("name", { length: 200 }).notNull(),
   baseCurrency: varchar("baseCurrency", { length: 3 }).notNull().default("SAR"),
 });
+export const companyGroups = mysqlTable("company_groups", {
+  id: int("id").autoincrement().primaryKey(),
+  code: varchar("code", { length: 30 }).notNull().unique(),
+  name: varchar("name", { length: 200 }).notNull(),
+  baseCurrency: varchar("baseCurrency", { length: 3 }).notNull().default("SAR"),
+  active: int("active").notNull().default(1),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export const companyGroupMembers = mysqlTable("company_group_members", {
+  id: int("id").autoincrement().primaryKey(),
+  groupId: int("groupId").notNull(),
+  companyId: int("companyId").notNull(),
+  consolidationCode: varchar("consolidationCode", { length: 30 }),
+}, (table) => ({ membership: unique("company_group_membership").on(table.groupId, table.companyId) }));
+export const currencies = mysqlTable("currencies", {
+  id: int("id").autoincrement().primaryKey(),
+  code: varchar("code", { length: 3 }).notNull().unique(),
+  name: varchar("name", { length: 120 }).notNull(),
+  decimalScale: int("decimalScale").notNull().default(2),
+  active: int("active").notNull().default(1),
+});
+export const exchangeRates = mysqlTable("exchange_rates", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull(),
+  currencyCode: varchar("currencyCode", { length: 3 }).notNull(),
+  rateDate: timestamp("rateDate").notNull(),
+  rate: decimal("rate", { precision: 20, scale: 8 }).notNull(),
+  source: varchar("source", { length: 80 }).notNull().default("MANUAL"),
+  actor: varchar("actor", { length: 100 }).notNull(),
+}, (table) => ({ companyCurrencyDate: unique("exchange_rate_scope").on(table.companyId, table.currencyCode, table.rateDate) }));
+export const taxCodes = mysqlTable("tax_codes", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull(),
+  code: varchar("code", { length: 30 }).notNull(),
+  name: varchar("name", { length: 160 }).notNull(),
+  rate: decimal("rate", { precision: 9, scale: 4 }).notNull().default("0"),
+  category: varchar("category", { length: 30 }).notNull().default("STANDARD"),
+  active: int("active").notNull().default(1),
+}, (table) => ({ companyCode: unique("tax_code_company_code").on(table.companyId, table.code) }));
 
 export const warehouses = mysqlTable("warehouses", {
   id: int("id").autoincrement().primaryKey(),
@@ -544,6 +584,73 @@ export const documentEvents = mysqlTable("document_events", {
   requestId: varchar("requestId", { length: 160 }).notNull().unique(),
   occurredAt: timestamp("occurredAt").defaultNow().notNull(),
 }, (table) => ({ documentIdx: index("document_events_document_idx").on(table.documentType, table.documentId, table.occurredAt) }));
+export const rolePolicies = mysqlTable("role_policies", {
+  id: int("id").autoincrement().primaryKey(),
+  roleId: int("roleId").notNull(),
+  policyCode: varchar("policyCode", { length: 100 }).notNull(),
+  effect: mysqlEnum("effect", ["ALLOW", "DENY"]).notNull().default("ALLOW"),
+  scopeJson: text("scopeJson").notNull(),
+  active: int("active").notNull().default(1),
+  updatedBy: varchar("updatedBy", { length: 100 }).notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({ rolePolicy: unique("role_policy_code").on(table.roleId, table.policyCode) }));
+export const documentDefinitions = mysqlTable("document_definitions", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull(),
+  documentType: varchar("documentType", { length: 40 }).notNull(),
+  displayName: varchar("displayName", { length: 160 }).notNull(),
+  prefix: varchar("prefix", { length: 30 }).notNull(),
+  approvalRequired: int("approvalRequired").notNull().default(1),
+  postingRequired: int("postingRequired").notNull().default(1),
+  active: int("active").notNull().default(1),
+}, (table) => ({ companyDocument: unique("document_definition_scope").on(table.companyId, table.documentType) }));
+export const attachments = mysqlTable("attachments", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull(),
+  entityType: varchar("entityType", { length: 80 }).notNull(),
+  entityId: varchar("entityId", { length: 120 }).notNull(),
+  fileName: varchar("fileName", { length: 255 }).notNull(),
+  contentType: varchar("contentType", { length: 120 }).notNull(),
+  storageKey: varchar("storageKey", { length: 500 }).notNull(),
+  checksum: varchar("checksum", { length: 128 }),
+  uploadedBy: varchar("uploadedBy", { length: 100 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({ entityIdx: index("attachment_entity_idx").on(table.entityType, table.entityId) }));
+export const notifications = mysqlTable("notifications", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  companyId: int("companyId"),
+  notificationType: varchar("notificationType", { length: 60 }).notNull(),
+  title: varchar("title", { length: 200 }).notNull(),
+  body: text("body").notNull(),
+  entityType: varchar("entityType", { length: 80 }),
+  entityId: varchar("entityId", { length: 120 }),
+  readAt: timestamp("readAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({ userUnreadIdx: index("notification_user_unread_idx").on(table.userId, table.readAt, table.createdAt) }));
+export const masterDataImports = mysqlTable("master_data_imports", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("companyId").notNull(),
+  entityType: varchar("entityType", { length: 40 }).notNull(),
+  fileName: varchar("fileName", { length: 255 }).notNull(),
+  status: mysqlEnum("status", ["PREVIEW", "VALIDATED", "COMMITTED", "REVERTED", "FAILED"]).notNull().default("PREVIEW"),
+  totalRows: int("totalRows").notNull().default(0),
+  validRows: int("validRows").notNull().default(0),
+  invalidRows: int("invalidRows").notNull().default(0),
+  actor: varchar("actor", { length: 100 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  committedAt: timestamp("committedAt"),
+}, (table) => ({ importCompanyStatusIdx: index("master_import_company_status_idx").on(table.companyId, table.status, table.createdAt) }));
+export const masterDataImportRows = mysqlTable("master_data_import_rows", {
+  id: int("id").autoincrement().primaryKey(),
+  importId: int("importId").notNull(),
+  rowNo: int("rowNo").notNull(),
+  rawJson: text("rawJson").notNull(),
+  normalizedJson: text("normalizedJson"),
+  status: mysqlEnum("status", ["VALID", "INVALID", "COMMITTED", "REVERTED"]).notNull(),
+  errorsJson: text("errorsJson"),
+  targetId: int("targetId"),
+}, (table) => ({ importRowIdx: index("master_import_row_idx").on(table.importId, table.rowNo) }));
 
 export const postingBatches = mysqlTable("posting_batches", {
   id: int("id").autoincrement().primaryKey(),

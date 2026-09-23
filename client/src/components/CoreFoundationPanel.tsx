@@ -1,0 +1,43 @@
+import { useMemo, useState } from "react";
+import type { ReactNode } from "react";
+import { CheckCircle2, Database, FileUp, RefreshCw, ShieldCheck } from "lucide-react";
+import { toast } from "sonner";
+import { trpc } from "@/lib/trpc";
+
+type Tab = "organization" | "finance" | "security" | "documents" | "imports";
+const tabs: Array<{ id: Tab; label: string }> = [
+  { id: "organization", label: "الهيكل المؤسسي" },
+  { id: "finance", label: "المالية" },
+  { id: "security", label: "الأمن والصلاحيات" },
+  { id: "documents", label: "المستندات والتنبيهات" },
+  { id: "imports", label: "استيراد البيانات" },
+];
+const cell = (value: unknown) => value === null || value === undefined ? "—" : String(value);
+const list = (value: unknown): Array<Record<string, any>> => Array.isArray(value) ? value as Array<Record<string, any>> : [];
+
+export default function CoreFoundationPanel({ initialTab = "organization" }: { initialTab?: Tab }) {
+  const [tab, setTab] = useState<Tab>(initialTab);
+  const [search, setSearch] = useState("");
+  const [entityType, setEntityType] = useState<"CUSTOMER" | "SUPPLIER" | "ITEM" | "WAREHOUSE">("CUSTOMER");
+  const [fileName, setFileName] = useState("master-data.csv");
+  const [csv, setCsv] = useState("code,name,currencyCode,unitCode,revenueAccount,inventoryAccount,cogsAccount\nCUST-001,عميل تجريبي,SAR,EA,4100,1300,5100");
+  const snapshot = trpc.coreFoundation.snapshot.useQuery({ companyId: 1, search: search || undefined, limit: 100 }, { refetchOnWindowFocus: false });
+  const preview = trpc.coreFoundation.previewImport.useMutation();
+  const commit = trpc.coreFoundation.commitImport.useMutation();
+  const data = snapshot.data;
+  const rows = useMemo(() => preview.data?.rows ?? [], [preview.data]);
+  const runPreview = () => preview.mutate({ companyId: 1, entityType, fileName, csv }, { onError: (error) => toast.error(error.message), onSuccess: (result) => toast.success(`تمت معاينة ${result.totalRows} صف`) });
+  const runCommit = () => { if (!preview.data || preview.data.invalidRows) return toast.error("لا يمكن الإدراج قبل تصحيح جميع الصفوف"); commit.mutate({ importId: preview.data.importId, companyId: 1, entityType, rows: rows.map((row) => row.raw as Record<string, string | number | null>) }, { onError: (error) => toast.error(error.message), onSuccess: (result) => { toast.success(`تم إدراج ${result.committed} سجل`); void snapshot.refetch(); } }); };
+  return <section className="core-foundation-panel" dir="rtl">
+    <header className="core-panel-header"><div><span className="panel-kicker">SHARED ERP FOUNDATION</span><h2>النواة المشتركة للنظام</h2><p>البيانات المؤسسية والمالية والأمنية والمستندات مرتبطة مباشرة بواجهة العمل.</p></div><button type="button" className="overview-refresh" onClick={() => void snapshot.refetch()}><RefreshCw size={15} /> تحديث</button></header>
+    <nav className="core-tabs">{tabs.map((item) => <button type="button" key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}>{item.label}</button>)}</nav>
+    {snapshot.isLoading ? <div className="core-empty">جارٍ تحميل النواة...</div> : <>
+      {tab === "organization" && <div className="core-grid"><CoreCard title="مجموعة الشركات" icon={<Database size={17} />}><table><thead><tr><th>الرمز</th><th>الاسم</th><th>العملة</th><th>الحالة</th></tr></thead><tbody>{list(data?.groups).map((row) => <tr key={row.id}><td>{cell(row.code)}</td><td>{cell(row.name)}</td><td>{cell(row.baseCurrency)}</td><td>{Number(row.active) ? "نشط" : "متوقف"}</td></tr>)}</tbody></table></CoreCard><CoreCard title="الشركات والفروع" icon={<Database size={17} />}><table><thead><tr><th>الشركة</th><th>الاسم</th><th>الفرع</th><th>اسم الفرع</th></tr></thead><tbody>{list(data?.companies).map((company) => list(data?.branches).filter((branch) => Number(branch.companyId) === Number(company.id)).map((branch) => <tr key={`${company.id}-${branch.id}`}><td>{cell(company.code)}</td><td>{cell(company.name)}</td><td>{cell(branch.code)}</td><td>{cell(branch.name)}</td></tr>))}</tbody></table></CoreCard></div>}
+      {tab === "finance" && <div className="core-grid"><CoreCard title="العملات وأسعار الصرف"><table><thead><tr><th>العملة</th><th>الاسم</th><th>الكسور</th><th>الحالة</th></tr></thead><tbody>{list(data?.currencies).map((row) => <tr key={row.id}><td>{cell(row.code)}</td><td>{cell(row.name)}</td><td>{cell(row.decimalScale)}</td><td>{Number(row.active) ? "نشط" : "متوقف"}</td></tr>)}</tbody></table></CoreCard><CoreCard title="الضرائب والفترات"><table><thead><tr><th>الضريبة</th><th>الاسم</th><th>النسبة</th><th>الفترة</th><th>الحالة</th></tr></thead><tbody>{list(data?.taxes).map((row) => <tr key={`tax-${row.id}`}><td>{cell(row.code)}</td><td>{cell(row.name)}</td><td>{cell(row.rate)}%</td><td>—</td><td>{Number(row.active) ? "نشط" : "متوقف"}</td></tr>)}{list(data?.fiscalPeriods).map((row) => <tr key={`period-${row.id}`}><td>—</td><td>الفترة {cell(row.code)}</td><td>—</td><td>{cell(row.startsOn)} → {cell(row.endsOn)}</td><td>{cell(row.status)}</td></tr>)}</tbody></table></CoreCard></div>}
+      {tab === "security" && <div className="core-grid"><CoreCard title="المستخدمون والأدوار" icon={<ShieldCheck size={17} />}><table><thead><tr><th>المستخدم</th><th>البريد</th><th>الدور</th><th>آخر دخول</th></tr></thead><tbody>{list(data?.users).map((row) => <tr key={row.id}><td>{cell(row.name || row.openId)}</td><td>{cell(row.email)}</td><td>{cell(row.role)}</td><td>{cell(row.lastSignedIn)}</td></tr>)}</tbody></table></CoreCard><CoreCard title="السياسات والصلاحيات"><table><thead><tr><th>الكود</th><th>الوصف</th><th>الأثر</th></tr></thead><tbody>{list(data?.permissions).map((row) => <tr key={row.id}><td>{cell(row.code)}</td><td>{cell(row.description || row.actionCode)}</td><td>صلاحية</td></tr>)}{list(data?.policies).map((row) => <tr key={`policy-${row.id}`}><td>{cell(row.policyCode)}</td><td>{cell(row.scopeJson)}</td><td>{cell(row.effect)}</td></tr>)}</tbody></table></CoreCard></div>}
+      {tab === "documents" && <div className="core-grid"><CoreCard title="تعريفات المستندات"><table><thead><tr><th>النوع</th><th>الاسم</th><th>البادئة</th><th>الاعتماد</th><th>الترحيل</th></tr></thead><tbody>{list(data?.documentDefinitions).map((row) => <tr key={row.id}><td>{cell(row.documentType)}</td><td>{cell(row.displayName)}</td><td>{cell(row.prefix)}</td><td>{Number(row.approvalRequired) ? "مطلوب" : "اختياري"}</td><td>{Number(row.postingRequired) ? "مطلوب" : "اختياري"}</td></tr>)}</tbody></table></CoreCard><CoreCard title="التنبيهات"><div className="core-notifications">{list(data?.notifications).map((row) => <article key={row.id}><CheckCircle2 size={16} /><div><b>{cell(row.title)}</b><p>{cell(row.body)}</p><small>{cell(row.createdAt)}</small></div></article>)}{!list(data?.notifications).length && <div className="core-empty">لا توجد تنبيهات.</div>}</div></CoreCard></div>}
+      {tab === "imports" && <div className="core-import"><div className="core-import-form"><label>نوع البيانات<select value={entityType} onChange={(event) => setEntityType(event.target.value as typeof entityType)}><option value="CUSTOMER">العملاء</option><option value="SUPPLIER">الموردون</option><option value="ITEM">الأصناف</option><option value="WAREHOUSE">المستودعات</option></select></label><label>اسم الملف<input value={fileName} onChange={(event) => setFileName(event.target.value)} /></label><label>بيانات CSV<textarea value={csv} onChange={(event) => setCsv(event.target.value)} rows={8} /></label><div className="core-actions"><button type="button" className="primary-action" onClick={runPreview} disabled={preview.isPending}><FileUp size={15} /> معاينة والتحقق</button><button type="button" className="secondary-action" onClick={runCommit} disabled={!preview.data || Boolean(preview.data.invalidRows) || commit.isPending}><CheckCircle2 size={15} /> إدراج السجلات السليمة</button></div></div>{preview.data && <CoreCard title="تقرير المعاينة"><div className="core-import-summary"><b>الإجمالي: {preview.data.totalRows}</b><b className="valid">سليمة: {preview.data.validRows}</b><b className="invalid">أخطاء: {preview.data.invalidRows}</b></div><table><thead><tr><th>الصف</th><th>الحالة</th><th>الأخطاء</th><th>الرمز</th><th>الاسم</th></tr></thead><tbody>{preview.data.rows.map((row) => <tr key={row.rowNo}><td>{row.rowNo}</td><td>{row.errors.length ? "مرفوض" : "سليم"}</td><td>{row.errors.join(", ") || "—"}</td><td>{cell(row.normalized.code)}</td><td>{cell(row.normalized.name)}</td></tr>)}</tbody></table></CoreCard>}</div>}
+    </>}
+  </section>;
+}
+function CoreCard({ title, icon, children }: { title: string; icon?: React.ReactNode; children: React.ReactNode }) { return <article className="core-card"><header><span>{icon}</span><h3>{title}</h3></header>{children}</article>; }

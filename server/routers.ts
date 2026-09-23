@@ -13,6 +13,7 @@ import { buildOpeningBalances, closeFiscalYear } from "./accountingCore";
 import { assertErpAction } from "./erpPolicy";
 import { assignRolePermission, assignUserRole, closeFiscalPeriod, createFiscalPeriod, listFiscalPeriods, listWorkspacePermissions, listWorkspaceRoles, reopenFiscalPeriod } from "./erpWorkspaceDb";
 import { validateThreeWayMatch } from "./purchaseIntegrationReport";
+import { commitMasterDataImport, getCoreFoundationSnapshot, markNotificationRead, previewMasterDataImport, validateDocumentTransition } from "./coreFoundation";
 
 const invoiceLine = z.object({ itemId: z.number().int().positive(), quantity: z.string().min(1), unitPrice: z.string().min(1), taxAmount: z.string().default("0"), unitCode: z.string().max(30).default("EA"), batchNo: z.string().max(100).optional(), expireDate: z.string().optional(), locationId: z.number().int().positive().optional(), serials: z.array(z.string().min(1).max(160)).optional() });
 const partyInput = z.object({ id: z.number().int().positive().optional(), companyId: z.number().int().positive().default(1), code: z.string().min(1).max(50), legalName: z.string().min(1).max(250), currencyCode: z.string().length(3).default("SAR"), status: z.enum(["ACTIVE", "BLOCKED", "CLOSED"]).default("ACTIVE") });
@@ -43,6 +44,13 @@ export const appRouter = router({
     permissions: publicProcedure.query(() => listWorkspacePermissions()),
     assignUserRole: protectedProcedure.input(z.object({ userId: z.number().int().positive(), roleId: z.number().int().positive(), branchId: z.number().int().positive().optional(), actor: z.string().min(1).max(100), role: z.string().min(1).max(60) })).mutation(({ input }) => assignUserRole(input)),
     assignRolePermission: protectedProcedure.input(z.object({ roleId: z.number().int().positive(), permissionId: z.number().int().positive(), actor: z.string().min(1).max(100), role: z.string().min(1).max(60) })).mutation(({ input }) => assignRolePermission(input)),
+  }),
+  coreFoundation: router({
+    snapshot: protectedProcedure.input(z.object({ companyId: z.number().int().positive().default(1), search: z.string().max(120).optional(), limit: z.number().int().min(1).max(200).default(100) })).query(({ input }) => getCoreFoundationSnapshot(input.companyId, input.search, input.limit)),
+    previewImport: protectedProcedure.input(z.object({ companyId: z.number().int().positive().default(1), entityType: z.enum(["CUSTOMER", "SUPPLIER", "ITEM", "WAREHOUSE"]), fileName: z.string().min(1).max(255), csv: z.string().min(1).max(2_000_000) })).mutation(({ input, ctx }) => previewMasterDataImport({ ...input, actor: ctx.user.openId })),
+    commitImport: protectedProcedure.input(z.object({ importId: z.number().int().nonnegative().default(0), companyId: z.number().int().positive().default(1), entityType: z.enum(["CUSTOMER", "SUPPLIER", "ITEM", "WAREHOUSE"]), rows: z.array(z.record(z.string(), z.union([z.string(), z.number(), z.null()]))).min(1).max(10_000) })).mutation(({ input, ctx }) => commitMasterDataImport({ ...input, actor: ctx.user.openId })),
+    markNotificationRead: protectedProcedure.input(z.object({ notificationId: z.number().int().positive() })).mutation(({ input, ctx }) => markNotificationRead({ ...input, userId: ctx.user.id })),
+    validateTransition: protectedProcedure.input(z.object({ fromState: z.string().optional(), toState: z.string().min(1) })).query(({ input }) => validateDocumentTransition(input.fromState, input.toState)),
   }),
   systemSettings: router({ get: publicProcedure.query(() => getSystemSettings()), save: protectedProcedure.input(z.object({ engine: z.string().min(1).max(30), host: z.string().max(255).optional(), port: z.number().int().min(1).max(65535), databaseName: z.string().max(160).optional(), ssl: z.number().int().min(0).max(1), updatedBy: z.string().min(1).max(100) })).mutation(({ input }) => saveSystemSettings(input)) }),
   controlData: publicProcedure.query(() => getErpControlData()),
