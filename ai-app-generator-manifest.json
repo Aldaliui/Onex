@@ -1,0 +1,88 @@
+{
+  "name": "Cloud Onex ERP",
+  "language": "ar",
+  "direction": "rtl",
+  "repository": "https://github.com/aldalistore2/cloud-onex",
+  "branch": "main",
+  "releaseTag": "v1.0.0-rc.1",
+  "commit": "e27392c04b59c3a1ed521b35cc4d396973a34674",
+  "specification": "AI_APP_GENERATOR_MASTER_SPEC_AR.md",
+  "stack": {
+    "frontend": ["React", "TypeScript", "Vite", "Wouter", "TanStack Query", "Radix UI"],
+    "backend": ["Node.js", "Express", "tRPC", "TypeScript"],
+    "database": ["Drizzle ORM", "MySQL-compatible schema", "Cloudflare D1"],
+    "deployment": ["Cloudflare Pages", "Cloudflare Workers", "Cloudflare D1"],
+    "testing": ["Vitest", "TypeScript compiler"]
+  },
+  "commands": {
+    "install": "pnpm install --frozen-lockfile",
+    "check": "pnpm check",
+    "test": "pnpm test -- --run",
+    "build": "pnpm build",
+    "dev": "pnpm dev"
+  },
+  "sourceRoots": {
+    "frontend": ["client/src", "client/index.html"],
+    "windowRuntime": ["client/src/window-runtime", "server/legacyWindowContracts.ts", "server/onyx.contract.test.ts"],
+    "backend": ["server", "server/routers.ts", "server/db.ts"],
+    "domain": ["packages/erp-domain-core", "packages/erp-adapters"],
+    "schema": ["drizzle/schema.ts", "drizzle", "cloudflare/d1"],
+    "cloudflare": ["cloudflare/worker.mjs", "cloudflare/wrangler.jsonc", "cloudflare/document-number-generator.mjs"],
+    "documentation": ["README.md", "docs", "RELEASE_NOTES_v1.0.0-rc.1_AR.md"]
+  },
+  "pages": [
+    "client/src/pages/WindowWorkbench.tsx",
+    "client/src/pages/AccountingSuite.tsx",
+    "client/src/pages/SystemAdministration.tsx",
+    "client/src/pages/SystemSetup.tsx",
+    "client/src/pages/Home.tsx"
+  ],
+  "coreServices": [
+    "server/accountingCore.ts",
+    "server/inventoryKernel.ts",
+    "server/documentLifecycle.ts",
+    "server/systemAdministration.ts",
+    "server/tenantScope.ts",
+    "server/erpWorkspaceDb.ts",
+    "server/purchaseIntegrationReport.ts",
+    "server/eInvoicing.ts",
+    "server/backup.ts",
+    "server/betasys-accounting-import.ts"
+  ],
+  "modules": [
+    "systemAdministration",
+    "companyAndBranchManagement",
+    "usersRolesPermissions",
+    "masterData",
+    "accounting",
+    "salesAndCustomers",
+    "purchasingAndSuppliers",
+    "inventory",
+    "paymentsAndVouchers",
+    "reports",
+    "electronicInvoicing",
+    "betasysMigration",
+    "legacyWindowWorkbench",
+    "backupAndRestore"
+  ],
+  "rules": {
+    "doNotInventFinancialBehavior": true,
+    "doNotPutOracleAnalysisInProductionBundle": true,
+    "enforceCompanyScopeOnServer": true,
+    "requireAuditForWrites": true,
+    "requireIdempotencyForRetriableWrites": true,
+    "requireTestsForGeneratedWindows": true,
+    "markUnverifiedWindowsAsNeedsEvidence": true
+  },
+  "acceptance": [
+    "pnpm check succeeds",
+    "pnpm build succeeds",
+    "no merge conflict markers remain",
+    "company isolation is tested for reads and writes",
+    "sales, purchasing, inventory, posting and reversal flows are tested",
+    "generated windows expose evidence and verification status",
+    "no secrets are committed",
+    "Arabic RTL UI works on desktop and mobile"
+  ]
+}
+
