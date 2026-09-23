@@ -16,6 +16,7 @@ import {
   masterDataImports,
   notifications,
   permissions,
+  rolePermissions,
   rolePolicies,
   roles,
   taxCodes,
@@ -61,11 +62,11 @@ function validateRow(entityType: CoreEntity, row: ImportRow, companyId: number) 
 
 export async function getCoreFoundationSnapshot(companyId = 1, search = "", limit = 100) {
   const db = await getDb();
-  if (!db) return { ...demo, branches: [{ id: 1, companyId, code: "MAIN", name: "الفرع الرئيسي", active: 1 }], fiscalPeriods: [{ id: 1, companyId, code: "2026-01", startsOn: new Date("2026-01-01"), endsOn: new Date("2026-01-31"), status: "OPEN" }], roles: [{ id: 1, code: "admin", name: "مدير النظام", active: 1 }, { id: 2, code: "user", name: "مستخدم", active: 1 }], permissions: [], users: [{ id: 1, openId: "local:administrator", name: "مدير النظام", email: "administrator@local.onex", role: "admin" }], documentDefinitions: [{ id: 1, companyId, documentType: "INVOICE", displayName: "فاتورة", prefix: "INV", approvalRequired: 1, postingRequired: 1, active: 1 }], notifications: [] };
+  if (!db) return { ...demo, branches: [{ id: 1, companyId, code: "MAIN", name: "الفرع الرئيسي", active: 1 }], fiscalPeriods: [{ id: 1, companyId, code: "2026-01", startsOn: new Date("2026-01-01"), endsOn: new Date("2026-01-31"), status: "OPEN" }], roles: [{ id: 1, code: "admin", name: "مدير النظام", active: 1 }, { id: 2, code: "user", name: "مستخدم", active: 1 }], permissions: [], userRoles: [], rolePermissions: [], users: [{ id: 1, openId: "local:administrator", name: "مدير النظام", email: "administrator@local.onex", role: "admin" }], documentDefinitions: [{ id: 1, companyId, documentType: "INVOICE", displayName: "فاتورة", prefix: "INV", approvalRequired: 1, postingRequired: 1, active: 1 }], notifications: [] };
   const query = text(search);
   const companyFilter = eq(companies.id, companyId);
   const branchFilter = query ? and(eq(branches.companyId, companyId), or(like(branches.code, `%${query}%`), like(branches.name, `%${query}%`))) : eq(branches.companyId, companyId);
-  const [companyRows, branchRows, groupRows, currencyRows, rateRows, taxRows, periodRows, roleRows, permissionRows, userRows, policyRows, definitionRows, sequenceRows, notificationRows] = await Promise.all([
+  const [companyRows, branchRows, groupRows, currencyRows, rateRows, taxRows, periodRows, roleRows, permissionRows, userRows, userRoleRows, rolePermissionRows, policyRows, definitionRows, sequenceRows, notificationRows] = await Promise.all([
     db.select().from(companies).where(companyFilter).limit(20),
     db.select().from(branches).where(branchFilter).orderBy(asc(branches.code)).limit(limit),
     db.select().from(companyGroups).where(eq(companyGroups.active, 1)).orderBy(asc(companyGroups.code)).limit(limit),
@@ -76,12 +77,14 @@ export async function getCoreFoundationSnapshot(companyId = 1, search = "", limi
     db.select().from(roles).where(eq(roles.active, 1)).orderBy(asc(roles.code)).limit(limit),
     db.select().from(permissions).orderBy(asc(permissions.code)).limit(limit),
     db.select({ id: users.id, openId: users.openId, name: users.name, email: users.email, role: users.role, lastSignedIn: users.lastSignedIn }).from(users).orderBy(desc(users.lastSignedIn)).limit(limit),
+    db.select().from(userRoles).limit(limit),
+    db.select().from(rolePermissions).limit(limit),
     db.select().from(rolePolicies).where(eq(rolePolicies.active, 1)).limit(limit),
     db.select().from(documentDefinitions).where(and(eq(documentDefinitions.companyId, companyId), eq(documentDefinitions.active, 1))).orderBy(asc(documentDefinitions.documentType)).limit(limit),
     db.select().from(documentSequences).where(eq(documentSequences.companyId, companyId)).orderBy(asc(documentSequences.documentType)).limit(limit),
     db.select().from(notifications).where(and(eq(notifications.userId, 1), eq(notifications.companyId, companyId))).orderBy(desc(notifications.createdAt)).limit(20),
   ]);
-  return { companies: companyRows, branches: branchRows, groups: groupRows, currencies: currencyRows, exchangeRates: rateRows, taxes: taxRows, fiscalPeriods: periodRows, roles: roleRows, permissions: permissionRows, users: userRows, policies: policyRows, documentDefinitions: definitionRows, documentSequences: sequenceRows, notifications: notificationRows };
+  return { companies: companyRows, branches: branchRows, groups: groupRows, currencies: currencyRows, exchangeRates: rateRows, taxes: taxRows, fiscalPeriods: periodRows, roles: roleRows, permissions: permissionRows, users: userRows, userRoles: userRoleRows, rolePermissions: rolePermissionRows, policies: policyRows, documentDefinitions: definitionRows, documentSequences: sequenceRows, notifications: notificationRows };
 }
 
 export async function previewMasterDataImport(input: { companyId: number; entityType: CoreEntity; fileName: string; csv: string; actor: string }) {
