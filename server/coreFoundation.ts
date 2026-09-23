@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, like, or } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, like, or } from "drizzle-orm";
 import { getDb, saveCustomer, saveItem, saveSupplier, saveWarehouse } from "./db";
 import {
   attachments,
@@ -62,7 +62,7 @@ function validateRow(entityType: CoreEntity, row: ImportRow, companyId: number) 
 
 export async function getCoreFoundationSnapshot(companyId = 1, search = "", limit = 100) {
   const db = await getDb();
-  if (!db) return { ...demo, branches: [{ id: 1, companyId, code: "MAIN", name: "الفرع الرئيسي", active: 1 }], fiscalPeriods: [{ id: 1, companyId, code: "2026-01", startsOn: new Date("2026-01-01"), endsOn: new Date("2026-01-31"), status: "OPEN" }], roles: [{ id: 1, code: "admin", name: "مدير النظام", active: 1 }, { id: 2, code: "user", name: "مستخدم", active: 1 }], permissions: [], userRoles: [], rolePermissions: [], users: [{ id: 1, openId: "local:administrator", name: "مدير النظام", email: "administrator@local.onex", role: "admin" }], documentDefinitions: [{ id: 1, companyId, documentType: "INVOICE", displayName: "فاتورة", prefix: "INV", approvalRequired: 1, postingRequired: 1, active: 1 }], notifications: [] };
+  if (!db) return { ...demo, branches: [{ id: 1, companyId, code: "MAIN", name: "الفرع الرئيسي", active: 1 }], fiscalPeriods: [{ id: 1, companyId, code: "2026-01", startsOn: new Date("2026-01-01"), endsOn: new Date("2026-01-31"), status: "OPEN" }], roles: [{ id: 1, code: "admin", name: "مدير النظام", active: 1 }, { id: 2, code: "user", name: "مستخدم", active: 1 }], permissions: [], userRoles: [], rolePermissions: [], users: [{ id: 1, openId: "local:administrator", name: "مدير النظام", email: "administrator@local.onex", role: "admin" }], documentDefinitions: [{ id: 1, companyId, documentType: "INVOICE", displayName: "فاتورة", prefix: "INV", approvalRequired: 1, postingRequired: 1, active: 1 }], documentSequences: [{ id: 1, companyId, branchId: null, periodId: null, documentType: "INVOICE", prefix: "INV-", nextNumber: 1 }], notifications: [] };
   const query = text(search);
   const companyFilter = eq(companies.id, companyId);
   const branchFilter = query ? and(eq(branches.companyId, companyId), or(like(branches.code, `%${query}%`), like(branches.name, `%${query}%`))) : eq(branches.companyId, companyId);
@@ -179,4 +179,29 @@ export async function saveTaxCodeSettings(input: { companyId: number; code: stri
   if (existing) await db.update(taxCodes).set({ name: values.name, rate: values.rate, category: values.category, active: values.active }).where(eq(taxCodes.id, existing.id));
   else await db.insert(taxCodes).values(values);
   return (await db.select().from(taxCodes).where(and(eq(taxCodes.companyId, input.companyId), eq(taxCodes.code, code))).limit(1))[0];
+}
+
+export async function saveDocumentDefinitionSettings(input: { companyId: number; documentType: string; displayName: string; prefix: string; approvalRequired: number; postingRequired: number; active: number; actor: string }) {
+  const documentType = text(input.documentType).toUpperCase();
+  const prefix = text(input.prefix).toUpperCase();
+  if (!/^[A-Z0-9_]{2,40}$/.test(documentType) || !text(input.displayName) || !/^[A-Z0-9-]{0,30}$/.test(prefix)) throw new Error("DOCUMENT_DEFINITION_INVALID");
+  const db = await getDb();
+  if (!db) return { ...input, documentType, prefix, id: 1 };
+  const existing = (await db.select().from(documentDefinitions).where(and(eq(documentDefinitions.companyId, input.companyId), eq(documentDefinitions.documentType, documentType))).limit(1))[0];
+  const values = { companyId: input.companyId, documentType, displayName: input.displayName, prefix, approvalRequired: input.approvalRequired, postingRequired: input.postingRequired, active: input.active };
+  if (existing) await db.update(documentDefinitions).set({ displayName: values.displayName, prefix: values.prefix, approvalRequired: values.approvalRequired, postingRequired: values.postingRequired, active: values.active }).where(eq(documentDefinitions.id, existing.id));
+  else await db.insert(documentDefinitions).values(values);
+  return (await db.select().from(documentDefinitions).where(and(eq(documentDefinitions.companyId, input.companyId), eq(documentDefinitions.documentType, documentType))).limit(1))[0];
+}
+export async function saveDocumentSequenceSettings(input: { companyId: number; branchId?: number | null; periodId?: number | null; documentType: string; prefix: string; nextNumber: number; actor: string }) {
+  const documentType = text(input.documentType).toUpperCase();
+  const prefix = text(input.prefix).toUpperCase();
+  if (!/^[A-Z0-9_]{2,40}$/.test(documentType) || !/^[A-Z0-9-]{0,30}$/.test(prefix) || !Number.isInteger(input.nextNumber) || input.nextNumber < 1) throw new Error("DOCUMENT_SEQUENCE_INVALID");
+  const db = await getDb();
+  if (!db) return { ...input, documentType, prefix, id: 1 };
+  const scope = and(eq(documentSequences.companyId, input.companyId), eq(documentSequences.documentType, documentType), input.branchId === null || input.branchId === undefined ? isNull(documentSequences.branchId) : eq(documentSequences.branchId, input.branchId), input.periodId === null || input.periodId === undefined ? isNull(documentSequences.periodId) : eq(documentSequences.periodId, input.periodId));
+  const existing = (await db.select().from(documentSequences).where(scope).limit(1))[0];
+  if (existing) await db.update(documentSequences).set({ prefix, nextNumber: input.nextNumber }).where(eq(documentSequences.id, existing.id));
+  else await db.insert(documentSequences).values({ companyId: input.companyId, branchId: input.branchId ?? null, periodId: input.periodId ?? null, documentType, prefix, nextNumber: input.nextNumber });
+  return (await db.select().from(documentSequences).where(scope).limit(1))[0];
 }
