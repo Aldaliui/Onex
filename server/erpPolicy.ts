@@ -1,13 +1,13 @@
 import { currencyPolicy, roundCurrency, type CurrencyPolicy } from "../packages/erp-domain-core/shared/money";
 
-export type ErpAction = "INVOICE_CREATE" | "INVOICE_APPROVE" | "INVOICE_POST" | "INVOICE_REVERSE" | "PURCHASE_ORDER_CREATE" | "PURCHASE_ORDER_APPROVE" | "GOODS_RECEIPT_CREATE" | "GOODS_RECEIPT_POST" | "SALES_ORDER_CREATE" | "SALES_ORDER_APPROVE" | "GOODS_ISSUE_CREATE" | "GOODS_ISSUE_POST" | "SALES_RETURN_CREATE" | "SALES_RETURN_POST" | "PAYMENT_CREATE" | "PERIOD_CLOSE" | "MASTER_DATA_EDIT" | "MIGRATION_RUN";
+export type ErpAction = "INVOICE_CREATE" | "INVOICE_APPROVE" | "INVOICE_POST" | "INVOICE_REVERSE" | "PURCHASE_ORDER_CREATE" | "PURCHASE_ORDER_APPROVE" | "GOODS_RECEIPT_CREATE" | "GOODS_RECEIPT_POST" | "SALES_ORDER_CREATE" | "SALES_ORDER_APPROVE" | "GOODS_ISSUE_CREATE" | "GOODS_ISSUE_POST" | "INVENTORY_RECEIVE" | "INVENTORY_COUNT_CREATE" | "INVENTORY_COUNT_POST" | "INVENTORY_TRANSFER_CREATE" | "INVENTORY_TRANSFER_POST" | "SALES_RETURN_CREATE" | "SALES_RETURN_POST" | "PAYMENT_CREATE" | "PAYMENT_POST" | "PERIOD_CLOSE" | "MASTER_DATA_EDIT" | "MIGRATION_RUN";
 export type ErpRole = "user" | "admin" | string | undefined;
 export { currencyPolicy, roundCurrency };
 export type { CurrencyPolicy };
 
 const defaultPermissions: Record<string, ErpAction[]> = {
-  user: ["INVOICE_CREATE", "INVOICE_APPROVE", "INVOICE_POST", "PURCHASE_ORDER_CREATE", "PURCHASE_ORDER_APPROVE", "GOODS_RECEIPT_CREATE", "GOODS_RECEIPT_POST", "SALES_ORDER_CREATE", "SALES_ORDER_APPROVE", "GOODS_ISSUE_CREATE", "GOODS_ISSUE_POST", "PAYMENT_CREATE", "MASTER_DATA_EDIT"],
-  admin: ["INVOICE_CREATE", "INVOICE_APPROVE", "INVOICE_POST", "INVOICE_REVERSE", "PURCHASE_ORDER_CREATE", "PURCHASE_ORDER_APPROVE", "GOODS_RECEIPT_CREATE", "GOODS_RECEIPT_POST", "SALES_ORDER_CREATE", "SALES_ORDER_APPROVE", "GOODS_ISSUE_CREATE", "GOODS_ISSUE_POST", "SALES_RETURN_CREATE", "SALES_RETURN_POST", "PAYMENT_CREATE", "PERIOD_CLOSE", "MASTER_DATA_EDIT", "MIGRATION_RUN"],
+  user: ["INVOICE_CREATE", "INVOICE_APPROVE", "INVOICE_POST", "PURCHASE_ORDER_CREATE", "PURCHASE_ORDER_APPROVE", "GOODS_RECEIPT_CREATE", "GOODS_RECEIPT_POST", "SALES_ORDER_CREATE", "SALES_ORDER_APPROVE", "GOODS_ISSUE_CREATE", "GOODS_ISSUE_POST", "INVENTORY_RECEIVE", "INVENTORY_COUNT_CREATE", "INVENTORY_COUNT_POST", "INVENTORY_TRANSFER_CREATE", "INVENTORY_TRANSFER_POST", "PAYMENT_CREATE", "PAYMENT_POST", "MASTER_DATA_EDIT"],
+  admin: ["INVOICE_CREATE", "INVOICE_APPROVE", "INVOICE_POST", "INVOICE_REVERSE", "PURCHASE_ORDER_CREATE", "PURCHASE_ORDER_APPROVE", "GOODS_RECEIPT_CREATE", "GOODS_RECEIPT_POST", "SALES_ORDER_CREATE", "SALES_ORDER_APPROVE", "GOODS_ISSUE_CREATE", "GOODS_ISSUE_POST", "INVENTORY_RECEIVE", "INVENTORY_COUNT_CREATE", "INVENTORY_COUNT_POST", "INVENTORY_TRANSFER_CREATE", "INVENTORY_TRANSFER_POST", "SALES_RETURN_CREATE", "SALES_RETURN_POST", "PAYMENT_CREATE", "PAYMENT_POST", "PERIOD_CLOSE", "MASTER_DATA_EDIT", "MIGRATION_RUN"],
 };
 
 export function assertExchangeRate(value: number | string): number {
@@ -26,7 +26,8 @@ export function assertLicensed(module = "ERP"): void {
 export function assertPermission(role: ErpRole, action: ErpAction): void {
   const permissions = defaultPermissions[String(role || "user")] || [];
   const extra = String(process.env.ONEX_ROLE_PERMISSIONS || "").split(",").map((item) => item.trim()).filter(Boolean);
-  if (!permissions.includes(action) && !extra.includes(action) && process.env.ONEX_ENFORCE_PERMISSIONS === "1") throw new Error(`PERMISSION_DENIED:${action}`);
+  const enforcementDisabledOnlyForDevelopment = process.env.NODE_ENV === "development" && process.env.ONEX_ENFORCE_PERMISSIONS === "0";
+  if (!enforcementDisabledOnlyForDevelopment && !permissions.includes(action) && !extra.includes(action)) throw new Error(`PERMISSION_DENIED:${action}`);
 }
 
 export function assertOpenPeriod(period: { status?: string; startsOn?: Date | string; endsOn?: Date | string } | undefined, postingDate: Date | string = new Date()): void {

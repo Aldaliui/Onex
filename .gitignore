@@ -20,6 +20,9 @@ build/
 .env.production.local
 api.env
 *.env
+Api.env
+Cloud.env
+*.env.local
 
 # IDE and editor files
 .vscode/
@@ -94,3 +97,5 @@ temp/
 # Manus version file
 client/public/__manus__/version.json
 .project-config.json
+
+Api
