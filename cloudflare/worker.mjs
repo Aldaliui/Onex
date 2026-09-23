@@ -65,10 +65,6 @@ async function readJson(request) {
 }
 
 export function requireWriteAuth(request, env) {
-  // /api/cloud/* is already protected by the actor gate in api().
-  // Keep the bearer-token requirement for /api/erp/* while allowing the authenticated
-  // workbench actor to use the same atomic domain functions through the cloud route.
-  if (request.headers.get("x-onex-actor")?.trim()) return;
   const expected = env.ONEX_API_TOKEN;
   const authorization = request.headers.get("authorization") || "";
   if (!expected) throw new Response(JSON.stringify({ error: "WRITE_AUTH_NOT_CONFIGURED" }), { status: 503, headers: JSON_HEADERS });
