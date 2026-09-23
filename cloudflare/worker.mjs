@@ -64,7 +64,7 @@ async function readJson(request) {
   }
 }
 
-function requireWriteAuth(request, env) {
+export function requireWriteAuth(request, env) {
   // /api/cloud/* is already protected by the actor gate in api().
   // Keep the bearer-token requirement for /api/erp/* while allowing the authenticated
   // workbench actor to use the same atomic domain functions through the cloud route.

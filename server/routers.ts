@@ -14,6 +14,7 @@ import { assertErpAction } from "./erpPolicy";
 import { assignRolePermission, assignUserRole, closeFiscalPeriod, createFiscalPeriod, listFiscalPeriods, listWorkspacePermissions, listWorkspaceRoles, reopenFiscalPeriod } from "./erpWorkspaceDb";
 import { validateThreeWayMatch } from "./purchaseIntegrationReport";
 import { commitMasterDataImport, getCoreFoundationSnapshot, markNotificationRead, previewMasterDataImport, saveCurrencySettings, saveDocumentDefinitionSettings, saveDocumentSequenceSettings, saveExchangeRateSettings, saveItemUnitSettings, saveTaxCodeSettings, validateDocumentTransition } from "./coreFoundation";
+import { assignSystemRolePermission, assignSystemUserRole, getSystemAdministration, removeSystemRolePermission, removeSystemUserRole, saveSystemPermission, saveSystemRole } from "./systemAdministration";
 
 const invoiceLine = z.object({ itemId: z.number().int().positive(), quantity: z.string().min(1), unitPrice: z.string().min(1), taxAmount: z.string().default("0"), unitCode: z.string().max(30).default("EA"), batchNo: z.string().max(100).optional(), expireDate: z.string().optional(), locationId: z.number().int().positive().optional(), serials: z.array(z.string().min(1).max(160)).optional() });
 const partyInput = z.object({ id: z.number().int().positive().optional(), companyId: z.number().int().positive().default(1), code: z.string().min(1).max(50), legalName: z.string().min(1).max(250), currencyCode: z.string().length(3).default("SAR"), status: z.enum(["ACTIVE", "BLOCKED", "CLOSED"]).default("ACTIVE") });
@@ -59,6 +60,15 @@ export const appRouter = router({
     saveItemUnit: adminProcedure.input(z.object({ itemId: z.number().int().positive(), unitCode: z.string().min(1).max(30), unitName: z.string().min(1).max(100), conversionToBase: z.string().min(1), isBase: z.number().int().min(0).max(1).default(0), barcode: z.string().max(100).optional(), active: z.number().int().min(0).max(1).default(1) })).mutation(({ input, ctx }) => saveItemUnitSettings({ ...input, actor: ctx.user.openId })),
   }),
   systemSettings: router({ get: publicProcedure.query(() => getSystemSettings()), save: protectedProcedure.input(z.object({ engine: z.string().min(1).max(30), host: z.string().max(255).optional(), port: z.number().int().min(1).max(65535), databaseName: z.string().max(160).optional(), ssl: z.number().int().min(0).max(1), updatedBy: z.string().min(1).max(100) })).mutation(({ input }) => saveSystemSettings(input)) }),
+  systemAdministration: router({
+    overview: adminProcedure.input(z.object({ search: z.string().max(120).optional(), companyId: z.number().int().positive().optional() }).optional()).query(({ input, ctx }) => getSystemAdministration(input || {}, ctx.user)),
+    saveRole: adminProcedure.input(z.object({ id: z.number().int().positive().optional(), code: z.string().min(2).max(60), name: z.string().min(2).max(160), active: z.number().int().min(0).max(1).default(1) })).mutation(({ input, ctx }) => saveSystemRole(input, ctx.user)),
+    savePermission: adminProcedure.input(z.object({ id: z.number().int().positive().optional(), code: z.string().min(2).max(120), windowCode: z.string().max(160).optional(), actionCode: z.string().min(2).max(80), description: z.string().max(300).optional() })).mutation(({ input, ctx }) => saveSystemPermission(input, ctx.user)),
+    assignUserRole: adminProcedure.input(z.object({ userId: z.number().int().positive(), roleId: z.number().int().positive(), branchId: z.number().int().positive().optional() })).mutation(({ input, ctx }) => assignSystemUserRole(input, ctx.user)),
+    assignRolePermission: adminProcedure.input(z.object({ roleId: z.number().int().positive(), permissionId: z.number().int().positive() })).mutation(({ input, ctx }) => assignSystemRolePermission(input, ctx.user)),
+    removeUserRole: adminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(({ input, ctx }) => removeSystemUserRole(input.id, ctx.user)),
+    removeRolePermission: adminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(({ input, ctx }) => removeSystemRolePermission(input.id, ctx.user)),
+  }),
   controlData: publicProcedure.query(() => getErpControlData()),
   oracle: router({ status: publicProcedure.query(() => getOracleBridgeStatus()) }),
   reports: router({
