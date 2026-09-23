@@ -5,6 +5,8 @@ import { lazy, Suspense } from "react";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import Home from "./pages/Home";
+import WindowWorkbench from "./pages/WindowWorkbench";
 
 const AccountingSuite = lazy(() => import("./pages/AccountingSuite"));
 const SystemSetup = lazy(() => import("./pages/SystemSetup"));
