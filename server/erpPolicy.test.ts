@@ -32,6 +32,12 @@ describe("unified ERP policy", () => {
     expect(() => assertPermission("admin", "PERIOD_CLOSE")).not.toThrow();
   });
 
+  it("denies unknown actions by default outside development", () => {
+    delete process.env.ONEX_ENFORCE_PERMISSIONS;
+    delete process.env.NODE_ENV;
+    expect(() => assertPermission("auditor", "PERIOD_CLOSE")).toThrow("PERMISSION_DENIED:PERIOD_CLOSE");
+  });
+
   it("connects mutation policy to license and permission checks", () => {
     process.env.ONEX_ENFORCE_PERMISSIONS = "1";
     expect(() => assertErpAction({ role: "user", action: "INVOICE_POST", module: "AR" })).not.toThrow();

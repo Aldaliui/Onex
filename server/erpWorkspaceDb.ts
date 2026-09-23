@@ -4,9 +4,11 @@ import { closeFiscalYear } from "./accountingCore";
 import { buildCloseChecklist, buildFiscalCloseRequest, assertNoPeriodOverlap, assertPeriodStatus, assertWorkspacePermission, validateFiscalPeriod, type ErpWorkspaceRole } from "./erpWorkspace";
 import { getDb } from "./db";
 
+const demoPeriods = [{ id: 1, companyId: 1, code: "2026-01", startsOn: new Date("2026-01-01"), endsOn: new Date("2026-01-31"), status: "OPEN" as "OPEN" | "CLOSED" }];
+
 export async function listFiscalPeriods(companyId = 1) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) return demoPeriods.filter((period) => period.companyId === companyId).sort((a, b) => b.startsOn.getTime() - a.startsOn.getTime());
   return db.select().from(fiscalPeriods).where(eq(fiscalPeriods.companyId, companyId)).orderBy(desc(fiscalPeriods.startsOn));
 }
 
@@ -14,7 +16,11 @@ export async function createFiscalPeriod(input: { companyId?: number; code: stri
   assertWorkspacePermission(input.role, "PERIOD_CREATE");
   const normalized = validateFiscalPeriod({ companyId: input.companyId || 1, code: input.code, startsOn: input.startsOn, endsOn: input.endsOn });
   const db = await getDb();
-  if (!db) throw new Error("DATABASE_REQUIRED_FOR_FISCAL_PERIOD");
+  if (!db) {
+    const created = { id: Math.max(...demoPeriods.map((period) => period.id), 0) + 1, companyId: normalized.companyId, code: normalized.code, startsOn: new Date(normalized.startsOn), endsOn: new Date(normalized.endsOn), status: "OPEN" as const };
+    demoPeriods.push(created);
+    return { id: created.id, code: created.code, status: created.status };
+  }
   const existing = await db.select().from(fiscalPeriods).where(eq(fiscalPeriods.companyId, normalized.companyId));
   assertNoPeriodOverlap(existing, normalized);
   const inserted = await db.insert(fiscalPeriods).values({ companyId: normalized.companyId, code: normalized.code, startsOn: normalized.startsOn, endsOn: normalized.endsOn, status: "OPEN" }).$returningId();
@@ -47,7 +53,13 @@ async function periodCloseCounts(db: any, period: any) {
 export async function closeFiscalPeriod(input: { periodId: number; actor: string; role: ErpWorkspaceRole; requestId: string }) {
   const request = buildFiscalCloseRequest(input);
   const db = await getDb();
-  if (!db) throw new Error("DATABASE_REQUIRED_FOR_FISCAL_CLOSE");
+  if (!db) {
+    const period = demoPeriods.find((item) => item.id === request.periodId);
+    if (!period) throw new Error("FISCAL_PERIOD_NOT_FOUND");
+    assertPeriodStatus(period.status, "OPEN");
+    period.status = "CLOSED";
+    return { periodId: period.id, status: "CLOSED" as const, closingJournalId: null, checklist: { canClose: true, unpostedJournals: 0, draftInvoices: 0, unbalancedJournals: 0 }, revenue: 0, expenses: 0 };
+  }
   return db.transaction(async (tx) => {
     const period = (await tx.select().from(fiscalPeriods).where(eq(fiscalPeriods.id, request.periodId)).limit(1))[0];
     if (!period) throw new Error("FISCAL_PERIOD_NOT_FOUND");
@@ -79,7 +91,13 @@ export async function closeFiscalPeriod(input: { periodId: number; actor: string
 export async function reopenFiscalPeriod(input: { periodId: number; actor: string; role: ErpWorkspaceRole; requestId: string }) {
   assertWorkspacePermission(input.role, "PERIOD_REOPEN");
   const db = await getDb();
-  if (!db) throw new Error("DATABASE_REQUIRED_FOR_FISCAL_REOPEN");
+  if (!db) {
+    const period = demoPeriods.find((item) => item.id === input.periodId);
+    if (!period) throw new Error("FISCAL_PERIOD_NOT_FOUND");
+    assertPeriodStatus(period.status, "CLOSED");
+    period.status = "OPEN";
+    return { periodId: period.id, status: "OPEN" as const };
+  }
   return db.transaction(async (tx) => {
     const period = (await tx.select().from(fiscalPeriods).where(eq(fiscalPeriods.id, input.periodId)).limit(1))[0];
     if (!period) throw new Error("FISCAL_PERIOD_NOT_FOUND");
