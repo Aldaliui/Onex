@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, isNull, like, or } from "drizzle-orm";
-import { getDb, saveCustomer, saveItem, saveSupplier, saveWarehouse } from "./db";
+import { getDb, saveCustomer, saveItem, saveSupplier, saveWarehouse, searchCustomers, searchItems, searchSuppliers } from "./db";
 import {
   attachments,
   branches,
@@ -12,6 +12,7 @@ import {
   documentSequences,
   exchangeRates,
   fiscalPeriods,
+  itemUnits,
   masterDataImportRows,
   masterDataImports,
   notifications,
@@ -35,6 +36,7 @@ const demo = {
 };
 
 function text(value: unknown) { return String(value ?? "").trim(); }
+const demoUnits: Array<Record<string, unknown>> = [{ id: 1, itemId: 1, unitCode: "EA", unitName: "قطعة", conversionToBase: "1", isBase: 1, active: 1 }];
 function positiveNumber(value: unknown) { const number = Number(value); return Number.isFinite(number) && number > 0 ? number : null; }
 function parseCsv(csv: string): ImportRow[] {
   const lines = csv.replace(/^\uFEFF/, "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -62,11 +64,11 @@ function validateRow(entityType: CoreEntity, row: ImportRow, companyId: number) 
 
 export async function getCoreFoundationSnapshot(companyId = 1, search = "", limit = 100) {
   const db = await getDb();
-  if (!db) return { ...demo, branches: [{ id: 1, companyId, code: "MAIN", name: "الفرع الرئيسي", active: 1 }], fiscalPeriods: [{ id: 1, companyId, code: "2026-01", startsOn: new Date("2026-01-01"), endsOn: new Date("2026-01-31"), status: "OPEN" }], roles: [{ id: 1, code: "admin", name: "مدير النظام", active: 1 }, { id: 2, code: "user", name: "مستخدم", active: 1 }], permissions: [], userRoles: [], rolePermissions: [], users: [{ id: 1, openId: "local:administrator", name: "مدير النظام", email: "administrator@local.onex", role: "admin" }], documentDefinitions: [{ id: 1, companyId, documentType: "INVOICE", displayName: "فاتورة", prefix: "INV", approvalRequired: 1, postingRequired: 1, active: 1 }], documentSequences: [{ id: 1, companyId, branchId: null, periodId: null, documentType: "INVOICE", prefix: "INV-", nextNumber: 1 }], notifications: [] };
+  if (!db) return { ...demo, branches: [{ id: 1, companyId, code: "MAIN", name: "الفرع الرئيسي", active: 1 }], fiscalPeriods: [{ id: 1, companyId, code: "2026-01", startsOn: new Date("2026-01-01"), endsOn: new Date("2026-01-31"), status: "OPEN" }], roles: [{ id: 1, code: "admin", name: "مدير النظام", active: 1 }, { id: 2, code: "user", name: "مستخدم", active: 1 }], permissions: [], userRoles: [], rolePermissions: [], users: [{ id: 1, openId: "local:administrator", name: "مدير النظام", email: "administrator@local.onex", role: "admin" }], documentDefinitions: [{ id: 1, companyId, documentType: "INVOICE", displayName: "فاتورة", prefix: "INV", approvalRequired: 1, postingRequired: 1, active: 1 }], documentSequences: [{ id: 1, companyId, branchId: null, periodId: null, documentType: "INVOICE", prefix: "INV-", nextNumber: 1 }], customers: [{ id: 1, companyId, code: "CUST-001", legalName: "عميل تجريبي", currencyCode: "SAR", status: "ACTIVE" }], suppliers: [{ id: 1, companyId, code: "SUP-001", legalName: "مورد تجريبي", currencyCode: "SAR", status: "ACTIVE" }], items: [{ id: 1, companyId, code: "ITEM-001", description: "صنف تجريبي", unitCost: "10", revenueAccount: "4100", inventoryAccount: "1300", cogsAccount: "5100", active: 1 }], units: demoUnits, notifications: [] };
   const query = text(search);
   const companyFilter = eq(companies.id, companyId);
   const branchFilter = query ? and(eq(branches.companyId, companyId), or(like(branches.code, `%${query}%`), like(branches.name, `%${query}%`))) : eq(branches.companyId, companyId);
-  const [companyRows, branchRows, groupRows, currencyRows, rateRows, taxRows, periodRows, roleRows, permissionRows, userRows, userRoleRows, rolePermissionRows, policyRows, definitionRows, sequenceRows, notificationRows] = await Promise.all([
+  const [companyRows, branchRows, groupRows, currencyRows, rateRows, taxRows, periodRows, roleRows, permissionRows, userRows, userRoleRows, rolePermissionRows, policyRows, definitionRows, sequenceRows, notificationRows, customerRows, supplierRows, itemRows, unitRows] = await Promise.all([
     db.select().from(companies).where(companyFilter).limit(20),
     db.select().from(branches).where(branchFilter).orderBy(asc(branches.code)).limit(limit),
     db.select().from(companyGroups).where(eq(companyGroups.active, 1)).orderBy(asc(companyGroups.code)).limit(limit),
@@ -83,8 +85,12 @@ export async function getCoreFoundationSnapshot(companyId = 1, search = "", limi
     db.select().from(documentDefinitions).where(and(eq(documentDefinitions.companyId, companyId), eq(documentDefinitions.active, 1))).orderBy(asc(documentDefinitions.documentType)).limit(limit),
     db.select().from(documentSequences).where(eq(documentSequences.companyId, companyId)).orderBy(asc(documentSequences.documentType)).limit(limit),
     db.select().from(notifications).where(and(eq(notifications.userId, 1), eq(notifications.companyId, companyId))).orderBy(desc(notifications.createdAt)).limit(20),
+    searchCustomers(query, limit),
+    searchSuppliers(query, limit),
+    searchItems(query, limit),
+    db.select().from(itemUnits).limit(limit),
   ]);
-  return { companies: companyRows, branches: branchRows, groups: groupRows, currencies: currencyRows, exchangeRates: rateRows, taxes: taxRows, fiscalPeriods: periodRows, roles: roleRows, permissions: permissionRows, users: userRows, userRoles: userRoleRows, rolePermissions: rolePermissionRows, policies: policyRows, documentDefinitions: definitionRows, documentSequences: sequenceRows, notifications: notificationRows };
+  return { companies: companyRows, branches: branchRows, groups: groupRows, currencies: currencyRows, exchangeRates: rateRows, taxes: taxRows, fiscalPeriods: periodRows, roles: roleRows, permissions: permissionRows, users: userRows, userRoles: userRoleRows, rolePermissions: rolePermissionRows, policies: policyRows, documentDefinitions: definitionRows, documentSequences: sequenceRows, notifications: notificationRows, customers: customerRows, suppliers: supplierRows, items: itemRows, units: unitRows };
 }
 
 export async function previewMasterDataImport(input: { companyId: number; entityType: CoreEntity; fileName: string; csv: string; actor: string }) {
@@ -204,4 +210,22 @@ export async function saveDocumentSequenceSettings(input: { companyId: number; b
   if (existing) await db.update(documentSequences).set({ prefix, nextNumber: input.nextNumber }).where(eq(documentSequences.id, existing.id));
   else await db.insert(documentSequences).values({ companyId: input.companyId, branchId: input.branchId ?? null, periodId: input.periodId ?? null, documentType, prefix, nextNumber: input.nextNumber });
   return (await db.select().from(documentSequences).where(scope).limit(1))[0];
+}
+
+export async function saveItemUnitSettings(input: { itemId: number; unitCode: string; unitName: string; conversionToBase: string; isBase: number; barcode?: string; active: number; actor: string }) {
+  const unitCode = text(input.unitCode).toUpperCase();
+  const conversion = Number(input.conversionToBase);
+  if (!input.itemId || !/^[A-Z0-9_-]{1,30}$/.test(unitCode) || !text(input.unitName) || !Number.isFinite(conversion) || conversion <= 0) throw new Error("ITEM_UNIT_INVALID");
+  const db = await getDb();
+  if (!db) {
+    const existing = demoUnits.find((row) => Number(row.itemId) === input.itemId && row.unitCode === unitCode);
+    if (existing) Object.assign(existing, { unitName: input.unitName, conversionToBase: input.conversionToBase, isBase: input.isBase, barcode: input.barcode || null, active: input.active });
+    else demoUnits.push({ id: Math.max(...demoUnits.map((row) => Number(row.id)), 0) + 1, itemId: input.itemId, unitCode, unitName: input.unitName, conversionToBase: input.conversionToBase, isBase: input.isBase, barcode: input.barcode || null, active: input.active });
+    return demoUnits.find((row) => Number(row.itemId) === input.itemId && row.unitCode === unitCode);
+  }
+  const existing = (await db.select().from(itemUnits).where(and(eq(itemUnits.itemId, input.itemId), eq(itemUnits.unitCode, unitCode))).limit(1))[0];
+  const values = { itemId: input.itemId, unitCode, unitName: input.unitName, conversionToBase: input.conversionToBase, isBase: input.isBase, barcode: input.barcode || null, active: input.active };
+  if (existing) await db.update(itemUnits).set({ unitName: values.unitName, conversionToBase: values.conversionToBase, isBase: values.isBase, barcode: values.barcode, active: values.active }).where(eq(itemUnits.id, existing.id));
+  else await db.insert(itemUnits).values(values);
+  return (await db.select().from(itemUnits).where(and(eq(itemUnits.itemId, input.itemId), eq(itemUnits.unitCode, unitCode))).limit(1))[0];
 }
