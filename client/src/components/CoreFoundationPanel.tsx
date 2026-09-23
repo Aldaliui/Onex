@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { CheckCircle2, Database, FileUp, RefreshCw, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
+import * as XLSX from "xlsx";
 
 type Tab = "organization" | "finance" | "security" | "documents" | "imports";
 const tabs: Array<{ id: Tab; label: string }> = [
@@ -20,12 +21,31 @@ export default function CoreFoundationPanel({ initialTab = "organization" }: { i
   const [search, setSearch] = useState("");
   const [entityType, setEntityType] = useState<"CUSTOMER" | "SUPPLIER" | "ITEM" | "WAREHOUSE">("CUSTOMER");
   const [fileName, setFileName] = useState("master-data.csv");
+  const [sourceFormat, setSourceFormat] = useState<"CSV" | "XLSX">("CSV");
   const [csv, setCsv] = useState("code,name,currencyCode,unitCode,revenueAccount,inventoryAccount,cogsAccount\nCUST-001,عميل تجريبي,SAR,EA,4100,1300,5100");
   const snapshot = trpc.coreFoundation.snapshot.useQuery({ companyId: 1, search: search || undefined, limit: 100 }, { refetchOnWindowFocus: false });
   const preview = trpc.coreFoundation.previewImport.useMutation();
   const commit = trpc.coreFoundation.commitImport.useMutation();
   const data = snapshot.data;
   const rows = useMemo(() => preview.data?.rows ?? [], [preview.data]);
+  const loadImportFile = async (file: File) => {
+    try {
+      setFileName(file.name);
+      if (file.name.toLowerCase().endsWith(".xlsx") || file.name.toLowerCase().endsWith(".xls")) {
+        const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0] || ""];
+        if (!firstSheet) throw new Error("ملف Excel لا يحتوي على ورقة عمل");
+        setCsv(XLSX.utils.sheet_to_csv(firstSheet, { FS: ",", RS: "\n" }));
+        setSourceFormat("XLSX");
+      } else {
+        setCsv(await file.text());
+        setSourceFormat("CSV");
+      }
+      toast.success("تم تحميل الملف؛ اضغط معاينة والتحقق لفحص الصفوف");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "تعذر قراءة الملف");
+    }
+  };
   const runPreview = () => preview.mutate({ companyId: 1, entityType, fileName, csv }, { onError: (error) => toast.error(error.message), onSuccess: (result) => toast.success(`تمت معاينة ${result.totalRows} صف`) });
   const runCommit = () => { if (!preview.data || preview.data.invalidRows) return toast.error("لا يمكن الإدراج قبل تصحيح جميع الصفوف"); commit.mutate({ importId: preview.data.importId, companyId: 1, entityType, rows: rows.map((row) => row.raw as Record<string, string | number | null>) }, { onError: (error) => toast.error(error.message), onSuccess: (result) => { toast.success(`تم إدراج ${result.committed} سجل`); void snapshot.refetch(); } }); };
   return <section className="core-foundation-panel" dir="rtl">
@@ -36,7 +56,7 @@ export default function CoreFoundationPanel({ initialTab = "organization" }: { i
       {tab === "finance" && <div className="core-grid"><CoreCard title="العملات وأسعار الصرف"><table><thead><tr><th>العملة</th><th>الاسم</th><th>الكسور</th><th>الحالة</th></tr></thead><tbody>{list(data?.currencies).map((row) => <tr key={row.id}><td>{cell(row.code)}</td><td>{cell(row.name)}</td><td>{cell(row.decimalScale)}</td><td>{Number(row.active) ? "نشط" : "متوقف"}</td></tr>)}</tbody></table></CoreCard><CoreCard title="الضرائب والفترات"><table><thead><tr><th>الضريبة</th><th>الاسم</th><th>النسبة</th><th>الفترة</th><th>الحالة</th></tr></thead><tbody>{list(data?.taxes).map((row) => <tr key={`tax-${row.id}`}><td>{cell(row.code)}</td><td>{cell(row.name)}</td><td>{cell(row.rate)}%</td><td>—</td><td>{Number(row.active) ? "نشط" : "متوقف"}</td></tr>)}{list(data?.fiscalPeriods).map((row) => <tr key={`period-${row.id}`}><td>—</td><td>الفترة {cell(row.code)}</td><td>—</td><td>{cell(row.startsOn)} → {cell(row.endsOn)}</td><td>{cell(row.status)}</td></tr>)}</tbody></table></CoreCard></div>}
       {tab === "security" && <div className="core-grid"><CoreCard title="المستخدمون والأدوار" icon={<ShieldCheck size={17} />}><table><thead><tr><th>المستخدم</th><th>البريد</th><th>الدور</th><th>آخر دخول</th></tr></thead><tbody>{list(data?.users).map((row) => <tr key={row.id}><td>{cell(row.name || row.openId)}</td><td>{cell(row.email)}</td><td>{cell(row.role)}</td><td>{cell(row.lastSignedIn)}</td></tr>)}</tbody></table></CoreCard><CoreCard title="السياسات والصلاحيات"><table><thead><tr><th>الكود</th><th>الوصف</th><th>الأثر</th></tr></thead><tbody>{list(data?.permissions).map((row) => <tr key={row.id}><td>{cell(row.code)}</td><td>{cell(row.description || row.actionCode)}</td><td>صلاحية</td></tr>)}{list(data?.policies).map((row) => <tr key={`policy-${row.id}`}><td>{cell(row.policyCode)}</td><td>{cell(row.scopeJson)}</td><td>{cell(row.effect)}</td></tr>)}</tbody></table></CoreCard></div>}
       {tab === "documents" && <div className="core-grid"><CoreCard title="تعريفات المستندات"><table><thead><tr><th>النوع</th><th>الاسم</th><th>البادئة</th><th>الاعتماد</th><th>الترحيل</th></tr></thead><tbody>{list(data?.documentDefinitions).map((row) => <tr key={row.id}><td>{cell(row.documentType)}</td><td>{cell(row.displayName)}</td><td>{cell(row.prefix)}</td><td>{Number(row.approvalRequired) ? "مطلوب" : "اختياري"}</td><td>{Number(row.postingRequired) ? "مطلوب" : "اختياري"}</td></tr>)}</tbody></table></CoreCard><CoreCard title="التنبيهات"><div className="core-notifications">{list(data?.notifications).map((row) => <article key={row.id}><CheckCircle2 size={16} /><div><b>{cell(row.title)}</b><p>{cell(row.body)}</p><small>{cell(row.createdAt)}</small></div></article>)}{!list(data?.notifications).length && <div className="core-empty">لا توجد تنبيهات.</div>}</div></CoreCard></div>}
-      {tab === "imports" && <div className="core-import"><div className="core-import-form"><label>نوع البيانات<select value={entityType} onChange={(event) => setEntityType(event.target.value as typeof entityType)}><option value="CUSTOMER">العملاء</option><option value="SUPPLIER">الموردون</option><option value="ITEM">الأصناف</option><option value="WAREHOUSE">المستودعات</option></select></label><label>اسم الملف<input value={fileName} onChange={(event) => setFileName(event.target.value)} /></label><label>بيانات CSV<textarea value={csv} onChange={(event) => setCsv(event.target.value)} rows={8} /></label><div className="core-actions"><button type="button" className="primary-action" onClick={runPreview} disabled={preview.isPending}><FileUp size={15} /> معاينة والتحقق</button><button type="button" className="secondary-action" onClick={runCommit} disabled={!preview.data || Boolean(preview.data.invalidRows) || commit.isPending}><CheckCircle2 size={15} /> إدراج السجلات السليمة</button></div></div>{preview.data && <CoreCard title="تقرير المعاينة"><div className="core-import-summary"><b>الإجمالي: {preview.data.totalRows}</b><b className="valid">سليمة: {preview.data.validRows}</b><b className="invalid">أخطاء: {preview.data.invalidRows}</b></div><table><thead><tr><th>الصف</th><th>الحالة</th><th>الأخطاء</th><th>الرمز</th><th>الاسم</th></tr></thead><tbody>{preview.data.rows.map((row) => <tr key={row.rowNo}><td>{row.rowNo}</td><td>{row.errors.length ? "مرفوض" : "سليم"}</td><td>{row.errors.join(", ") || "—"}</td><td>{cell(row.normalized.code)}</td><td>{cell(row.normalized.name)}</td></tr>)}</tbody></table></CoreCard>}</div>}
+      {tab === "imports" && <div className="core-import"><div className="core-import-form"><label>نوع البيانات<select value={entityType} onChange={(event) => setEntityType(event.target.value as typeof entityType)}><option value="CUSTOMER">العملاء</option><option value="SUPPLIER">الموردون</option><option value="ITEM">الأصناف</option><option value="WAREHOUSE">المستودعات</option></select></label><label>اسم الملف<input value={fileName} onChange={(event) => setFileName(event.target.value)} /></label><label>ملف CSV أو Excel<input type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={(event) => { const file = event.target.files?.[0]; if (file) void loadImportFile(file); }} /></label><small className="core-file-hint">المصدر الحالي: {sourceFormat} · تتم قراءة الورقة الأولى فقط ثم إرسالها للمعاينة والتحقق.</small><label>بيانات CSV<textarea value={csv} onChange={(event) => setCsv(event.target.value)} rows={8} /></label><div className="core-actions"><button type="button" className="primary-action" onClick={runPreview} disabled={preview.isPending}><FileUp size={15} /> معاينة والتحقق</button><button type="button" className="secondary-action" onClick={runCommit} disabled={!preview.data || Boolean(preview.data.invalidRows) || commit.isPending}><CheckCircle2 size={15} /> إدراج السجلات السليمة</button></div></div>{preview.data && <CoreCard title="تقرير المعاينة"><div className="core-import-summary"><b>الإجمالي: {preview.data.totalRows}</b><b className="valid">سليمة: {preview.data.validRows}</b><b className="invalid">أخطاء: {preview.data.invalidRows}</b></div><table><thead><tr><th>الصف</th><th>الحالة</th><th>الأخطاء</th><th>الرمز</th><th>الاسم</th></tr></thead><tbody>{preview.data.rows.map((row) => <tr key={row.rowNo}><td>{row.rowNo}</td><td>{row.errors.length ? "مرفوض" : "سليم"}</td><td>{row.errors.join(", ") || "—"}</td><td>{cell(row.normalized.code)}</td><td>{cell(row.normalized.name)}</td></tr>)}</tbody></table></CoreCard>}</div>}
     </>}
   </section>;
 }
