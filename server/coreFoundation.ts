@@ -132,3 +132,51 @@ export function validateDocumentTransition(fromState: string | null | undefined,
   if (!allowed[from]?.includes(to)) throw new Error(`DOCUMENT_TRANSITION_NOT_ALLOWED:${from}:${to}`);
   return { from, to };
 }
+
+export async function saveCurrencySettings(input: { code: string; name: string; decimalScale: number; active: number; actor: string }) {
+  const code = text(input.code).toUpperCase();
+  if (!/^[A-Z]{3}$/.test(code)) throw new Error("CURRENCY_CODE_MUST_BE_ISO_4217");
+  if (!text(input.name)) throw new Error("CURRENCY_NAME_REQUIRED");
+  if (input.decimalScale < 0 || input.decimalScale > 6) throw new Error("CURRENCY_DECIMAL_SCALE_INVALID");
+  const db = await getDb();
+  if (!db) {
+    const existing = demo.currencies.find((row) => row.code === code);
+    if (existing) Object.assign(existing, { code, name: input.name, decimalScale: input.decimalScale, active: input.active });
+    else demo.currencies.push({ id: Math.max(...demo.currencies.map((row) => row.id), 0) + 1, code, name: input.name, decimalScale: input.decimalScale, active: input.active });
+    return demo.currencies.find((row) => row.code === code);
+  }
+  const existing = (await db.select().from(currencies).where(eq(currencies.code, code)).limit(1))[0];
+  if (existing) await db.update(currencies).set({ name: input.name, decimalScale: input.decimalScale, active: input.active }).where(eq(currencies.code, code));
+  else await db.insert(currencies).values({ code, name: input.name, decimalScale: input.decimalScale, active: input.active });
+  return (await db.select().from(currencies).where(eq(currencies.code, code)).limit(1))[0];
+}
+export async function saveExchangeRateSettings(input: { companyId: number; currencyCode: string; rateDate: string; rate: string; source: string; actor: string }) {
+  const currencyCode = text(input.currencyCode).toUpperCase();
+  const rate = Number(input.rate);
+  if (!/^[A-Z]{3}$/.test(currencyCode) || !Number.isFinite(rate) || rate <= 0) throw new Error("EXCHANGE_RATE_INVALID");
+  const rateDate = new Date(input.rateDate);
+  if (Number.isNaN(rateDate.getTime())) throw new Error("EXCHANGE_RATE_DATE_INVALID");
+  const db = await getDb();
+  if (!db) return { companyId: input.companyId, currencyCode, rateDate, rate: input.rate, source: input.source, actor: input.actor };
+  const existing = (await db.select().from(exchangeRates).where(and(eq(exchangeRates.companyId, input.companyId), eq(exchangeRates.currencyCode, currencyCode), eq(exchangeRates.rateDate, rateDate))).limit(1))[0];
+  if (existing) await db.update(exchangeRates).set({ rate: input.rate, source: input.source, actor: input.actor }).where(eq(exchangeRates.id, existing.id));
+  else await db.insert(exchangeRates).values({ companyId: input.companyId, currencyCode, rateDate, rate: input.rate, source: input.source, actor: input.actor });
+  return (await db.select().from(exchangeRates).where(and(eq(exchangeRates.companyId, input.companyId), eq(exchangeRates.currencyCode, currencyCode), eq(exchangeRates.rateDate, rateDate))).limit(1))[0];
+}
+export async function saveTaxCodeSettings(input: { companyId: number; code: string; name: string; rate: string; category: string; active: number; actor: string }) {
+  const code = text(input.code).toUpperCase();
+  const rate = Number(input.rate);
+  if (!code || !text(input.name) || !Number.isFinite(rate) || rate < 0 || rate > 100) throw new Error("TAX_CODE_INVALID");
+  const db = await getDb();
+  if (!db) {
+    const existing = demo.taxes.find((row) => row.companyId === input.companyId && row.code === code);
+    if (existing) Object.assign(existing, { name: input.name, rate: input.rate, category: input.category, active: input.active });
+    else demo.taxes.push({ id: Math.max(...demo.taxes.map((row) => row.id), 0) + 1, companyId: input.companyId, code, name: input.name, rate: input.rate, category: input.category, active: input.active });
+    return demo.taxes.find((row) => row.companyId === input.companyId && row.code === code);
+  }
+  const existing = (await db.select().from(taxCodes).where(and(eq(taxCodes.companyId, input.companyId), eq(taxCodes.code, code))).limit(1))[0];
+  const values = { companyId: input.companyId, code, name: input.name, rate: input.rate, category: input.category, active: input.active };
+  if (existing) await db.update(taxCodes).set({ name: values.name, rate: values.rate, category: values.category, active: values.active }).where(eq(taxCodes.id, existing.id));
+  else await db.insert(taxCodes).values(values);
+  return (await db.select().from(taxCodes).where(and(eq(taxCodes.companyId, input.companyId), eq(taxCodes.code, code))).limit(1))[0];
+}
