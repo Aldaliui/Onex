@@ -1,5 +1,5 @@
 import { and, desc, eq, isNull, like, or } from "drizzle-orm";
-import { auditEvents, branches, permissions, rolePermissions, roles, userRoles, users } from "../drizzle/schema";
+import { auditEvents, branches, companies, companyGroupMembers, companyGroups, permissions, rolePermissions, roles, userRoles, users } from "../drizzle/schema";
 import { getDb } from "./db";
 
 export type AdminActor = { id?: number; openId?: string; name?: string | null; role?: string };
@@ -170,4 +170,44 @@ export async function removeSystemBranch(id: number, actor: AdminActor) {
   await db.update(branches).set({ active: 0 }).where(eq(branches.id, id));
   await db.insert(auditEvents).values({ actor: actor.openId || actor.name || "system-admin", actionCode: "DEACTIVATE", entityType: "BRANCH", entityId: String(id), requestId: requestId("BRANCH_DEACTIVATE", id) });
   return { id, deactivated: true };
+}
+
+export async function saveSystemCompany(input: { id?: number; code: string; name: string; baseCurrency?: string }, actor: AdminActor) {
+  assertSystemAdmin(actor);
+  const db = await getDb();
+  if (!db) throw new Error("DATABASE_REQUIRED_FOR_COMPANY");
+  const values = { code: input.code.trim().toUpperCase(), name: input.name.trim(), baseCurrency: (input.baseCurrency || "SAR").trim().toUpperCase() };
+  if (!values.code || !values.name || !/^[A-Z]{3}$/.test(values.baseCurrency)) throw new Error("COMPANY_DATA_INVALID");
+  const isNew = !input.id;
+  let id = input.id;
+  if (id) await db.update(companies).set(values).where(eq(companies.id, id));
+  else { const inserted = await db.insert(companies).values(values).$returningId(); id = Number(inserted[0]?.id); }
+  if (!id) throw new Error("COMPANY_SAVE_FAILED");
+  await db.insert(auditEvents).values({ actor: actor.openId || actor.name || "system-admin", actionCode: isNew ? "CREATE" : "UPDATE", entityType: "COMPANY", entityId: String(id), requestId: requestId("COMPANY", id) });
+  return db.select().from(companies).where(eq(companies.id, id)).limit(1).then((rows) => rows[0]);
+}
+
+export async function saveSystemCompanyGroup(input: { id?: number; code: string; name: string; baseCurrency?: string; active?: number }, actor: AdminActor) {
+  assertSystemAdmin(actor);
+  const db = await getDb();
+  if (!db) throw new Error("DATABASE_REQUIRED_FOR_COMPANY_GROUP");
+  const values = { code: input.code.trim().toUpperCase(), name: input.name.trim(), baseCurrency: (input.baseCurrency || "SAR").trim().toUpperCase(), active: input.active ?? 1 };
+  if (!values.code || !values.name || !/^[A-Z]{3}$/.test(values.baseCurrency)) throw new Error("COMPANY_GROUP_DATA_INVALID");
+  const isNew = !input.id;
+  let id = input.id;
+  if (id) await db.update(companyGroups).set(values).where(eq(companyGroups.id, id));
+  else { const inserted = await db.insert(companyGroups).values(values).$returningId(); id = Number(inserted[0]?.id); }
+  if (!id) throw new Error("COMPANY_GROUP_SAVE_FAILED");
+  await db.insert(auditEvents).values({ actor: actor.openId || actor.name || "system-admin", actionCode: isNew ? "CREATE" : "UPDATE", entityType: "COMPANY_GROUP", entityId: String(id), requestId: requestId("COMPANY_GROUP", id) });
+  return db.select().from(companyGroups).where(eq(companyGroups.id, id)).limit(1).then((rows) => rows[0]);
+}
+
+export async function assignSystemCompanyGroup(input: { groupId: number; companyId: number; consolidationCode?: string }, actor: AdminActor) {
+  assertSystemAdmin(actor);
+  const db = await getDb();
+  if (!db) throw new Error("DATABASE_REQUIRED_FOR_COMPANY_GROUP_MEMBER");
+  const existing = await db.select().from(companyGroupMembers).where(and(eq(companyGroupMembers.groupId, input.groupId), eq(companyGroupMembers.companyId, input.companyId))).limit(1);
+  if (!existing.length) await db.insert(companyGroupMembers).values({ groupId: input.groupId, companyId: input.companyId, consolidationCode: input.consolidationCode?.trim() || null });
+  await db.insert(auditEvents).values({ actor: actor.openId || actor.name || "system-admin", actionCode: "ASSIGN_COMPANY", entityType: "COMPANY_GROUP", entityId: String(input.groupId), requestId: requestId("COMPANY_GROUP_MEMBER", input.groupId, input.companyId) });
+  return { groupId: input.groupId, companyId: input.companyId, idempotent: existing.length > 0 };
 }
