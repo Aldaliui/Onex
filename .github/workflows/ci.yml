@@ -26,7 +26,7 @@ jobs:
       - name: Scan repository for secrets
         uses: docker://zricethezav/gitleaks:v8.24.2
         with:
-          args: detect --source=/github/workspace --no-banner --redact
+          args: detect --source=/github/workspace --no-banner --redact --no-git
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
