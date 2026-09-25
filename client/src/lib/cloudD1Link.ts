@@ -4,8 +4,10 @@ import type { AppRouter } from "../../../server/routers";
 
 type CloudResponse = { data?: unknown; error?: { message?: string } };
 
+const cloudBaseUrl = () => (import.meta.env.VITE_CLOUDFLARE_WORKER_URL?.trim() || window.location.origin).replace(/\/$/, "");
+
 const request = async (path: string, method: "GET" | "POST" | "DELETE", input?: unknown) => {
-  const url = new URL(`/api/cloud${path}`, window.location.origin);
+  const url = new URL(`/api/cloud${path}`, cloudBaseUrl());
   let body: BodyInit | undefined;
   if (method === "GET" && input && typeof input === "object") {
     for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
