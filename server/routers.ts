@@ -64,7 +64,6 @@ export const appRouter = router({
     setContext: protectedProcedure.input(z.object({ companyId: z.number().int().positive(), branchId: z.number().int().positive().nullable().optional(), warehouseId: z.number().int().positive().nullable().optional(), fiscalPeriodId: z.number().int().positive().nullable().optional(), currencyCode: z.string().length(3).optional(), languageCode: z.string().max(10).optional(), actor: z.string().min(1).max(100), requestId: z.string().min(1).max(160) })).mutation(({ ctx, input }) => setErpContext({ userId: ctx.user.id, actor: input.actor, requestId: input.requestId, context: input })),
     clearContext: protectedProcedure.input(z.object({ actor: z.string().min(1).max(100), requestId: z.string().min(1).max(160) })).mutation(({ ctx, input }) => clearErpContext({ userId: ctx.user.id, actor: input.actor, requestId: input.requestId })),
   }),
-  }),
   systemSettings: router({ get: publicProcedure.query(() => getSystemSettings()), save: protectedProcedure.input(z.object({ engine: z.string().min(1).max(30), host: z.string().max(255).optional(), port: z.number().int().min(1).max(65535), databaseName: z.string().max(160).optional(), ssl: z.number().int().min(0).max(1), updatedBy: z.string().min(1).max(100) })).mutation(({ input }) => saveSystemSettings(input)) }),
   systemAdministration: router({
     overview: adminProcedure.input(z.object({ search: z.string().max(120).optional(), companyId: z.number().int().positive().optional() }).optional()).query(({ input, ctx }) => getSystemAdministration(input || {}, ctx.user)),
