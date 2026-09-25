@@ -31,9 +31,11 @@ export const mapOperation = (op: Operation) => {
     case "auth.me": return ["/auth/me", "GET"] as const;
     case "auth.logout": return ["/auth/logout", "POST"] as const;
     case "dashboard": return ["/dashboard", "GET"] as const;
+    case "controlData": return ["/master-data", "GET"] as const;
     case "systemSettings.get": return ["/system-settings", "GET"] as const;
     case "systemSettings.save": return ["/system-settings", "POST"] as const;
     case "masterData": return ["/master-data", "GET"] as const;
+    case "coreFoundation.snapshot": return ["/master-data", "GET"] as const;
     case "windows.list": return ["/windows", "GET"] as const;
     case "windows.tree": return ["/windows/tree", "GET"] as const;
     case "windows.contract": return [`/windows/contract/${encodeURIComponent(String(input?.legacyForm || ""))}`, "GET"] as const;
@@ -75,13 +77,36 @@ const mapInput = (op: Operation) => {
 };
 
 export const mapOutput = (op: Operation, data: unknown) => {
-  if (op.path === "inventory.warehouses" || op.path === "erpWorkspace.fiscalPeriods") {
-    if (Array.isArray(data)) return data;
-    if (data && typeof data === "object") {
-      const payload = data as { rows?: unknown[]; data?: unknown[]; warehouses?: unknown[]; fiscalPeriods?: unknown[] };
-      return payload.rows ?? payload.data ?? payload.warehouses ?? payload.fiscalPeriods ?? [];
+  const unwrap = (value: unknown): unknown => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const payload = value as { data?: unknown; result?: unknown };
+    if (payload.data !== undefined) return unwrap(payload.data);
+    if (payload.result !== undefined) return unwrap(payload.result);
+    return value;
+  };
+  const list = (value: unknown, ...keys: string[]) => {
+    const payload = unwrap(value);
+    if (Array.isArray(payload)) return payload;
+    if (payload && typeof payload === "object") {
+      const record = payload as Record<string, unknown>;
+      for (const key of ["rows", ...keys]) if (Array.isArray(record[key])) return record[key] as unknown[];
     }
     return [];
+  };
+  if (op.path === "inventory.warehouses" || op.path === "erpWorkspace.fiscalPeriods") {
+    return list(data, op.path === "inventory.warehouses" ? "warehouses" : "fiscalPeriods");
+  }
+  if (op.path === "masterData" || op.path === "controlData" || op.path === "coreFoundation.snapshot") {
+    const payload = unwrap(data);
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return op.path === "controlData" ? { branches: [], accounts: [], fiscalPeriods: [] } : {};
+    const source = payload as Record<string, unknown>;
+    const master = {
+      companies: list(source.companies), branches: list(source.branches), warehouses: list(source.warehouses), roles: list(source.roles),
+      fiscalPeriods: list(source.fiscalPeriods), customers: list(source.customers), suppliers: list(source.suppliers), items: list(source.items),
+      accounts: list(source.accounts), cashBoxes: list(source.cashBoxes), banks: list(source.banks), units: list(source.units), balances: list(source.balances),
+    };
+    if (op.path === "controlData") return { branches: master.branches, accounts: master.accounts, fiscalPeriods: master.fiscalPeriods };
+    return master;
   }
   if (op.path === "invoices.create" && data && typeof data === "object") {
     const payload = data as { invoiceId?: number; result?: Array<{ meta?: { last_row_id?: number } }> };

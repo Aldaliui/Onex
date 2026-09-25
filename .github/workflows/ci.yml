@@ -24,9 +24,9 @@ jobs:
         with:
           fetch-depth: 0
       - name: Scan repository for secrets
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: docker://zricethezav/gitleaks:8.24.2
+        with:
+          args: detect --source=/github/workspace --no-banner --redact
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:

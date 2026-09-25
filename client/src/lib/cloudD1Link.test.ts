@@ -17,4 +17,12 @@ describe("Cloud D1 tRPC procedure mappings", () => {
     expect(mapOutput({ path: "erpWorkspace.fiscalPeriods" } as any, { fiscalPeriods: [period] })).toEqual([period]);
     expect(mapOutput({ path: "erpWorkspace.fiscalPeriods" } as any, { unexpected: true })).toEqual([]);
   });
+
+  it("normalizes nested Worker envelopes and shares master data with control screens", () => {
+    const period = { id: 1, code: "2026-01", status: "OPEN" };
+    const master = { fiscalPeriods: [period], accounts: [{ code: "4100" }], customers: [{ id: 1 }], items: [{ id: 2 }] };
+    expect(mapOutput({ path: "erpWorkspace.fiscalPeriods" } as any, { data: { rows: [period] } })).toEqual([period]);
+    expect(mapOutput({ path: "masterData" } as any, { data: master })).toMatchObject({ fiscalPeriods: [period], accounts: master.accounts, customers: master.customers, items: master.items, warehouses: [] });
+    expect(mapOutput({ path: "controlData" } as any, master)).toEqual({ branches: [], accounts: master.accounts, fiscalPeriods: [period] });
+  });
 });
