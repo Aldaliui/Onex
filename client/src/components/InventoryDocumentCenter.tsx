@@ -34,7 +34,7 @@ export default function InventoryDocumentCenter({ initialMode = "receipt" }: { i
     try {
       const actor = "workbench.user";
       if (mode === "receipt") {
-        const result = await receive.mutateAsync({ itemId: Number(itemId), warehouseId: Number(warehouseId), quantity, unitCost, actor, reference: documentNo });
+        const result = await receive.mutateAsync({ itemId: Number(itemId), context: { companyId: 1, branchId: 1, warehouseId: Number(warehouseId), fiscalPeriodId: 1, currencyCode: "SAR", languageCode: "ar" }, quantity, unitCost, actor, reference: documentNo });
         toast.success(`تم ترحيل الاستلام ${result.reference || documentNo}`);
       } else if (mode === "transfer") {
         const draft = await createTransfer.mutateAsync({ transferNo: documentNo, sourceWarehouseId: Number(warehouseId), destinationWarehouseId: Number(destinationWarehouseId), actor, lines: [{ itemId: Number(itemId), quantity }] });
