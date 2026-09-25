@@ -8,7 +8,7 @@ import { buildPurchaseJournal, buildReversalJournal, buildSaleJournal, calculate
 import { assertAtomicPost, assertAtomicReverse } from "./documentLifecycle";
 import { getLegacyWindowContract } from "./legacyWindowContracts";
 import { assertStockRule, calculateMovingAverage } from "./inventoryKernel";
-import { createCloudSalesInvoice, getCloudAccounts, getCloudCurrencies, getCloudItemTrace, getCloudMasterData, importCloudAccounts, isCloudflareD1Enabled, postCloudSalesInvoice, reverseCloudSalesInvoice, saveCloudAccount, saveCloudBank, saveCloudCashBox, saveCloudCurrency, saveCloudWarehouse } from "./cloudflareD1";
+import { createCloudSalesInvoice, getCloudAccounts, getCloudCurrencies, getCloudItemTrace, getCloudMasterData, importCloudAccounts, isCloudflareD1Enabled, postCloudSalesInvoice, reverseCloudSalesInvoice, saveCloudAccount, saveCloudBank, saveCloudCashBox, saveCloudCurrency, saveCloudWarehouse, updateCloudSalesInvoice } from "./cloudflareD1";
 import { buildEInvoicePayload, getEInvoiceProvider, type EInvoiceStatus } from "./eInvoicing";
 import { buildPurchaseIntegrationReport, type PurchaseIntegrationReportInput } from "./purchaseIntegrationReport";
 import { createInvoiceDraftWithDrizzleTransaction, postExistingInvoiceWithDrizzleTransaction, postInvoiceWithDrizzleTransaction, reverseInvoiceWithDrizzleTransaction } from "./drizzleInvoicePostingRepository";
@@ -610,6 +610,54 @@ export async function createInvoiceDraftWithTypedService(input: Parameters<typeo
   return db.transaction((tx) => createInvoiceDraftWithDrizzleTransaction(tx, typedInput));
 }
 
+export async function updateInvoiceDraftWithTypedService(invoiceId: number, input: Parameters<typeof createInvoice>[0], requestId: string) {
+  if (!Number.isInteger(invoiceId) || invoiceId <= 0) throw new Error("SALES_INVOICE_ID_REQUIRED");
+  if (!input.docNo.trim() || !input.lines.length) throw new Error("SALES_INVOICE_HEADER_AND_LINES_REQUIRED");
+  validateLinkedInvoiceLines(input.lines);
+  const calculated = calculateInvoice(input.lines, input.paidAmount || "0");
+  const paidAmount = Number(input.paidAmount || 0);
+  if (!Number.isFinite(paidAmount) || paidAmount < 0 || paidAmount > calculated.grandTotal) throw new Error("PAID_AMOUNT_EXCEEDS_INVOICE");
+  const result = { invoiceId, docNo: input.docNo, subtotal: calculated.subtotal, taxTotal: calculated.taxTotal, grandTotal: calculated.grandTotal, status: "DRAFT" as const };
+
+  if (isCloudflareD1Enabled()) {
+    const updated = await updateCloudSalesInvoice(invoiceId, {
+      docNo: input.docNo,
+      customerId: input.customerId,
+      warehouseId: input.warehouseId,
+      currencyCode: input.currencyCode || "SAR",
+      exchangeRate: input.exchangeRate || "1",
+      paymentMethod: input.paymentMethod || "CASH",
+      paidAmount: paidAmount.toFixed(6),
+      paymentReference: input.paymentReference || null,
+      lines: input.lines,
+    }, requestId);
+    if (updated.status !== "DRAFT") throw new Error("ONLY_DRAFT_INVOICES_CAN_BE_EDITED");
+    return { ...result, subtotal: Number(updated.subtotal ?? result.subtotal), taxTotal: Number(updated.taxTotal ?? result.taxTotal), grandTotal: Number(updated.grandTotal ?? result.grandTotal) };
+  }
+
+  const db = await getDb();
+  if (!db) {
+    const invoice = demoInvoices.get(invoiceId);
+    if (!invoice) throw new Error("INVOICE_NOT_FOUND");
+    if (invoice.status !== "DRAFT") throw new Error("ONLY_DRAFT_INVOICES_CAN_BE_EDITED");
+    if (Array.from(demoInvoices.values()).some((other) => other.invoiceId !== invoiceId && other.docNo === input.docNo)) throw new Error("DUPLICATE_IDEMPOTENCY_KEY");
+    Object.assign(invoice, { docNo: input.docNo, customerId: input.customerId, warehouseId: input.warehouseId, currencyCode: input.currencyCode || "SAR", exchangeRate: Number(input.exchangeRate || 1), paymentMethod: input.paymentMethod || "CASH", paidAmount, remainingAmount: calculated.remainingAmount, subtotal: calculated.subtotal, taxTotal: calculated.taxTotal, grandTotal: calculated.grandTotal });
+    demoInvoiceLines.set(invoiceId, input.lines);
+    return result;
+  }
+
+  return db.transaction(async (tx) => {
+    const invoice = (await tx.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.invoiceType, "SALE"))).limit(1))[0];
+    if (!invoice) throw new Error("INVOICE_NOT_FOUND");
+    if (invoice.status !== "DRAFT") throw new Error("ONLY_DRAFT_INVOICES_CAN_BE_EDITED");
+    await tx.update(invoices).set({ docNo: input.docNo, customerId: input.customerId, warehouseId: input.warehouseId, currencyCode: input.currencyCode || "SAR", exchangeRate: input.exchangeRate || "1", subtotal: calculated.subtotal.toFixed(6), taxTotal: calculated.taxTotal.toFixed(6), grandTotal: calculated.grandTotal.toFixed(6), paymentMethod: input.paymentMethod || "CASH", paidAmount: paidAmount.toFixed(6), remainingAmount: calculated.remainingAmount.toFixed(6), paymentReference: input.paymentReference || null }).where(and(eq(invoices.id, invoiceId), eq(invoices.status, "DRAFT")));
+    await tx.delete(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
+    await tx.insert(invoiceLines).values(input.lines.map((line) => ({ invoiceId, itemId: line.itemId, quantity: line.quantity, unitPrice: line.unitPrice, taxAmount: line.taxAmount, lineTotal: (Number(line.quantity) * Number(line.unitPrice) + Number(line.taxAmount)).toFixed(6), unitCode: line.unitCode || "EA", batchNo: line.batchNo || null, expireDate: line.expireDate ? new Date(line.expireDate) : null, locationId: line.locationId || null, serialsJson: line.serials?.length ? JSON.stringify(line.serials) : null })));
+    await tx.insert(auditEvents).values({ actor: input.actor, actionCode: "UPDATE", entityType: "AR_DOC", entityId: String(invoiceId), requestId });
+    return result;
+  });
+}
+
 export async function saveJournal(input: { journalNo: string; entryType: string; actor: string; lines: { accountCode: string; accountName?: string; description?: string; debit: string; credit: string }[] }) {
   const draft = await createJournalDraft({ journalNo: input.journalNo, entryType: input.entryType, actor: input.actor, context: legacyExecutionContext(), lines: input.lines });
   await validateJournalEntry(draft.id, input.actor);
@@ -1073,6 +1121,10 @@ export async function executeSalesWindowAction(input: {
     else if (["new", "save"].includes(input.action)) {
       if (!input.invoice) throw new Error("SALES_INVOICE_PAYLOAD_REQUIRED");
       response = await createInvoiceDraftWithTypedService(input.invoice, input.requestId);
+    } else if (input.action === "update") {
+      if (!input.invoiceId) throw new Error("SALES_INVOICE_ID_REQUIRED");
+      if (!input.invoice) throw new Error("SALES_INVOICE_PAYLOAD_REQUIRED");
+      response = await updateInvoiceDraftWithTypedService(input.invoiceId, input.invoice, input.requestId);
     } else if (input.action === "post") {
       if (!input.invoiceId) throw new Error("SALES_INVOICE_ID_REQUIRED");
       response = await postInvoice(input.invoiceId, input.actor, input.requestId);

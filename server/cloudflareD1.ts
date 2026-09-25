@@ -70,6 +70,13 @@ export async function createCloudSalesInvoice(input: Record<string, unknown>) {
   }, true);
 }
 
+export async function updateCloudSalesInvoice(invoiceId: number, input: Record<string, unknown>, requestId: string) {
+  return request<Record<string, unknown>>(`/api/erp/invoices/${invoiceId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ ...input, requestId }),
+  }, true);
+}
+
 export async function postCloudSalesInvoice(invoiceId: number) {
   return request<Record<string, unknown>>(`/api/erp/invoices/${invoiceId}/post`, {
     method: "POST",

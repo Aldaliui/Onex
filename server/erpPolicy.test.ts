@@ -41,6 +41,7 @@ describe("unified ERP policy", () => {
   it("connects mutation policy to license and permission checks", () => {
     process.env.ONEX_ENFORCE_PERMISSIONS = "1";
     expect(() => assertErpAction({ role: "user", action: "INVOICE_POST", module: "AR" })).not.toThrow();
+    expect(() => assertErpAction({ role: "user", action: "INVOICE_UPDATE", module: "AR" })).not.toThrow();
     expect(() => assertErpAction({ role: "user", action: "PERIOD_CLOSE", module: "GL" })).toThrow("PERMISSION_DENIED:PERIOD_CLOSE");
   });
 

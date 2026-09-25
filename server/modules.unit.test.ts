@@ -56,6 +56,19 @@ describe("ONEX module unit tests", () => {
     expect((await api.invoices.reverse({ invoiceId: created.invoiceId, actor: "unit.ar" })).status).toBe("REVERSED");
   });
 
+  it("AR typed invoice routes create, update, post, and reverse a draft in order", async () => {
+    const api = caller();
+    const suffix = Date.now();
+    const created = await api.invoices.create({ docNo: `AR-TYPED-${suffix}`, customerId: 1, warehouseId: 1, actor: "unit.ar.typed", lines: [{ itemId: 1, quantity: "1", unitPrice: "20", taxAmount: "3" }] });
+    expect(created.status).toBe("DRAFT");
+
+    const updated = await api.invoices.update({ invoiceId: created.invoiceId, requestId: `AR-TYPED-UPDATE-${suffix}`, docNo: `AR-TYPED-UPDATED-${suffix}`, customerId: 1, warehouseId: 1, actor: "unit.ar.typed", lines: [{ itemId: 1, quantity: "2", unitPrice: "30", taxAmount: "5" }] });
+    expect(updated).toMatchObject({ invoiceId: created.invoiceId, docNo: `AR-TYPED-UPDATED-${suffix}`, status: "DRAFT", subtotal: 60, taxTotal: 5, grandTotal: 65 });
+    expect((await api.invoices.post({ invoiceId: created.invoiceId, actor: "unit.ar.typed" })).status).toBe("POSTED");
+    expect((await api.invoices.reverse({ invoiceId: created.invoiceId, actor: "unit.ar.typed" })).status).toBe("REVERSED");
+    await expect(api.invoices.update({ invoiceId: created.invoiceId, requestId: `AR-TYPED-UPDATE-AFTER-POST-${suffix}`, docNo: `AR-TYPED-INVALID-${suffix}`, customerId: 1, warehouseId: 1, actor: "unit.ar.typed", lines: [{ itemId: 1, quantity: "1", unitPrice: "1", taxAmount: "0" }] })).rejects.toThrow("ONLY_DRAFT_INVOICES_CAN_BE_EDITED");
+  });
+
   it("AR priority windows: expose compatibility clones with bounded actions", async () => {
     const api = caller();
     const invoice = await api.windows.contract({ legacyForm: "ARST004.fmx" });
@@ -80,6 +93,28 @@ describe("ONEX module unit tests", () => {
     const api = caller(); const requestId = `sales-idempotent-${Date.now()}`; const invoice = { docNo: `SALES-IDEMP-${Date.now()}`, customerId: 1, warehouseId: 1, lines: [{ itemId: 1, quantity: "1", unitPrice: "20", taxAmount: "3" }], actor: "contract.sales" };
     const first = await api.windows.salesExecute({ legacyForm: "ARST004.fmx", action: "new", requestId, invoice }); const second = await api.windows.salesExecute({ legacyForm: "ARST004.fmx", action: "new", requestId, invoice: { ...invoice, docNo: `${invoice.docNo}-CHANGED` } });
     expect(second.idempotent).toBe(true); expect(second.result).toEqual(first.result);
+  });
+
+  it("Sales window API supports the complete typed CREATE, UPDATE, POST, REVERSE lifecycle", async () => {
+    const api = caller();
+    const suffix = Date.now();
+    const invoiceIdempotentKey = `SALES-LIFECYCLE-${suffix}`;
+    const invoice = { docNo: `SALES-LIFECYCLE-${suffix}`, customerId: 1, warehouseId: 1, currencyCode: "SAR", exchangeRate: "1", paymentMethod: "CREDIT" as const, paidAmount: "0", lines: [{ itemId: 1, quantity: "1", unitPrice: "20", taxAmount: "3" }], actor: "contract.sales" };
+    const created = await api.windows.salesExecute({ legacyForm: "ARST004.fmx", action: "new", requestId: `${invoiceIdempotentKey}:CREATE`, invoice });
+    expect(created.mode).toBe("DATABASE_CONTRACT");
+    expect((created.result as { status: string }).status).toBe("DRAFT");
+    const invoiceId = Number((created.result as { invoiceId: number }).invoiceId);
+
+    const updated = await api.windows.salesExecute({ legacyForm: "ARST004.fmx", action: "update", requestId: `${invoiceIdempotentKey}:UPDATE`, invoiceId, invoice: { ...invoice, docNo: `SALES-LIFECYCLE-UPDATED-${suffix}`, lines: [{ itemId: 1, quantity: "2", unitPrice: "30", taxAmount: "5" }] } });
+    expect(updated.mode).toBe("DATABASE_CONTRACT");
+    expect(updated.action).toBe("update");
+    expect(updated.result).toMatchObject({ invoiceId, docNo: `SALES-LIFECYCLE-UPDATED-${suffix}`, status: "DRAFT", subtotal: 60, taxTotal: 5, grandTotal: 65 });
+
+    const posted = await api.windows.salesExecute({ legacyForm: "ARST004.fmx", action: "post", requestId: `${invoiceIdempotentKey}:POST`, invoiceId });
+    expect((posted.result as { status: string }).status).toBe("POSTED");
+    const reversed = await api.windows.salesExecute({ legacyForm: "ARST004.fmx", action: "reverse", requestId: `${invoiceIdempotentKey}:REVERSE`, invoiceId });
+    expect((reversed.result as { status: string }).status).toBe("REVERSED");
+    await expect(api.windows.salesExecute({ legacyForm: "ARST004.fmx", action: "update", requestId: `${invoiceIdempotentKey}:UPDATE-AFTER-POST`, invoiceId, invoice })).rejects.toThrow("ONLY_DRAFT_INVOICES_CAN_BE_EDITED");
   });
 
   it("AP: exposes purchasing windows and save/update/delete actions", async () => {

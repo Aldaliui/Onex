@@ -243,15 +243,20 @@ async function getInvoice(env, request, invoiceId) {
 async function editInvoice(env, request, invoiceId) {
   requireWriteAuth(request, env);
   if (!positiveInteger(invoiceId)) return errorResponse("INVALID_INVOICE_ID", 400, request);
-  const current = await env.ONEX_DB.prepare("SELECT id, status FROM invoices WHERE id = ? LIMIT 1").bind(invoiceId).first();
+  const current = await env.ONEX_DB.prepare("SELECT id, status, customerId, warehouseId, currencyCode, exchangeRate, paymentMethod, paidAmount, paymentReference FROM invoices WHERE id = ? LIMIT 1").bind(invoiceId).first();
   if (!current) return errorResponse("INVOICE_NOT_FOUND", 404, request);
   if (current.status !== "DRAFT") return errorResponse("ONLY_DRAFT_INVOICES_CAN_BE_EDITED", 409, request);
   const body = await readJson(request);
   const docNo = typeof body.docNo === "string" ? body.docNo.trim() : "";
+  const customerId = Number(body.customerId ?? current.customerId);
+  const warehouseId = Number(body.warehouseId ?? current.warehouseId);
   const currencyCode = typeof body.currencyCode === "string" ? body.currencyCode.toUpperCase() : "SAR";
   const exchangeRate = decimal(body.exchangeRate ?? 1, { min: 0, allowZero: false });
+  const paymentMethod = typeof body.paymentMethod === "string" ? body.paymentMethod.toUpperCase() : current.paymentMethod;
+  const paidAmount = decimal(body.paidAmount ?? current.paidAmount, { min: 0, allowZero: true });
+  const paymentReference = typeof body.paymentReference === "string" ? body.paymentReference.slice(0, 160) : (body.paymentReference === null ? null : current.paymentReference);
   const lines = Array.isArray(body.lines) ? body.lines : [];
-  if (!docNo || docNo.length > 80 || exchangeRate === null || !lines.length || lines.length > 200) return errorResponse("INVALID_INVOICE_INPUT", 400, request);
+  if (!docNo || docNo.length > 80 || !positiveInteger(customerId) || !positiveInteger(warehouseId) || exchangeRate === null || paidAmount === null || !["CASH", "CREDIT", "CHECK", "WALLET", "BANK_TRANSFER"].includes(paymentMethod) || !lines.length || lines.length > 200) return errorResponse("INVALID_INVOICE_INPUT", 400, request);
   const normalized = [];
   let subtotal = 0;
   let taxTotal = 0;
@@ -266,11 +271,27 @@ async function editInvoice(env, request, invoiceId) {
     taxTotal += taxAmount;
     normalized.push({ itemId, quantity, unitPrice, taxAmount, lineTotal });
   }
-  const validCurrency = await env.ONEX_DB.prepare("SELECT code FROM currencies WHERE code = ? AND active = 1 LIMIT 1").bind(currencyCode).first();
-  if (!validCurrency) return errorResponse("CURRENCY_NOT_FOUND", 400, request);
-  await env.ONEX_DB.prepare("UPDATE invoices SET docNo = ?, currencyCode = ?, exchangeRate = ?, subtotal = ?, taxTotal = ?, grandTotal = ?, notes = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND status = 'DRAFT'").bind(docNo, currencyCode, exchangeRate.toFixed(8), subtotal.toFixed(6), taxTotal.toFixed(6), (subtotal + taxTotal).toFixed(6), typeof body.notes === "string" ? body.notes.slice(0, 1000) : null, invoiceId).run();
-  await env.ONEX_DB.prepare("DELETE FROM invoice_lines WHERE invoiceId = ?").bind(invoiceId).run();
-  await env.ONEX_DB.batch(normalized.map((line) => env.ONEX_DB.prepare("INSERT INTO invoice_lines (invoiceId, itemId, quantity, unitPrice, taxAmount, lineTotal) VALUES (?, ?, ?, ?, ?, ?)").bind(invoiceId, line.itemId, line.quantity.toFixed(6), line.unitPrice.toFixed(6), line.taxAmount.toFixed(6), line.lineTotal.toFixed(6))));
+  if (paidAmount > subtotal + taxTotal) return errorResponse("PAID_AMOUNT_EXCEEDS_TOTAL", 400, request);
+  if (paidAmount > 0 && paymentMethod === "CREDIT") return errorResponse("CREDIT_PAYMENT_CANNOT_HAVE_PAID_AMOUNT", 400, request);
+  if (paidAmount > 0 && ["CHECK", "WALLET", "BANK_TRANSFER"].includes(paymentMethod) && !paymentReference) return errorResponse("PAYMENT_REFERENCE_REQUIRED", 400, request);
+  const references = await env.ONEX_DB.batch([
+    env.ONEX_DB.prepare("SELECT id FROM customers WHERE id = ? LIMIT 1").bind(customerId),
+    env.ONEX_DB.prepare("SELECT id FROM warehouses WHERE id = ? LIMIT 1").bind(warehouseId),
+    env.ONEX_DB.prepare("SELECT code FROM currencies WHERE code = ? AND active = 1 LIMIT 1").bind(currencyCode),
+    env.ONEX_DB.prepare(`SELECT id FROM items WHERE id IN (${normalized.map(() => "?").join(",")})`).bind(...normalized.map((line) => line.itemId)),
+    env.ONEX_DB.prepare("SELECT id FROM invoices WHERE docNo = ? AND id != ? LIMIT 1").bind(docNo, invoiceId),
+  ]);
+  if (!references[0].results?.length) return errorResponse("CUSTOMER_NOT_FOUND", 400, request);
+  if (!references[1].results?.length) return errorResponse("WAREHOUSE_NOT_FOUND", 400, request);
+  if (!references[2].results?.length) return errorResponse("CURRENCY_NOT_FOUND", 400, request);
+  if ((references[3].results ?? []).length !== new Set(normalized.map((line) => line.itemId)).size) return errorResponse("ITEM_NOT_FOUND", 400, request);
+  if (references[4].results?.length) return errorResponse("DUPLICATE_DOCUMENT_NUMBER", 409, request);
+  await env.ONEX_DB.batch([
+    env.ONEX_DB.prepare("UPDATE invoices SET docNo = ?, customerId = ?, warehouseId = ?, currencyCode = ?, exchangeRate = ?, subtotal = ?, taxTotal = ?, grandTotal = ?, paymentMethod = ?, paidAmount = ?, remainingAmount = ?, paymentReference = ?, notes = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND status = 'DRAFT'").bind(docNo, customerId, warehouseId, currencyCode, exchangeRate.toFixed(8), subtotal.toFixed(6), taxTotal.toFixed(6), (subtotal + taxTotal).toFixed(6), paymentMethod, paidAmount.toFixed(6), (subtotal + taxTotal - paidAmount).toFixed(6), paymentReference, typeof body.notes === "string" ? body.notes.slice(0, 1000) : null, invoiceId),
+    env.ONEX_DB.prepare("DELETE FROM invoice_lines WHERE invoiceId = ?").bind(invoiceId),
+    ...normalized.map((line) => env.ONEX_DB.prepare("INSERT INTO invoice_lines (invoiceId, itemId, quantity, unitPrice, taxAmount, lineTotal) VALUES (?, ?, ?, ?, ?, ?)").bind(invoiceId, line.itemId, line.quantity.toFixed(6), line.unitPrice.toFixed(6), line.taxAmount.toFixed(6), line.lineTotal.toFixed(6))),
+    env.ONEX_DB.prepare("INSERT INTO audit_events (actor, actionCode, entityType, entityId, requestId) VALUES (?, 'UPDATE', 'AR_DOC', ?, ?)").bind("cloudflare-worker", String(invoiceId), typeof body.requestId === "string" && body.requestId.trim() ? body.requestId.slice(0, 160) : `UPDATE:AR_DOC:${invoiceId}`),
+  ]);
   return getInvoice(env, request, invoiceId);
 }
 

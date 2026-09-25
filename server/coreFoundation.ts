@@ -33,7 +33,11 @@ const demo = {
   companies: [{ id: 1, code: "MAIN", name: "شركة Onex الرئيسية", baseCurrency: "SAR" }],
   currencies: [{ id: 1, code: "SAR", name: "الريال السعودي", decimalScale: 2, active: 1 }, { id: 2, code: "USD", name: "الدولار الأمريكي", decimalScale: 2, active: 1 }],
   taxes: [{ id: 1, companyId: 1, code: "VAT15", name: "ضريبة القيمة المضافة 15%", rate: "15.0000", category: "STANDARD", active: 1 }],
+  exchangeRates: [] as Array<Record<string, unknown>>,
 };
+
+const demoDocumentDefinitions: Array<Record<string, unknown>> = [{ id: 1, companyId: 1, documentType: "INVOICE", displayName: "فاتورة", prefix: "INV", approvalRequired: 1, postingRequired: 1, active: 1 }];
+const demoDocumentSequences: Array<Record<string, unknown>> = [{ id: 1, companyId: 1, branchId: null, periodId: null, documentType: "INVOICE", prefix: "INV-", nextNumber: 1 }];
 
 function text(value: unknown) { return String(value ?? "").trim(); }
 const demoUnits: Array<Record<string, unknown>> = [{ id: 1, itemId: 1, unitCode: "EA", unitName: "قطعة", conversionToBase: "1", isBase: 1, active: 1 }];
@@ -64,7 +68,7 @@ function validateRow(entityType: CoreEntity, row: ImportRow, companyId: number) 
 
 export async function getCoreFoundationSnapshot(companyId = 1, search = "", limit = 100) {
   const db = await getDb();
-  if (!db) return { ...demo, branches: [{ id: 1, companyId, code: "MAIN", name: "الفرع الرئيسي", active: 1 }], fiscalPeriods: [{ id: 1, companyId, code: "2026-01", startsOn: new Date("2026-01-01"), endsOn: new Date("2026-01-31"), status: "OPEN" }], roles: [{ id: 1, code: "admin", name: "مدير النظام", active: 1 }, { id: 2, code: "user", name: "مستخدم", active: 1 }], permissions: [], userRoles: [], rolePermissions: [], users: [{ id: 1, openId: "local:administrator", name: "مدير النظام", email: "administrator@local.onex", role: "admin" }], documentDefinitions: [{ id: 1, companyId, documentType: "INVOICE", displayName: "فاتورة", prefix: "INV", approvalRequired: 1, postingRequired: 1, active: 1 }], documentSequences: [{ id: 1, companyId, branchId: null, periodId: null, documentType: "INVOICE", prefix: "INV-", nextNumber: 1 }], customers: [{ id: 1, companyId, code: "CUST-001", legalName: "عميل تجريبي", currencyCode: "SAR", status: "ACTIVE" }], suppliers: [{ id: 1, companyId, code: "SUP-001", legalName: "مورد تجريبي", currencyCode: "SAR", status: "ACTIVE" }], items: [{ id: 1, companyId, code: "ITEM-001", description: "صنف تجريبي", unitCost: "10", revenueAccount: "4100", inventoryAccount: "1300", cogsAccount: "5100", active: 1 }], units: demoUnits, notifications: [] };
+  if (!db) return { ...demo, branches: [{ id: 1, companyId, code: "MAIN", name: "الفرع الرئيسي", active: 1 }], fiscalPeriods: [{ id: 1, companyId, code: "2026-01", startsOn: new Date("2026-01-01"), endsOn: new Date("2026-01-31"), status: "OPEN" }], roles: [{ id: 1, code: "admin", name: "مدير النظام", active: 1 }, { id: 2, code: "user", name: "مستخدم", active: 1 }], permissions: [], userRoles: [], rolePermissions: [], users: [{ id: 1, openId: "local:administrator", name: "مدير النظام", email: "administrator@local.onex", role: "admin" }], documentDefinitions: demoDocumentDefinitions.filter((row) => row.companyId === companyId && row.active === 1), documentSequences: demoDocumentSequences.filter((row) => row.companyId === companyId), customers: [{ id: 1, companyId, code: "CUST-001", legalName: "عميل تجريبي", currencyCode: "SAR", status: "ACTIVE" }], suppliers: [{ id: 1, companyId, code: "SUP-001", legalName: "مورد تجريبي", currencyCode: "SAR", status: "ACTIVE" }], items: [{ id: 1, companyId, code: "ITEM-001", description: "صنف تجريبي", unitCost: "10", revenueAccount: "4100", inventoryAccount: "1300", cogsAccount: "5100", active: 1 }], units: demoUnits, notifications: [] };
   const query = text(search);
   const companyFilter = eq(companies.id, companyId);
   const branchFilter = query ? and(eq(branches.companyId, companyId), or(like(branches.code, `%${query}%`), like(branches.name, `%${query}%`))) : eq(branches.companyId, companyId);
@@ -163,7 +167,12 @@ export async function saveExchangeRateSettings(input: { companyId: number; curre
   const rateDate = new Date(input.rateDate);
   if (Number.isNaN(rateDate.getTime())) throw new Error("EXCHANGE_RATE_DATE_INVALID");
   const db = await getDb();
-  if (!db) return { companyId: input.companyId, currencyCode, rateDate, rate: input.rate, source: input.source, actor: input.actor };
+  if (!db) {
+    const existing = demo.exchangeRates.find((row) => row.companyId === input.companyId && row.currencyCode === currencyCode && new Date(String(row.rateDate)).getTime() === rateDate.getTime());
+    if (existing) Object.assign(existing, { rate: input.rate, source: input.source, actor: input.actor });
+    else demo.exchangeRates.push({ id: Math.max(0, ...demo.exchangeRates.map((row) => Number(row.id) || 0)) + 1, companyId: input.companyId, currencyCode, rateDate, rate: input.rate, source: input.source, actor: input.actor });
+    return demo.exchangeRates.find((row) => row.companyId === input.companyId && row.currencyCode === currencyCode && new Date(String(row.rateDate)).getTime() === rateDate.getTime());
+  }
   const existing = (await db.select().from(exchangeRates).where(and(eq(exchangeRates.companyId, input.companyId), eq(exchangeRates.currencyCode, currencyCode), eq(exchangeRates.rateDate, rateDate))).limit(1))[0];
   if (existing) await db.update(exchangeRates).set({ rate: input.rate, source: input.source, actor: input.actor }).where(eq(exchangeRates.id, existing.id));
   else await db.insert(exchangeRates).values({ companyId: input.companyId, currencyCode, rateDate, rate: input.rate, source: input.source, actor: input.actor });
@@ -192,7 +201,13 @@ export async function saveDocumentDefinitionSettings(input: { companyId: number;
   const prefix = text(input.prefix).toUpperCase();
   if (!/^[A-Z0-9_]{2,40}$/.test(documentType) || !text(input.displayName) || !/^[A-Z0-9-]{0,30}$/.test(prefix)) throw new Error("DOCUMENT_DEFINITION_INVALID");
   const db = await getDb();
-  if (!db) return { ...input, documentType, prefix, id: 1 };
+  if (!db) {
+    const existing = demoDocumentDefinitions.find((row) => row.companyId === input.companyId && row.documentType === documentType);
+    const values = { companyId: input.companyId, documentType, displayName: input.displayName, prefix, approvalRequired: input.approvalRequired, postingRequired: input.postingRequired, active: input.active };
+    if (existing) Object.assign(existing, values);
+    else demoDocumentDefinitions.push({ id: Math.max(0, ...demoDocumentDefinitions.map((row) => Number(row.id) || 0)) + 1, ...values });
+    return demoDocumentDefinitions.find((row) => row.companyId === input.companyId && row.documentType === documentType);
+  }
   const existing = (await db.select().from(documentDefinitions).where(and(eq(documentDefinitions.companyId, input.companyId), eq(documentDefinitions.documentType, documentType))).limit(1))[0];
   const values = { companyId: input.companyId, documentType, displayName: input.displayName, prefix, approvalRequired: input.approvalRequired, postingRequired: input.postingRequired, active: input.active };
   if (existing) await db.update(documentDefinitions).set({ displayName: values.displayName, prefix: values.prefix, approvalRequired: values.approvalRequired, postingRequired: values.postingRequired, active: values.active }).where(eq(documentDefinitions.id, existing.id));
@@ -204,7 +219,15 @@ export async function saveDocumentSequenceSettings(input: { companyId: number; b
   const prefix = text(input.prefix).toUpperCase();
   if (!/^[A-Z0-9_]{2,40}$/.test(documentType) || !/^[A-Z0-9-]{0,30}$/.test(prefix) || !Number.isInteger(input.nextNumber) || input.nextNumber < 1) throw new Error("DOCUMENT_SEQUENCE_INVALID");
   const db = await getDb();
-  if (!db) return { ...input, documentType, prefix, id: 1 };
+  if (!db) {
+    const branchId = input.branchId ?? null;
+    const periodId = input.periodId ?? null;
+    const existing = demoDocumentSequences.find((row) => row.companyId === input.companyId && row.documentType === documentType && row.branchId === branchId && row.periodId === periodId);
+    const values = { companyId: input.companyId, branchId, periodId, documentType, prefix, nextNumber: input.nextNumber };
+    if (existing) Object.assign(existing, values);
+    else demoDocumentSequences.push({ id: Math.max(0, ...demoDocumentSequences.map((row) => Number(row.id) || 0)) + 1, ...values });
+    return demoDocumentSequences.find((row) => row.companyId === input.companyId && row.documentType === documentType && row.branchId === branchId && row.periodId === periodId);
+  }
   const scope = and(eq(documentSequences.companyId, input.companyId), eq(documentSequences.documentType, documentType), input.branchId === null || input.branchId === undefined ? isNull(documentSequences.branchId) : eq(documentSequences.branchId, input.branchId), input.periodId === null || input.periodId === undefined ? isNull(documentSequences.periodId) : eq(documentSequences.periodId, input.periodId));
   const existing = (await db.select().from(documentSequences).where(scope).limit(1))[0];
   if (existing) await db.update(documentSequences).set({ prefix, nextNumber: input.nextNumber }).where(eq(documentSequences.id, existing.id));

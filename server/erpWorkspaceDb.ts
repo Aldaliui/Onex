@@ -17,6 +17,7 @@ export async function createFiscalPeriod(input: { companyId?: number; code: stri
   const normalized = validateFiscalPeriod({ companyId: input.companyId || 1, code: input.code, startsOn: input.startsOn, endsOn: input.endsOn });
   const db = await getDb();
   if (!db) {
+    assertNoPeriodOverlap(demoPeriods.filter((period) => period.companyId === normalized.companyId), normalized);
     const created = { id: Math.max(...demoPeriods.map((period) => period.id), 0) + 1, companyId: normalized.companyId, code: normalized.code, startsOn: new Date(normalized.startsOn), endsOn: new Date(normalized.endsOn), status: "OPEN" as const };
     demoPeriods.push(created);
     return { id: created.id, code: created.code, status: created.status };
