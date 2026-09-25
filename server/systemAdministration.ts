@@ -110,3 +110,64 @@ export async function removeSystemRolePermission(id: number, actor: AdminActor) 
   await db.insert(auditEvents).values({ actor: actor.openId || actor.name || "system-admin", actionCode: "REMOVE_PERMISSION", entityType: "ROLE_PERMISSION", entityId: String(id), requestId: requestId("ROLE_PERMISSION_REMOVE", id) });
   return { id, removed: true };
 }
+
+export async function saveSystemUser(input: { id?: number; openId: string; name?: string; email?: string; role?: "user" | "admin"; loginMethod?: string }, actor: AdminActor) {
+  assertSystemAdmin(actor);
+  const db = await getDb();
+  if (!db) throw new Error("DATABASE_REQUIRED_FOR_USER");
+  const openId = input.openId.trim();
+  if (!openId) throw new Error("USER_OPEN_ID_REQUIRED");
+  const values = {
+    openId,
+    name: input.name?.trim() || null,
+    email: input.email?.trim() || null,
+    role: input.role || "user",
+    loginMethod: input.loginMethod?.trim() || "admin",
+  } as const;
+  const isNew = !input.id;
+  let id = input.id;
+  if (id) {
+    await db.update(users).set(values).where(eq(users.id, id));
+  } else {
+    const inserted = await db.insert(users).values(values).$returningId();
+    id = Number(inserted[0]?.id);
+  }
+  if (!id) throw new Error("USER_SAVE_FAILED");
+  await db.insert(auditEvents).values({ actor: actor.openId || actor.name || "system-admin", actionCode: isNew ? "CREATE" : "UPDATE", entityType: "USER", entityId: String(id), requestId: requestId("USER", id) });
+  return db.select({ id: users.id, openId: users.openId, name: users.name, email: users.email, role: users.role, loginMethod: users.loginMethod, lastSignedIn: users.lastSignedIn, createdAt: users.createdAt }).from(users).where(eq(users.id, id)).limit(1).then((rows) => rows[0]);
+}
+
+export async function removeSystemUser(id: number, actor: AdminActor) {
+  assertSystemAdmin(actor);
+  const db = await getDb();
+  if (!db) throw new Error("DATABASE_REQUIRED_FOR_USER");
+  const assignments = await db.select({ id: userRoles.id }).from(userRoles).where(eq(userRoles.userId, id)).limit(1);
+  if (assignments.length) throw new Error("USER_HAS_ROLE_ASSIGNMENTS");
+  await db.delete(users).where(eq(users.id, id));
+  await db.insert(auditEvents).values({ actor: actor.openId || actor.name || "system-admin", actionCode: "DELETE", entityType: "USER", entityId: String(id), requestId: requestId("USER_DELETE", id) });
+  return { id, removed: true };
+}
+
+export async function saveSystemBranch(input: { id?: number; companyId: number; code: string; name: string; active?: number }, actor: AdminActor) {
+  assertSystemAdmin(actor);
+  const db = await getDb();
+  if (!db) throw new Error("DATABASE_REQUIRED_FOR_BRANCH");
+  const values = { companyId: input.companyId, code: input.code.trim().toUpperCase(), name: input.name.trim(), active: input.active ?? 1 };
+  if (!values.code || !values.name) throw new Error("BRANCH_CODE_AND_NAME_REQUIRED");
+  const isNew = !input.id;
+  let id = input.id;
+  if (id) await db.update(branches).set(values).where(eq(branches.id, id));
+  else { const inserted = await db.insert(branches).values(values).$returningId(); id = Number(inserted[0]?.id); }
+  if (!id) throw new Error("BRANCH_SAVE_FAILED");
+  await db.insert(auditEvents).values({ actor: actor.openId || actor.name || "system-admin", actionCode: isNew ? "CREATE" : "UPDATE", entityType: "BRANCH", entityId: String(id), requestId: requestId("BRANCH", id) });
+  return db.select().from(branches).where(eq(branches.id, id)).limit(1).then((rows) => rows[0]);
+}
+
+export async function removeSystemBranch(id: number, actor: AdminActor) {
+  assertSystemAdmin(actor);
+  const db = await getDb();
+  if (!db) throw new Error("DATABASE_REQUIRED_FOR_BRANCH");
+  await db.update(branches).set({ active: 0 }).where(eq(branches.id, id));
+  await db.insert(auditEvents).values({ actor: actor.openId || actor.name || "system-admin", actionCode: "DEACTIVATE", entityType: "BRANCH", entityId: String(id), requestId: requestId("BRANCH_DEACTIVATE", id) });
+  return { id, deactivated: true };
+}

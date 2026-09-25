@@ -1,4 +1,5 @@
 import type { WindowAction, WindowKind, WindowRecord } from "./WindowManager";
+import { adminWindowContract, adminLegacyWindowById } from "./adminWindowCatalog";
 
 export type LegacyField = { id: string; label: string; type: "text" | "date" | "number" | "select" | "password"; required?: boolean; evidence: "extracted" | "inferred" };
 export type LegacyWindowContract = WindowRecord & { module: string; kind: WindowKind; fields: LegacyField[]; actions: WindowAction[]; source: { form: string; namespace: string; libraries: string[]; tables: string[]; procedures: string[] }; notes: string };
@@ -63,4 +64,7 @@ export const legacyContracts: Record<string, LegacyWindowContract> = {
   INVT010: base("INVT010", "لوحة عمليات المخزون", "inventory", "inquiry", "NSPC9", [select("W_CODE", "المستودع"), select("I_CODE", "الصنف"), date("FROM_DATE", "من تاريخ"), date("TO_DATE", "إلى تاريخ"), select("RISK_LEVEL", "مستوى المخاطر"), select("REPORT_TYPE", "نوع المؤشر")], ["IAS_ITM_MST", "IAS_ITM_WCODE", "STOCK_BALANCES", "IAS_POST_MST", "IAS_POST_DTL", "IAS_INV_COUNT"], ["LOAD_PARAMETERS", "CALC_STOCK_HEALTH", "CALC_REORDER_ALERTS", "CALC_INVENTORY_VALUE", "EXIT_PROC"], "عقد لوحة إدارة المخزون المتقدمة لعرض الصحة والقيمة ومخاطر التوريد وشبكة المستودعات.") ,
 };
 
-export function getLegacyContract(id: string): LegacyWindowContract | undefined { return legacyContracts[id.replace(/\.fmx$/i, "").toUpperCase()]; }
+export function getLegacyContract(id: string): LegacyWindowContract | undefined {
+  const normalized = id.replace(/\.fmx$/i, "").toUpperCase();
+  return legacyContracts[normalized] ?? (adminLegacyWindowById.has(normalized) ? adminWindowContract(adminLegacyWindowById.get(normalized)!) : undefined);
+}
