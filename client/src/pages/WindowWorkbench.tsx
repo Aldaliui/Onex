@@ -124,7 +124,8 @@ function AuthenticatedWorkbench() {
   const inventoryRows = Array.isArray(inventoryCatalog.data) ? inventoryCatalog.data : ((inventoryCatalog.data as any)?.rows ?? []);
   const glRows = Array.isArray(glCatalog.data) ? glCatalog.data : ((glCatalog.data as any)?.rows ?? []);
   const catalogWindows = useMemo<RuntimeWindow[]>(() => {
-    const branches = (systemTree.data ?? []) as Array<{ domain?: string; groups?: Array<{ windows?: Array<Record<string, unknown>> }> }>;
+    const treePayload = systemTree.data as any;
+    const branches = (Array.isArray(treePayload) ? treePayload : treePayload?.rows ?? treePayload?.data ?? treePayload?.branches ?? []) as Array<{ domain?: string; groups?: Array<{ windows?: Array<Record<string, unknown>> }> }>;
     return branches.flatMap((branch) => (branch.groups ?? []).flatMap((group) => (group.windows ?? []).map((row) => {
       const id = String(row.legacyForm || row.formName || row.screenName || "").replace(/\.fmx$/i, "");
       return { id, label: String(row.screenName || id), module: moduleForLegacyDomain(String(branch.domain || row.domainCode || ""), id), kind: kindForLegacyWindow(id, String(row.itemType || "")) };
