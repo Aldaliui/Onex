@@ -18,12 +18,18 @@ type ContractWindowPanelProps = {
 
 const actionLabels: Partial<Record<WindowAction, string>> = {
   new: "سجل جديد",
+  create: "CREATE · إنشاء",
   edit: "تعديل السجل",
+  update: "UPDATE · تعديل",
   save: "حفظ العقد",
+  approve: "APPROVE · اعتماد",
+  post: "POST · ترحيل",
+  reverse: "REVERSE · عكس",
+  void: "DELETE/VOID · إبطال",
   query: "تشغيل الاستعلام",
   print: "طباعة / تصدير",
   cancel: "إلغاء التعديل",
-  delete: "حذف السجل",
+  delete: "DELETE/VOID · إبطال",
 };
 
 const workflowByKind = {

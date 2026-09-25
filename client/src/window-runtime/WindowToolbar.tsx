@@ -1,15 +1,16 @@
-import { Archive, ChevronLeft, ChevronRight, CircleHelp, FilePlus2, Pencil, Printer, RotateCcw, Save, Search, Send, Undo2, Trash2, X } from "lucide-react";
+import { Archive, CheckCircle2, ChevronLeft, ChevronRight, CircleHelp, FilePlus2, Pencil, Printer, RotateCcw, Save, Search, Send, Undo2, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { WindowAction, WindowPhase } from "./WindowManager";
 
 const actions: Array<{ id: WindowAction; label: string; shortcut: string; icon: typeof Save }> = [
-  { id: "new", label: "جديد", shortcut: "F6", icon: FilePlus2 },
-  { id: "edit", label: "تعديل", shortcut: "F2", icon: Pencil },
+  { id: "create", label: "CREATE · إنشاء", shortcut: "F6", icon: FilePlus2 },
+  { id: "update", label: "UPDATE · تعديل", shortcut: "F2", icon: Pencil },
   { id: "save", label: "حفظ", shortcut: "F10", icon: Save },
+  { id: "approve", label: "APPROVE · اعتماد", shortcut: "F9", icon: CheckCircle2 },
   { id: "post", label: "ترحيل", shortcut: "F11", icon: Send },
   { id: "reverse", label: "عكس", shortcut: "F12", icon: Undo2 },
   { id: "undo", label: "تراجع", shortcut: "Ctrl+Z", icon: RotateCcw },
-  { id: "delete", label: "حذف", shortcut: "Del", icon: Trash2 },
+  { id: "void", label: "DELETE/VOID · إبطال", shortcut: "Del", icon: Trash2 },
   { id: "query", label: "استعلام", shortcut: "F7", icon: Search },
   { id: "print", label: "طباعة", shortcut: "Ctrl+P", icon: Printer },
   { id: "cancel", label: "إلغاء", shortcut: "Esc", icon: RotateCcw },
@@ -19,7 +20,7 @@ const actions: Array<{ id: WindowAction; label: string; shortcut: string; icon: 
 export function WindowToolbar({ phase, onAction, onClose, disabled = false }: { phase: WindowPhase; onAction: (action: WindowAction) => void; onClose: () => void; disabled?: boolean }) {
   const busy = disabled || phase === "opening" || phase === "initializing" || phase === "committing" || phase === "closing";
   return <div className="legacy-form-toolbar" role="toolbar" aria-label="أدوات النافذة">
-    {actions.map(({ id, label, shortcut, icon: Icon }) => <Button key={id} type="button" variant="ghost" size="icon" title={`${label} (${shortcut})`} aria-label={label} disabled={busy || (id === "save" && phase === "ready") || (id === "edit" && phase === "dirty")} onClick={() => onAction(id)}><Icon size={15} /></Button>)}
+    {actions.map(({ id, label, shortcut, icon: Icon }) => <Button key={id} type="button" variant="ghost" size="icon" title={`${label} (${shortcut})`} aria-label={label} disabled={busy || (id === "save" && phase === "ready") || (id === "update" && phase === "dirty")} onClick={() => onAction(id)}><Icon size={15} /></Button>)}
     <span className="toolbar-separator" />
     <Button type="button" variant="ghost" size="icon" title="إغلاق (Esc)" aria-label="إغلاق" disabled={busy} onClick={onClose}><X size={15} /></Button>
     <span className="toolbar-phase" data-phase={phase}>{phase === "ready" ? "جاهز" : phase === "dirty" ? "تعديلات غير محفوظة" : phase === "committing" ? "جارٍ الحفظ..." : phase === "committed" ? "تم الحفظ" : phase === "initializing" ? "جارٍ التهيئة..." : phase === "error" ? "خطأ" : phase}</span>

@@ -212,29 +212,29 @@ function AuthenticatedWorkbench() {
       selectRecord(activeRecords[nextIndex]);
       return toast.success(action === "previous" ? "تم تحميل السجل السابق" : "تم تحميل السجل التالي");
     }
-    if (action === "new") { setValues({}); setEditing(true); manager.markDirty(id); return toast.info(`سجل جديد في ${id}`); }
-    if (action === "edit") { if (active.kind !== "transaction") return toast.info("الاستعلامات والتقارير للقراءة فقط"); setEditing(true); return manager.markDirty(id); }
+    if (action === "new" || action === "create") { setValues({}); setEditing(true); manager.markDirty(id); return toast.info(`CREATE · سجل جديد في ${id}`); }
+    if (action === "edit" || action === "update") { if (active.kind !== "transaction") return toast.info("الاستعلامات والتقارير للقراءة فقط"); setEditing(true); return manager.markDirty(id); }
     if (action === "save") return saveDraft();
     if (action === "query") { await records.refetch(); return toast.success(`تم البحث وتحديث سجلات ${id}`); }
     if (action === "undo" || action === "cancel") { setEditing(false); setValues({}); manager.markClean(id); return; }
-    if (action === "delete") {
+    if (action === "delete" || action === "void") {
       const recordId = Number(values.ID || values.id || 0);
       if (!recordId) return toast.info("اختر سجلاً قبل الحذف");
-      if (!window.confirm("هل تريد حذف السجل المحدد من D1؟")) return;
-      try { await deleteCloudWindowRecord({ legacyForm: `${id}.fmx`, id: recordId, actor: "workbench.user" }); setValues({}); await records.refetch(); manager.markClean(id); toast.success("تم حذف السجل من D1"); }
+      if (!window.confirm("سيتم تنفيذ DELETE/VOID على السجل المحدد وفق سياسة النافذة. هل تريد المتابعة؟")) return;
+      try { await deleteCloudWindowRecord({ legacyForm: `${id}.fmx`, id: recordId, actor: "workbench.user" }); setValues({}); await records.refetch(); manager.markClean(id); toast.success("تم تنفيذ DELETE/VOID في D1"); }
       catch (error) { toast.error(error instanceof Error ? error.message : "تعذر حذف السجل"); }
       return;
     }
-    if (action === "post" || action === "reverse") { try {
+    if (action === "approve" || action === "post" || action === "reverse") { try {
       const recordId = Number(values.ID || values.id || values.INVOICEID || 0);
-      if ((id === "ARST004" || id === "POST001") && recordId) {
+      if (action !== "approve" && (id === "ARST004" || id === "POST001") && recordId) {
         const mutation = action === "post" ? postInvoice : reverseInvoice;
         await mutation.mutateAsync({ invoiceId: recordId, actor: "workbench.user" });
         await records.refetch(); manager.markClean(id); toast.success(action === "post" ? `تم ترحيل ${id} في D1` : `تم عكس ${id} في D1`); return;
       }
       const requestId = `WINDOW:${id}:${action.toUpperCase()}:${Date.now()}`;
       await executeWindowAction.mutateAsync({ legacyForm: `${id}.fmx`, action, actor: "workbench.user", requestId });
-      await records.refetch(); toast.success(action === "post" ? `تم ترحيل ${id} في D1` : `تم عكس ${id} في D1`); manager.markClean(id);
+      await records.refetch(); toast.success(action === "approve" ? `تم اعتماد ${id} في D1` : action === "post" ? `تم ترحيل ${id} في D1` : `تم عكس ${id} في D1`); manager.markClean(id);
     } catch (error) { toast.error(error instanceof Error ? error.message : `تعذر تنفيذ ${action} لـ ${id}`); } return; }
     if (action === "print") { window.print(); toast.success(`تم فتح نسخة الطباعة لـ ${id}`); return; }
     return toast.info(`مساعدة ${id}: الإدراج F6، التعديل F2، البحث F7، الحفظ F10`);
