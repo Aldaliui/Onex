@@ -11,7 +11,7 @@ import {
   X,
 } from "lucide-react";
 
-type TabId = "dashboard" | "accounts" | "journals" | "sales" | "purchases" | "inventory" | "receipts" | "payments" | "cashbanks" | "reports" | "setup" | "permissions";
+type TabId = "dashboard" | "accounts" | "journals" | "sales" | "customers" | "purchases" | "suppliers" | "inventory" | "receipts" | "payments" | "cashbanks" | "reports" | "setup" | "permissions";
 
 type JournalLine = { accountCode: string; description: string; debit: string; credit: string };
 
@@ -20,7 +20,9 @@ const tabs: Array<{ id: TabId; label: string; hint: string; icon: typeof LayoutD
   { id: "accounts", label: "دليل الحسابات", hint: "الحسابات والربط", icon: Landmark },
   { id: "journals", label: "القيود اليومية", hint: "إنشاء وترحيل", icon: FilePlus2 },
   { id: "sales", label: "المبيعات والذمم", hint: "الفواتير والتحصيل", icon: ArrowUpFromLine },
+  { id: "customers", label: "العملاء", hint: "ملفات وحسابات العملاء", icon: Users },
   { id: "purchases", label: "المشتريات والدائنون", hint: "أوامر واستلام", icon: ArrowDownToLine },
+  { id: "suppliers", label: "الموردون", hint: "ملفات وحسابات الموردين", icon: Users },
   { id: "inventory", label: "المخزون", hint: "المستودعات والجرد والحركة", icon: Package },
   { id: "receipts", label: "سندات القبض", hint: "تحصيل وتخصيص", icon: ArrowDownToLine },
   { id: "payments", label: "سندات الصرف", hint: "دفع وتسوية", icon: ArrowUpFromLine },
@@ -29,6 +31,12 @@ const tabs: Array<{ id: TabId; label: string; hint: string; icon: typeof LayoutD
   { id: "setup", label: "بيانات النظام", hint: "الشركة والفترات", icon: Settings2 },
   { id: "permissions", label: "الصلاحيات", hint: "الأدوار والاعتماد", icon: ShieldCheck },
 ];
+
+const windowCodes: Record<TabId, string> = {
+  dashboard: "ONEX001", accounts: "GLST001", journals: "GLST002", sales: "ARST001", customers: "ARST003", purchases: "APST001", suppliers: "APSI002",
+  inventory: "INVT001", receipts: "GLST004", payments: "GLST005", cashbanks: "GLST007", reports: "GLSR001",
+  setup: "CORE006", permissions: "CORE003",
+};
 
 const money = (value: unknown) => Number(value || 0).toLocaleString("ar-YE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const number = (value: unknown) => Number(value || 0).toLocaleString("ar-YE");
@@ -223,7 +231,11 @@ function SetupView({ permissions = false }: { permissions?: boolean }) {
 
 export default function AccountingSuite() {
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
+  const [openWindows, setOpenWindows] = useState<TabId[]>(["dashboard"]);
   const [mobileOpen, setMobileOpen] = useState(false);
   const current = tabs.find((tab) => tab.id === activeTab) || tabs[0];
-  return <div className="accounting-suite" dir="rtl"><aside className={`suite-sidebar ${mobileOpen ? "open" : ""}`}><div className="suite-brand"><div className="suite-brand-mark"><CircleDollarSign size={19} /></div><div><strong>ONEX</strong><span>ACCOUNTING SUITE</span></div><button className="suite-close" onClick={() => setMobileOpen(false)}><X size={17} /></button></div><div className="suite-company"><div className="company-avatar">ش</div><div><b>شركة ONEX للتجارة</b><span>اليمن · YER</span></div><span className="company-dot" /></div><nav className="suite-nav">{tabs.map(({ id, label, hint, icon: Icon }) => <button key={id} className={activeTab === id ? "active" : ""} onClick={() => { setActiveTab(id); setMobileOpen(false); }}><Icon size={17} /><span><b>{label}</b><small>{hint}</small></span>{activeTab === id && <i />}</button>)}</nav><div className="suite-sidebar-footer"><Status tone="success">النظام متصل</Status><span>إصدار إعادة البناء · 0.1</span></div></aside><main className="suite-main"><header className="suite-topbar"><button className="suite-menu" onClick={() => setMobileOpen(true)}><Menu size={20} /></button><div><p className="suite-breadcrumb">ONEX / ACCOUNTING / <b>{current.label}</b></p><h1>{current.label}</h1></div><div className="suite-top-actions"><div className="suite-date"><span>الفترة الحالية</span><b>2026 · مفتوحة</b></div><button className="suite-icon-button"><PanelRight size={17} /></button><div className="suite-user"><div>م</div><span>مدير النظام</span></div></div></header><div className="suite-page">{activeTab === "dashboard" && <Dashboard onNavigate={setActiveTab} />}{activeTab === "accounts" && <AccountsView />}{activeTab === "journals" && <JournalView />}{activeTab === "sales" && <SalesOperationsView />}{activeTab === "purchases" && <PurchasesOperationsView />}{activeTab === "inventory" && <CycleView kind="inventory" />}{activeTab === "receipts" && <MoneyVoucherView kind="receipt" />}{activeTab === "payments" && <MoneyVoucherView kind="payment" />}{activeTab === "cashbanks" && <CashBankView />}{activeTab === "reports" && <ReportsView />}{activeTab === "setup" && <SetupView />}{activeTab === "permissions" && <SetupView permissions />}</div></main></div>;
+  const openWindow = (id: TabId) => { setActiveTab(id); setOpenWindows((windows) => windows.includes(id) ? windows : [...windows, id]); setMobileOpen(false); };
+  const closeWindow = (id: TabId) => { if (id === "dashboard") return; setOpenWindows((windows) => { const next = windows.filter((window) => window !== id); if (activeTab === id) setActiveTab(next[next.length - 1] || "dashboard"); return next; }); };
+  const content = <>{activeTab === "dashboard" && <Dashboard onNavigate={openWindow} />}{activeTab === "accounts" && <AccountsView />}{activeTab === "journals" && <JournalView />}{activeTab === "sales" && <SalesOperationsView />}{activeTab === "customers" && <CustomerManagementView />}{activeTab === "purchases" && <PurchasesOperationsView />}{activeTab === "suppliers" && <SupplierManagementView />}{activeTab === "inventory" && <CycleView kind="inventory" />}{activeTab === "receipts" && <MoneyVoucherView kind="receipt" />}{activeTab === "payments" && <MoneyVoucherView kind="payment" />}{activeTab === "cashbanks" && <CashBankView />}{activeTab === "reports" && <ReportsView />}{activeTab === "setup" && <SetupView />}{activeTab === "permissions" && <SetupView permissions />}</>;
+  return <div className="accounting-suite" dir="rtl"><aside className={`suite-sidebar ${mobileOpen ? "open" : ""}`}><div className="suite-brand"><div className="suite-brand-mark"><CircleDollarSign size={19} /></div><div><strong>ONEX</strong><span>ACCOUNTING SUITE</span></div><button className="suite-close" onClick={() => setMobileOpen(false)}><X size={17} /></button></div><div className="suite-company"><div className="company-avatar">ش</div><div><b>شركة ONEX للتجارة</b><span>اليمن · YER</span></div><span className="company-dot" /></div><nav className="suite-nav">{tabs.map(({ id, label, hint, icon: Icon }) => <button key={id} className={activeTab === id ? "active" : ""} onClick={() => openWindow(id)}><Icon size={17} /><span><b>{label}</b><small>{hint}</small></span>{activeTab === id && <i />}</button>)}</nav><div className="suite-sidebar-footer"><Status tone="success">النظام متصل</Status><span>إصدار Accounting Windows · 0.1</span></div></aside><main className="suite-main"><header className="suite-topbar"><button className="suite-menu" onClick={() => setMobileOpen(true)}><Menu size={20} /></button><div><p className="suite-breadcrumb">ONEX / ACCOUNTING / <b>{current.label}</b></p><h1>{current.label}</h1></div><div className="suite-top-actions"><div className="suite-date"><span>الفترة الحالية</span><b>2026 · مفتوحة</b></div><button className="suite-icon-button"><PanelRight size={17} /></button><div className="suite-user"><div>م</div><span>مدير النظام</span></div></div></header><div className="suite-window-tabs">{openWindows.map((id) => { const tab = tabs.find((item) => item.id === id)!; return <button key={id} className={activeTab === id ? "active" : ""} onClick={() => openWindow(id)}><span>{windowCodes[id]}</span><b>{tab.label}</b>{id !== "dashboard" && <X size={13} onClick={(event) => { event.stopPropagation(); closeWindow(id); }} />}</button>; })}</div><section className="suite-window-frame"><div className="suite-window-toolbar"><span className="window-code">{windowCodes[activeTab]}</span><span>{current.hint}</span><i /><Status tone="success">جاهزة للعمل</Status><button className="suite-icon-button" onClick={() => void window.scrollTo({ top: 0, behavior: "smooth" })}><RefreshCw size={14} /></button></div><div className="suite-page">{content}</div></section></main></div>;
 }
