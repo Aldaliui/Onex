@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { Activity, ArrowDownToLine, ArrowUpFromLine, Boxes, Calculator, ClipboardList, FileBarChart, Package, Receipt, RefreshCw, ShoppingCart, Users, Warehouse } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { useErpWorkspaceData } from "@/hooks/useErpWorkspaceData";
 
 type OpenWindow = (windowId: string) => void;
 
@@ -13,14 +14,13 @@ const date = (value: unknown) => value ? new Intl.DateTimeFormat("ar-SA", { day:
 
 export default function WorkspaceOverview({ onOpen }: WorkspaceOverviewProps) {
   const dashboard = trpc.dashboard.useQuery(undefined, { refetchOnWindowFocus: false });
-  const master = trpc.masterData.useQuery(undefined, { refetchOnWindowFocus: false });
-  const control = trpc.controlData.useQuery(undefined, { refetchOnWindowFocus: false });
+  const workspace = useErpWorkspaceData();
   const data = dashboard.data;
-  const masterData = master.data;
+  const { masterData, accounts, fiscalPeriods } = workspace;
   const recentInvoices = (data?.recentInvoices || []) as Array<Record<string, unknown>>;
   const balanceRows = (masterData?.balances || []) as Array<Record<string, any>>;
   const stockQuantity = useMemo(() => balanceRows.reduce((sum, row) => sum + Number(row.balance?.quantity || 0), 0), [balanceRows]);
-  const activePeriod = (control.data?.fiscalPeriods || []).find((period: any) => period.status === "OPEN") as any;
+  const activePeriod = fiscalPeriods.find((period: any) => period.status === "OPEN") as any;
 
   const kpis = [
     { label: "فواتير مسجلة", value: data?.invoices ?? "—", hint: "كل الحالات", icon: Receipt, tone: "cyan" },
@@ -40,7 +40,7 @@ export default function WorkspaceOverview({ onOpen }: WorkspaceOverviewProps) {
     { id: "sales", label: "المبيعات والعملاء", detail: `${masterData?.customers?.length ?? 0} عميل · فواتير ومرتجعات`, icon: Receipt, windows: ["ARST004", "ARST007", "ARST006"] },
     { id: "purchasing", label: "المشتريات والموردون", detail: `${masterData?.suppliers?.length ?? 0} مورد · أوامر وتوريد`, icon: ShoppingCart, windows: ["APST003", "APST007", "APSI002"] },
     { id: "inventory", label: "المخزون والمستودعات", detail: `${masterData?.items?.length ?? 0} صنف · ${masterData?.warehouses?.length ?? 0} مستودع`, icon: Warehouse, windows: ["INVT003", "INVT004", "MRPACS004"] },
-    { id: "finance", label: "المالية والحسابات", detail: `${control.data?.accounts?.length ?? 0} حساب نشط · دورة مالية`, icon: Calculator, windows: ["GLST001", "GLST002", "GLST004"] },
+    { id: "finance", label: "المالية والحسابات", detail: `${accounts.length} حساب نشط · دورة مالية`, icon: Calculator, windows: ["GLST001", "GLST002", "GLST004"] },
   ];
 
   return <section className="workspace-overview" dir="rtl">
@@ -50,7 +50,7 @@ export default function WorkspaceOverview({ onOpen }: WorkspaceOverviewProps) {
         <h1>مساحة التشغيل الموحدة</h1>
         <p>ابدأ المعاملة من هنا، ثم تابع دورة المستند من الإدخال إلى الاعتماد والترحيل والتدقيق داخل النظام نفسه.</p>
       </div>
-      <button type="button" className="overview-refresh" onClick={() => { void dashboard.refetch(); void master.refetch(); void control.refetch(); }}><RefreshCw size={15} /> تحديث البيانات</button>
+      <button type="button" className="overview-refresh" onClick={() => { void dashboard.refetch(); void workspace.refresh(); }}><RefreshCw size={15} /> تحديث البيانات</button>
     </div>
 
     <div className="overview-kpis">{kpis.map(({ label, value, hint, icon: Icon, tone }) => <article className={`overview-kpi ${tone}`} key={label}><span className="overview-kpi-icon"><Icon size={18} /></span><div><span>{label}</span><strong>{value}</strong><small>{hint}</small></div></article>)}</div>
