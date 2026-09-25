@@ -23,7 +23,7 @@ export const updateCloudWindowRecord = (input: { legacyForm: string; id: number;
 export const deleteCloudWindowRecord = (input: { legacyForm: string; id: number; actor?: string }) =>
   request("/windows/records/delete", "POST", input);
 
-const mapOperation = (op: Operation) => {
+export const mapOperation = (op: Operation) => {
   const input = op.input as Record<string, unknown> | undefined;
   switch (op.path) {
     case "auth.me": return ["/auth/me", "GET"] as const;
@@ -54,6 +54,8 @@ const mapOperation = (op: Operation) => {
     case "windows.saveBank": return ["/banks", "POST"] as const;
     case "windows.currencies": return ["/currencies", "GET"] as const;
     case "windows.saveCurrency": return ["/currencies", "POST"] as const;
+    case "inventory.warehouses": return ["/warehouses", "GET"] as const;
+    case "erpWorkspace.fiscalPeriods": return ["/fiscal-periods", "GET"] as const;
     case "windows.importAccounts": return ["/accounts/import", "POST"] as const;
     case "windows.executeAction": return ["/windows/action", "POST"] as const;
     case "invoices.create": return ["/invoices", "POST"] as const;
@@ -70,7 +72,15 @@ const mapInput = (op: Operation) => {
   return input;
 };
 
-const mapOutput = (op: Operation, data: unknown) => {
+export const mapOutput = (op: Operation, data: unknown) => {
+  if (op.path === "inventory.warehouses" || op.path === "erpWorkspace.fiscalPeriods") {
+    if (Array.isArray(data)) return data;
+    if (data && typeof data === "object") {
+      const payload = data as { rows?: unknown[]; data?: unknown[]; warehouses?: unknown[]; fiscalPeriods?: unknown[] };
+      return payload.rows ?? payload.data ?? payload.warehouses ?? payload.fiscalPeriods ?? [];
+    }
+    return [];
+  }
   if (op.path === "invoices.create" && data && typeof data === "object") {
     const payload = data as { invoiceId?: number; result?: Array<{ meta?: { last_row_id?: number } }> };
     const invoiceId = Number(payload.invoiceId || payload.result?.[0]?.meta?.last_row_id || 0);

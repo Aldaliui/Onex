@@ -1707,14 +1707,19 @@ async function api(request, env, url) {
     return cloudJson({ ok: true, result: r });
   }
   if (url.pathname === "/api/cloud/warehouses" && request.method === "GET") {
-    const q = (url.searchParams.get("search") || "").trim(); const lim = limitOf(url); const like = `%${q}%`;
-    const r = await env.ONEX_DB.prepare("SELECT id, companyId, code, name, active FROM warehouses WHERE (? = '' OR code LIKE ? OR name LIKE ?) ORDER BY code LIMIT ?").bind(q, like, like, lim).all();
+    const companyId = Number(url.searchParams.get("companyId") || 1); const q = (url.searchParams.get("search") || "").trim(); const lim = limitOf(url); const like = `%${q}%`;
+    const r = await env.ONEX_DB.prepare("SELECT id, companyId, code, name, active FROM warehouses WHERE companyId=? AND (? = '' OR code LIKE ? OR name LIKE ?) ORDER BY code LIMIT ?").bind(companyId, q, like, like, lim).all();
     return cloudJson(r.results);
   }
   if (url.pathname === "/api/cloud/warehouses" && request.method === "POST") {
     const x = await readBody(request); if (!x.code || !x.name) return cloudJson({ error: "code and name are required" }, 400);
     const r = await env.ONEX_DB.prepare("INSERT INTO warehouses(companyId,code,name,active) VALUES(?,?,?,?) ON CONFLICT(companyId,code) DO UPDATE SET name=excluded.name,active=excluded.active").bind(x.companyId || 1, x.code, x.name, x.active ?? 1).run();
     return cloudJson({ ok: true, result: r });
+  }
+  if (url.pathname === "/api/cloud/fiscal-periods" && request.method === "GET") {
+    const companyId = Number(url.searchParams.get("companyId") || 1); const lim = limitOf(url);
+    const r = await env.ONEX_DB.prepare("SELECT id, companyId, code, startsOn, endsOn, status FROM fiscal_periods WHERE companyId=? ORDER BY startsOn DESC LIMIT ?").bind(companyId, lim).all();
+    return cloudJson(r.results);
   }
   if (url.pathname === "/api/cloud/item-trace" && request.method === "GET") {
     const itemId = Number(url.searchParams.get("itemId")); const warehouseId = url.searchParams.get("warehouseId");
