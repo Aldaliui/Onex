@@ -8,94 +8,1038 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { AIChatBox, type Message } from "@/components/AIChatBox";
+import { useUrlState } from "@/hooks/useUrlState";
+import { useAppShell } from "@/contexts/AppShellContext";
 import SalesInvoiceForm from "@/components/SalesInvoiceForm";
-import { Boxes, ChevronLeft, CircleDollarSign, FileText, LayoutGrid, Link2, Package, PanelLeft, Plus, Search, Settings2, ShieldCheck, Sparkles, Warehouse, X } from "lucide-react";
+import {
+  Boxes,
+  ChevronLeft,
+  CircleDollarSign,
+  FileText,
+  LayoutGrid,
+  Link2,
+  Package,
+  PanelLeft,
+  Plus,
+  Search,
+  Settings2,
+  ShieldCheck,
+  Sparkles,
+  Warehouse,
+  X,
+} from "lucide-react";
 
-const moduleTabs = [{ id: "login", label: "الدخول", prefix: "ERP_LOGIN", form: "ERP_LOGIN.fmx" }, { id: "gl", label: "GL الحسابات العامة", prefix: "GL", form: "GLSI001.fmx" }, { id: "ar", label: "AR الذمم والمبيعات", prefix: "AR", form: "ARSI004.fmx" }, { id: "ap", label: "AP المشتريات", prefix: "AP", form: "APSI003.fmx" }, { id: "inventory", label: "Inventory المخزون", prefix: "INVI", form: "INVI001.fmx" }, { id: "pos", label: "POS نقاط البيع", prefix: "POS", form: "POSI001.fmx" }, { id: "reports", label: "التقارير", prefix: "GLSR", form: "GLSR001.fmx" }] as const;
+const moduleTabs = [
+  { id: "login", label: "الدخول", prefix: "ERP_LOGIN", form: "ERP_LOGIN.fmx" },
+  { id: "gl", label: "GL الحسابات العامة", prefix: "GL", form: "GLSI001.fmx" },
+  { id: "ar", label: "AR الذمم والمبيعات", prefix: "AR", form: "ARSI004.fmx" },
+  { id: "ap", label: "AP المشتريات", prefix: "AP", form: "APSI003.fmx" },
+  {
+    id: "inventory",
+    label: "Inventory المخزون",
+    prefix: "INVI",
+    form: "INVI001.fmx",
+  },
+  { id: "pos", label: "POS نقاط البيع", prefix: "POS", form: "POSI001.fmx" },
+  { id: "reports", label: "التقارير", prefix: "GLSR", form: "GLSR001.fmx" },
+] as const;
 
 const sampleWindows = [
-  ["ARST004.fmx", "AR", "AR_DOCUMENTS", "مكتملة جزئيًا"], ["ARST006.fmx", "AR", "AR_REVERSAL", "مواصفة"], ["ARST023.fmx", "AR", "AR_DOCUMENTS", "مواصفة"], ["ARSR041.fmx", "AR", "AR_REPORTS", "مفهرسة"], ["APST003.fmx", "AP", "AP_DOCUMENTS", "مفهرسة"], ["APST005.fmx", "AP", "AP_POSTING", "مفهرسة"], ["GLST001.fmx", "GL", "GL_JOURNALS", "مفهرسة"], ["POST001.fmx", "GL", "POSTING_ENGINE", "مفهرسة"], ["POS_INSTALL.fmx", "POS", "POS_SETUP", "مفهرسة"]
+  ["ARST004.fmx", "AR", "AR_DOCUMENTS", "مكتملة جزئيًا"],
+  ["ARST006.fmx", "AR", "AR_REVERSAL", "مواصفة"],
+  ["ARST023.fmx", "AR", "AR_DOCUMENTS", "مواصفة"],
+  ["ARSR041.fmx", "AR", "AR_REPORTS", "مفهرسة"],
+  ["APST003.fmx", "AP", "AP_DOCUMENTS", "مفهرسة"],
+  ["APST005.fmx", "AP", "AP_POSTING", "مفهرسة"],
+  ["GLST001.fmx", "GL", "GL_JOURNALS", "مفهرسة"],
+  ["POST001.fmx", "GL", "POSTING_ENGINE", "مفهرسة"],
+  ["POS_INSTALL.fmx", "POS", "POS_SETUP", "مفهرسة"],
 ];
 
-function Stat({ icon: Icon, label, value, accent }: { icon: typeof Boxes; label: string; value: string | number; accent: string }) {
-  return <div className="stat-card"><div className={`stat-icon ${accent}`}><Icon size={18} /></div><div><p className="stat-label">{label}</p><p className="stat-value">{value}</p></div></div>;
+function Stat({
+  icon: Icon,
+  label,
+  value,
+  accent,
+}: {
+  icon: typeof Boxes;
+  label: string;
+  value: string | number;
+  accent: string;
+}) {
+  return (
+    <div className="stat-card">
+      <div className={`stat-icon ${accent}`}>
+        <Icon size={18} />
+      </div>
+      <div>
+        <p className="stat-label">{label}</p>
+        <p className="stat-value">{value}</p>
+      </div>
+    </div>
+  );
 }
 
 function StatusPill({ status }: { status: string }) {
-  const tone = status.includes("مكتملة") || status.includes("verified") ? "success" : status.includes("مواصفة") || status.includes("catalog") ? "warning" : "neutral";
-  return <span className={`status-pill ${tone}`}><span />{status}</span>;
+  const tone =
+    status.includes("مكتملة") || status.includes("verified")
+      ? "success"
+      : status.includes("مواصفة") || status.includes("catalog")
+        ? "warning"
+        : "neutral";
+  return (
+    <span className={`status-pill ${tone}`}>
+      <span />
+      {status}
+    </span>
+  );
 }
 
 export default function Home() {
   const [, setLocation] = useLocation();
-  const [section, setSection] = useState<"overview" | "windows" | "ar">("overview");
+  const [section, setSection] = useUrlState("section", "overview");
+  const { setActiveModule } = useAppShell();
   const [windowSearch, setWindowSearch] = useState("");
   const [domain, setDomain] = useState("ALL");
-  const [expandedBranches, setExpandedBranches] = useState<Record<string, boolean>>({});
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [expandedBranches, setExpandedBranches] = useState<
+    Record<string, boolean>
+  >({});
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(
+    {}
+  );
   const [selectedWindow, setSelectedWindow] = useState<any>(null);
-  const [contractTab, setContractTab] = useState<"overview" | "fields" | "triggers" | "actions">("overview");
+  const [contractTab, setContractTab] = useState<
+    "overview" | "fields" | "triggers" | "actions"
+  >("overview");
   const [moduleTab, setModuleTab] = useState("all");
   const [docNo, setDocNo] = useState("INV-2026-0001");
   const [quantity, setQuantity] = useState("2");
   const [unitPrice, setUnitPrice] = useState("245.00");
   const [tax, setTax] = useState("15");
-  const [aiMessages, setAiMessages] = useState<Message[]>([{ role: "system", content: "ONEX neural assistant" }]);
+  const [aiMessages, setAiMessages] = useState<Message[]>([
+    { role: "system", content: "ONEX neural assistant" },
+  ]);
   const dashboard = trpc.dashboard.useQuery();
   const master = trpc.masterData.useQuery();
   const systemSettings = trpc.systemSettings.get.useQuery();
-  const windows = trpc.windows.list.useQuery({ search: windowSearch || undefined, domain, limit: 80 });
+  const windows = trpc.windows.list.useQuery({
+    search: windowSearch || undefined,
+    domain,
+    limit: 80,
+  });
   const systemTree = trpc.windows.tree.useQuery();
-  const windowContract = trpc.windows.contract.useQuery({ legacyForm: selectedWindow?.legacyForm || "__none__.fmx" }, { enabled: Boolean(selectedWindow?.legacyForm) });
+  const windowContract = trpc.windows.contract.useQuery(
+    { legacyForm: selectedWindow?.legacyForm || "__none__.fmx" },
+    { enabled: Boolean(selectedWindow?.legacyForm) }
+  );
   const createInvoice = trpc.invoices.create.useMutation();
   const postInvoice = trpc.invoices.post.useMutation();
   const aiAssist = trpc.ai.assist.useMutation();
   const executeWindowAction = trpc.windows.executeAction.useMutation();
-  const invoiceTotal = useMemo(() => (Number(quantity || 0) * Number(unitPrice || 0) + Number(tax || 0)).toFixed(2), [quantity, unitPrice, tax]);
+  const invoiceTotal = useMemo(
+    () =>
+      (
+        Number(quantity || 0) * Number(unitPrice || 0) +
+        Number(tax || 0)
+      ).toFixed(2),
+    [quantity, unitPrice, tax]
+  );
   const dbReady = Boolean(master.data?.items?.length);
-  const setupLabel = systemSettings.data?.databaseName ? `قاعدة: ${systemSettings.data.databaseName}` : "تهيئة النظام";
-  const stats = dashboard.data ?? { windows: 1490, domains: 12, invoices: 0, stockValue: "0.00", journals: 0 };
-  const visibleWindows = windows.data?.length ? windows.data : sampleWindows.filter(([name, d, cap]) => `${name} ${d} ${cap}`.toLowerCase().includes(windowSearch.toLowerCase()) && (domain === "ALL" || d === domain));
+  const setupLabel = systemSettings.data?.databaseName
+    ? `قاعدة: ${systemSettings.data.databaseName}`
+    : "تهيئة النظام";
+  const stats = dashboard.data ?? {
+    windows: 1490,
+    domains: 12,
+    invoices: 0,
+    stockValue: "0.00",
+    journals: 0,
+  };
+  const visibleWindows = windows.data?.length
+    ? windows.data
+    : sampleWindows.filter(
+        ([name, d, cap]) =>
+          `${name} ${d} ${cap}`
+            .toLowerCase()
+            .includes(windowSearch.toLowerCase()) &&
+          (domain === "ALL" || d === domain)
+      );
   const customers = master.data?.customers ?? [];
   const items = master.data?.items ?? [];
   const warehouses = master.data?.warehouses ?? [];
-
-  const submitInvoice = async () => {
-    if (!customers[0] || !items[0] || !warehouses[0]) { toast.info("جهّز قاعدة الاختبار والبيانات الأساسية أولًا؛ الواجهة جاهزة للربط بـOracle."); return; }
-    try {
-      const created = await createInvoice.mutateAsync({ docNo, customerId: customers[0].id, warehouseId: warehouses[0].id, actor: "demo.user", lines: [{ itemId: items[0].id, quantity, unitPrice, taxAmount: tax }] });
-      toast.success(`تم إنشاء ${created.docNo} كمسودة`);
-      await postInvoice.mutateAsync({ invoiceId: Number(created.invoiceId), actor: "demo.user" });
-      toast.success("تم الترحيل: المخزون + COGS + AR/GL داخل معاملة واحدة");
-      dashboard.refetch();
-    } catch (error) { toast.error(error instanceof Error ? error.message : "تعذر تنفيذ العملية"); }
+  const changeSection = (next: "overview" | "windows" | "ar") => {
+    setSection(next);
+    setActiveModule(next);
   };
 
-  return <div className="app-shell" dir="rtl">
-    <aside className="sidebar">
-      <div className="brand"><div className="brand-mark"><Sparkles size={18} /></div><div><strong>ONYX</strong><span>ERP REBUILD</span></div></div>
-      <div className="branch-chip"><span className="pulse" /> فرع إعادة البناء <b>v0.1</b></div>
-      <nav>
-        <button className={section === "overview" ? "nav-item active" : "nav-item"} onClick={() => setSection("overview")}><LayoutGrid size={17} />نظرة عامة</button>
-        <button className={section === "windows" ? "nav-item active" : "nav-item"} onClick={() => setSection("windows")}><PanelLeft size={17} />دليل النوافذ <em>1,490</em></button>
-        <button className={section === "ar" ? "nav-item active" : "nav-item"} onClick={() => setSection("ar")}><FileText size={17} />ARST004 <em>تجريبي</em></button>
-        <button className="nav-item" onClick={() => setLocation("/workbench")}><Boxes size={17} />مساحة تشغيل النوافذ <em>فتح</em></button>
-        <button className="nav-item" onClick={() => setLocation("/setup")}><Settings2 size={17} />{setupLabel} <em>إعداد</em></button>
-        <button className="nav-item" onClick={() => setLocation("/showcase")}><Sparkles size={17} />معرض الواجهة <em>QA</em></button>
-        <button className="nav-item muted" onClick={() => toast.info("ستُفعّل في المرحلة التالية")}><Warehouse size={17} />المخزون <em>قريبًا</em></button>
-        <button className="nav-item muted" onClick={() => toast.info("ستُفعّل في المرحلة التالية")}><CircleDollarSign size={17} />الحسابات العامة <em>قريبًا</em></button>
-      </nav>
-      <div className="sidebar-bottom"><div className="bridge-card"><div className="bridge-top"><Link2 size={16} /><span>حالة الربط</span><b className={dbReady ? "online" : "offline"}>{dbReady ? "متصل" : "تجريبي"}</b></div><p>{dbReady ? "قاعدة البيانات التجريبية تعمل" : "Oracle bridge غير مضاف بعد"}</p><div className="bridge-line"><span style={{ width: dbReady ? "78%" : "24%" }} /></div></div><button className="profile"><div className="avatar">م</div><div><b>مدير النظام</b><span>demo.user</span></div><Settings2 size={16} /></button></div>
-    </aside>
-    <main className="main-content">
-      <header className="topbar"><div><p className="eyebrow">ONYX / REBUILD CONSOLE</p><h1>{section === "windows" ? "دليل النوافذ" : section === "ar" ? "ARST004 · فاتورة مبيعات" : "لوحة التحكم التنفيذية"}</h1></div><div className="top-actions"><Button variant="outline" onClick={() => setLocation("/workbench")}><PanelLeft size={16} />المساحة المتقدمة</Button><Button variant="outline" onClick={() => setLocation("/setup")}><Settings2 size={16} />التهيئة</Button><div className="connection"><span className="pulse" /> وضع الاختبار <b>Oracle-ready</b></div><Button className="user-action" onClick={() => setSection("ar")}><Plus size={16} />عملية جديدة</Button></div></header>
-      {section === "overview" && <>
-        <section className="hero"><div><div className="hero-kicker"><ShieldCheck size={14} /> خارطة النظام القديم أصبحت قابلة للتشغيل</div><h2>نواة Onyx الحديثة،<br /><span>بنفس منطق النوافذ.</span></h2><p>نسخة تشغيلية تدريجية تحافظ على أسماء النوافذ، دورة العمل، الترحيل، والتدقيق — وتفتح الطريق لقاعدة Oracle الحقيقية.</p><div className="hero-actions"><Button onClick={() => setSection("ar")}><FileText size={16} />ابدأ ARST004</Button><Button variant="outline" onClick={() => setSection("windows")}><PanelLeft size={16} />استعرض 1,490 نافذة</Button></div></div><div className="hero-orbit"><div className="orbit-ring ring-one" /><div className="orbit-ring ring-two" /><div className="orbit-core"><Boxes size={33} /><span>ONEX</span></div><div className="orbit-tag tag-one">AR</div><div className="orbit-tag tag-two">GL</div><div className="orbit-tag tag-three">INV</div></div></section>
-        <div className="stats-grid"><Stat icon={PanelLeft} label="نافذة مفهرسة" value={stats.windows.toLocaleString()} accent="violet" /><Stat icon={Boxes} label="مجالات النظام" value={stats.domains} accent="cyan" /><Stat icon={FileText} label="فواتير مرحّلة" value={stats.invoices} accent="amber" /><Stat icon={CircleDollarSign} label="قيود GL" value={stats.journals} accent="green" /></div>
-        <section className="content-grid"><Card className="panel wide"><CardHeader><div><p className="panel-kicker">LEGACY WINDOW MAP</p><CardTitle>مسار التحويل</CardTitle></div><Button variant="outline" size="sm" onClick={() => setSection("windows")}>فتح الدليل <ChevronLeft size={15} /></Button></CardHeader><CardContent><div className="timeline"><div className="timeline-step done"><span>01</span><div><b>تحليل Forms</b><p>1,490 نافذة · 6,077 أثر تتبع</p></div></div><div className="timeline-line done" /><div className="timeline-step current"><span>02</span><div><b>نواة المعاملات</b><p>ARST004 قيد الاختبار الآن</p></div></div><div className="timeline-line" /><div className="timeline-step"><span>03</span><div><b>Oracle Test DB</b><p>يمكن إضافة DATABASE_URL من إعدادات التشغيل</p></div></div><div className="timeline-line" /><div className="timeline-step"><span>04</span><div><b>التشغيل المتوازي</b><p>مقارنة القديم بالجديد</p></div></div></div></CardContent></Card><Card className="panel"><CardHeader><div><p className="panel-kicker">NEURAL OPERATIONS</p><CardTitle>المساعد العصبي</CardTitle></div></CardHeader><CardContent><AIChatBox height="300px" messages={aiMessages} isLoading={aiAssist.isPending} suggestedPrompts={["ما الحقول المشتركة لهذه النافذة؟", "ما الذي يلزم قبل الترحيل؟", "اشرح مخاطر مصدر الشاشة"]} onSendMessage={(question) => { const next = [...aiMessages, { role: "user" as const, content: question }]; setAiMessages(next); aiAssist.mutate({ question, window: selectedWindow?.formName || "لوحة التحكم", context: selectedWindow?.capability || "النواة العامة" }, { onSuccess: (result) => setAiMessages((messages) => [...messages, { role: "assistant", content: result.answer }]) }); }} /></CardContent></Card></section>
-      </>}
-      {section === "windows" && <section className="window-explorer"><div className="explorer-toolbar"><div><p className="panel-kicker">REAL LEGACY SYSTEM TREE</p><h2>شجرة النظام الفعلية</h2><p>جميع الفروع والمجموعات والنوافذ محملة من Catalog وملفات Git، وكل صف قابل للفتح لعرض عقده وحقوله وروابطه.</p></div><div className="catalog-count"><strong>1,490</strong><span>شاشة مفهرسة ومفتوحة</span></div></div><div className="tree-toolbar"><div className="search-field"><Search size={16} /><Input placeholder="ابحث برقم الشاشة أو اسم الـForm أو المجال..." value={windowSearch} onChange={(e) => setWindowSearch(e.target.value)} /></div><div className="tree-legend"><span><i className="tree-dot built" />قيد البناء</span><span><i className="tree-dot indexed" />مفهرسة</span><span><i className="tree-dot spec" />مواصفة</span></div></div><div className="module-tabs"><div className="module-tabs-title">اختبارات الوحدات والتشغيل</div><div className="module-tabs-list"><Button size="sm" variant={moduleTab === "all" ? "default" : "outline"} onClick={() => { setModuleTab("all"); setWindowSearch(""); }}>الكل · 1,490</Button>{moduleTabs.map((tab) => <Button key={tab.id} size="sm" variant={moduleTab === tab.id ? "default" : "outline"} onClick={() => { setModuleTab(tab.id); setWindowSearch(tab.prefix); }}>{tab.label}</Button>)}</div></div><div className="tree-layout"><div className="system-tree"><div className="tree-root"><Boxes size={16} /><div><b>ONEX / ERP</b><span>النظام الرئيسي · 12 مجالًا · 1,490 شاشة</span></div><span className="root-badge">ROOT</span></div>{(systemTree.data ?? []).filter((branch: any) => domain === "ALL" || branch.domain === domain || branch.domain.startsWith(domain + "/")).map((branch: any) => { const branchOpen = expandedBranches[branch.id] ?? true; return <div className="tree-branch" key={branch.id}><button className="tree-branch-row" onClick={() => setExpandedBranches((prev) => ({ ...prev, [branch.id]: !branchOpen }))}><span className={`chevron ${branchOpen ? "open" : ""}`}>‹</span><span className="branch-icon"><Boxes size={15} /></span><span className="branch-label"><b>{branch.label}</b><small>{branch.domain}</small></span><strong>{branch.windows}</strong></button>{branchOpen && <div className="tree-children">{branch.groups.map((group: any) => { const groupOpen = expandedGroups[group.id] ?? true; return <div className="tree-group" key={group.id}><button className="tree-group-row" onClick={() => setExpandedGroups((prev) => ({ ...prev, [group.id]: !groupOpen }))}><span className={`chevron ${groupOpen ? "open" : ""}`}>‹</span><span className="folder-icon"><Package size={13} /></span><span>{group.label}</span><em>{group.count}</em></button>{groupOpen && <div className="tree-windows">{group.windows.filter((win: any) => !windowSearch || `${win.screenNo} ${win.screenName} ${win.formName} ${win.capability}`.toLowerCase().includes(windowSearch.toLowerCase())).map((win: any) => <button key={win.legacyForm} className={`tree-window-row ${selectedWindow?.legacyForm === win.legacyForm ? "selected" : ""}`} onClick={() => { setSelectedWindow(win); setContractTab("overview"); }}><span className={`tree-status ${win.buildState === "قيد البناء" ? "building" : win.buildState === "متحقق" ? "verified" : win.buildState === "مواصفة" ? "spec" : "indexed"}`} /><span className="tree-window-name"><b>{win.screenName}</b><small>{win.formName}</small></span><span className="tree-screen-no">{win.screenNo}</span><ChevronLeft size={13} /></button>)}</div>}</div>})}</div>}</div>})}</div><div className="window-detail"><div className="detail-header"><div><p className="panel-kicker">SCREEN CONTRACT</p><h3>{selectedWindow?.screenName ?? "اختر شاشة من الشجرة"}</h3><p>{selectedWindow?.formName ?? "تظهر هنا هوية الشاشة وعلاقاتها وصلاحياتها"}</p><p className="detail-source-note">مصدر الحالة: Catalog + Runtime + Field/Trigger catalogs + nodes_catalog_links</p></div><StatusPill status={selectedWindow?.rebuildLevel ?? selectedWindow?.buildState ?? "مفهرسة"} /></div>{selectedWindow ? <><div className="detail-code">{selectedWindow.screenNo}<span>{selectedWindow.systemNo}</span></div><div className="detail-grid"><div><span>رقم الشاشة</span><b>{selectedWindow.screenNo}</b></div><div><span>اسم الشاشة</span><b>{selectedWindow.screenName}</b></div><div><span>الأب Parent</span><b>{selectedWindow.parentId}</b></div><div><span>رقم النظام</span><b>{selectedWindow.systemNo}</b></div><div><span>نوع العنصر</span><b>{selectedWindow.itemType}</b></div><div><span>اسم الـForm</span><b>{selectedWindow.formName}</b></div><div><span>ترتيب العرض</span><b>{selectedWindow.displayOrder}</b></div><div><span>حالة البناء</span><b>{selectedWindow.buildState}</b></div><div><span>صلاحية المستخدم</span><b>{selectedWindow.userPermission}</b></div><div><span>صلاحية الشركة أو الفرع</span><b>{selectedWindow.companyBranchPermission}</b></div><div><span>مستوى إعادة البناء</span><b>{selectedWindow.rebuildLevel ?? "catalog_specification"}</b></div><div><span>حالة المصدر</span><b>{selectedWindow.sourceStatus ?? "FMB_PLL_not_found"}</b></div><div><span>الإجراءات المرصودة</span><b>{selectedWindow.observedProcedures ?? 0}</b></div><div><span>الـTriggers المرصودة</span><b>{selectedWindow.observedTriggers ?? 0}</b></div><div><span>مؤشرات الجداول</span><b>{selectedWindow.observedTableIndicators ?? 0}</b></div><div><span>الأدلة المطلوبة التالية</span><b>{selectedWindow.nextRequiredEvidence ?? "FMB/PLL/PKS/PKB/DDL/Forms Builder"}</b></div></div><div className="detail-actions"><Button onClick={() => toast.success(`تم فتح عقد الشاشة ${selectedWindow.formName}`)}><FileText size={15} />فتح عقد الشاشة</Button><Button variant="outline" onClick={() => toast.info("عقد الشاشة محمل من ملفات Git")}>عرض ملف المصدر</Button></div><div className="contract-tabs"><div className="contract-tab-buttons"><Button size="sm" variant={contractTab === "overview" ? "default" : "outline"} onClick={() => setContractTab("overview")}>ملخص العقد</Button><Button size="sm" variant={contractTab === "fields" ? "default" : "outline"} onClick={() => setContractTab("fields")}>الحقول ({windowContract.data?.counts.fields ?? 0})</Button><Button size="sm" variant={contractTab === "triggers" ? "default" : "outline"} onClick={() => setContractTab("triggers")}>Triggers ({windowContract.data?.counts.triggers ?? 0})</Button><Button size="sm" variant={contractTab === "actions" ? "default" : "outline"} onClick={() => setContractTab("actions")}>الإجراءات ({windowContract.data?.actions.length ?? 0})</Button></div>{contractTab === "overview" && <div className="detail-grid contract-runtime"><div><span>حقول العقد</span><b>{windowContract.data?.counts.fields ?? "—"}</b></div><div><span>الإجراءات الذرية</span><b>{windowContract.data?.actions.length ?? "—"}</b></div><div><span>Triggers</span><b>{windowContract.data?.counts.triggers ?? "—"}</b></div><div><span>جداول التشغيل</span><b>{windowContract.data?.counts.tables ?? "—"}</b></div><div><span>واجهة النواة</span><b>{windowContract.data?.coreApi ?? "—"}</b></div><div><span>وحدات Mido</span><b>{windowContract.data?.midoModules.join(" · ") ?? "—"}</b></div></div>}{contractTab === "fields" && <div className="evidence-list">{(windowContract.data?.evidence.fields ?? []).map((item: string) => <span key={item}>{item}</span>)}{!(windowContract.data?.evidence.fields?.length) && <p>لا توجد أسماء حقول نصية؛ العدد مستخرج من الأدلة.</p>}</div>}{contractTab === "triggers" && <div className="evidence-list">{(windowContract.data?.evidence.triggers ?? []).map((item: string) => <span key={item}>{item}</span>)}{!(windowContract.data?.evidence.triggers?.length) && <p>لا توجد Triggers نصية.</p>}</div>}{contractTab === "actions" && <div className="action-grid">{(windowContract.data?.actions ?? []).map((action: string) => <Button key={action} variant="outline" disabled={executeWindowAction.isPending} onClick={() => executeWindowAction.mutate({ legacyForm: selectedWindow.legacyForm, action }, { onSuccess: (result) => toast.success(result.message), onError: (error) => toast.error(error.message) })}>{action}</Button>)}</div>}</div></> : <div className="empty-detail"><PanelLeft size={28} /><p>اضغط على أي شاشة في الشجرة لفتحها وعرض عقدها التفصيلي.</p></div>}</div></div></section>}
-      {section === "ar" && <SalesInvoiceForm />}
-    </main>
-  </div>;
+  const submitInvoice = async () => {
+    if (!customers[0] || !items[0] || !warehouses[0]) {
+      toast.info(
+        "جهّز قاعدة الاختبار والبيانات الأساسية أولًا؛ الواجهة جاهزة للربط بـOracle."
+      );
+      return;
+    }
+    try {
+      const created = await createInvoice.mutateAsync({
+        docNo,
+        customerId: customers[0].id,
+        warehouseId: warehouses[0].id,
+        actor: "demo.user",
+        lines: [{ itemId: items[0].id, quantity, unitPrice, taxAmount: tax }],
+      });
+      toast.success(`تم إنشاء ${created.docNo} كمسودة`);
+      await postInvoice.mutateAsync({
+        invoiceId: Number(created.invoiceId),
+        actor: "demo.user",
+      });
+      toast.success("تم الترحيل: المخزون + COGS + AR/GL داخل معاملة واحدة");
+      dashboard.refetch();
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "تعذر تنفيذ العملية"
+      );
+    }
+  };
+
+  return (
+    <div className="app-shell" dir="rtl">
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand-mark">
+            <Sparkles size={18} />
+          </div>
+          <div>
+            <strong>ONYX</strong>
+            <span>ERP REBUILD</span>
+          </div>
+        </div>
+        <div className="branch-chip">
+          <span className="pulse" /> فرع إعادة البناء <b>v0.1</b>
+        </div>
+        <nav>
+          <button
+            className={section === "overview" ? "nav-item active" : "nav-item"}
+            onClick={() => changeSection("overview")}
+          >
+            <LayoutGrid size={17} />
+            نظرة عامة
+          </button>
+          <button
+            className={section === "windows" ? "nav-item active" : "nav-item"}
+            onClick={() => changeSection("windows")}
+          >
+            <PanelLeft size={17} />
+            دليل النوافذ <em>1,490</em>
+          </button>
+          <button
+            className={section === "ar" ? "nav-item active" : "nav-item"}
+            onClick={() => changeSection("ar")}
+          >
+            <FileText size={17} />
+            ARST004 <em>تجريبي</em>
+          </button>
+          <button
+            className="nav-item"
+            onClick={() => setLocation("/accounting")}
+          >
+            <CircleDollarSign size={17} />
+            الحزمة المحاسبية <em>فتح</em>
+          </button>
+          <button
+            className="nav-item"
+            onClick={() => setLocation("/workbench")}
+          >
+            <Boxes size={17} />
+            مساحة تشغيل النوافذ <em>فتح</em>
+          </button>
+          <button className="nav-item" onClick={() => setLocation("/setup")}>
+            <Settings2 size={17} />
+            {setupLabel} <em>إعداد</em>
+          </button>
+          <button
+            className="nav-item"
+            onClick={() => setLocation("/system-administration")}
+          >
+            <ShieldCheck size={17} />
+            إدارة النظام <em>RBAC</em>
+          </button>
+          <button className="nav-item" onClick={() => setLocation("/showcase")}>
+            <Sparkles size={17} />
+            معرض الواجهة <em>QA</em>
+          </button>
+          <button
+            className="nav-item muted"
+            onClick={() => toast.info("ستُفعّل في المرحلة التالية")}
+          >
+            <Warehouse size={17} />
+            المخزون <em>قريبًا</em>
+          </button>
+          <button
+            className="nav-item muted"
+            onClick={() => toast.info("ستُفعّل في المرحلة التالية")}
+          >
+            <CircleDollarSign size={17} />
+            الحسابات العامة <em>قريبًا</em>
+          </button>
+        </nav>
+        <div className="sidebar-bottom">
+          <div className="bridge-card">
+            <div className="bridge-top">
+              <Link2 size={16} />
+              <span>حالة الربط</span>
+              <b className={dbReady ? "online" : "offline"}>
+                {dbReady ? "متصل" : "تجريبي"}
+              </b>
+            </div>
+            <p>
+              {dbReady
+                ? "قاعدة البيانات التجريبية تعمل"
+                : "Oracle bridge غير مضاف بعد"}
+            </p>
+            <div className="bridge-line">
+              <span style={{ width: dbReady ? "78%" : "24%" }} />
+            </div>
+          </div>
+          <button className="profile">
+            <div className="avatar">م</div>
+            <div>
+              <b>مدير النظام</b>
+              <span>demo.user</span>
+            </div>
+            <Settings2 size={16} />
+          </button>
+        </div>
+      </aside>
+      <main className="main-content">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">ONYX / REBUILD CONSOLE</p>
+            <h1>
+              {section === "windows"
+                ? "دليل النوافذ"
+                : section === "ar"
+                  ? "ARST004 · فاتورة مبيعات"
+                  : "لوحة التحكم التنفيذية"}
+            </h1>
+          </div>
+          <div className="top-actions">
+            <Button
+              variant="outline"
+              onClick={() => setLocation("/accounting")}
+            >
+              <CircleDollarSign size={16} />
+              المحاسبة
+            </Button>
+            <Button variant="outline" onClick={() => setLocation("/workbench")}>
+              <PanelLeft size={16} />
+              المساحة المتقدمة
+            </Button>
+            <Button variant="outline" onClick={() => setLocation("/setup")}>
+              <Settings2 size={16} />
+              التهيئة
+            </Button>
+            <div className="connection">
+              <span className="pulse" /> وضع الاختبار <b>Oracle-ready</b>
+            </div>
+            <Button className="user-action" onClick={() => changeSection("ar")}>
+              <Plus size={16} />
+              عملية جديدة
+            </Button>
+          </div>
+        </header>
+        {section === "overview" && (
+          <>
+            <section className="hero">
+              <div>
+                <div className="hero-kicker">
+                  <ShieldCheck size={14} /> خارطة النظام القديم أصبحت قابلة
+                  للتشغيل
+                </div>
+                <h2>
+                  نواة Onyx الحديثة،
+                  <br />
+                  <span>بنفس منطق النوافذ.</span>
+                </h2>
+                <p>
+                  نسخة تشغيلية تدريجية تحافظ على أسماء النوافذ، دورة العمل،
+                  الترحيل، والتدقيق — وتفتح الطريق لقاعدة Oracle الحقيقية.
+                </p>
+                <div className="hero-actions">
+                  <Button onClick={() => changeSection("ar")}>
+                    <FileText size={16} />
+                    ابدأ ARST004
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => changeSection("windows")}
+                  >
+                    <PanelLeft size={16} />
+                    استعرض 1,490 نافذة
+                  </Button>
+                </div>
+              </div>
+              <div className="hero-orbit">
+                <div className="orbit-ring ring-one" />
+                <div className="orbit-ring ring-two" />
+                <div className="orbit-core">
+                  <Boxes size={33} />
+                  <span>ONEX</span>
+                </div>
+                <div className="orbit-tag tag-one">AR</div>
+                <div className="orbit-tag tag-two">GL</div>
+                <div className="orbit-tag tag-three">INV</div>
+              </div>
+            </section>
+            <div className="stats-grid">
+              <Stat
+                icon={PanelLeft}
+                label="نافذة مفهرسة"
+                value={stats.windows.toLocaleString()}
+                accent="violet"
+              />
+              <Stat
+                icon={Boxes}
+                label="مجالات النظام"
+                value={stats.domains}
+                accent="cyan"
+              />
+              <Stat
+                icon={FileText}
+                label="فواتير مرحّلة"
+                value={stats.invoices}
+                accent="amber"
+              />
+              <Stat
+                icon={CircleDollarSign}
+                label="قيود GL"
+                value={stats.journals}
+                accent="green"
+              />
+            </div>
+            <section className="quick-access">
+              <div className="quick-access-heading">
+                <div>
+                  <p className="panel-kicker">QUICK ACCESS</p>
+                  <h2>الوصول السريع</h2>
+                  <p>افتح الواجهة المطلوبة مباشرة من اللوحة الرئيسية.</p>
+                </div>
+                <span className="quick-access-badge">
+                  <Link2 size={13} /> روابط مباشرة
+                </span>
+              </div>
+              <div className="quick-links-grid">
+                <button
+                  className="quick-link-card cyan"
+                  onClick={() => setLocation("/accounting")}
+                >
+                  <span className="quick-link-icon">
+                    <CircleDollarSign size={21} />
+                  </span>
+                  <span>
+                    <b>الحزمة المحاسبية</b>
+                    <small>الحسابات والقيود والمبيعات والمشتريات</small>
+                  </span>
+                  <ChevronLeft size={17} />
+                </button>
+                <button
+                  className="quick-link-card violet"
+                  onClick={() => setLocation("/workbench")}
+                >
+                  <span className="quick-link-icon">
+                    <Boxes size={21} />
+                  </span>
+                  <span>
+                    <b>مساحة تشغيل النوافذ</b>
+                    <small>فتح نوافذ ERP والعقود والإجراءات</small>
+                  </span>
+                  <ChevronLeft size={17} />
+                </button>
+                <button
+                  className="quick-link-card amber"
+                  onClick={() => setLocation("/setup")}
+                >
+                  <span className="quick-link-icon">
+                    <Settings2 size={21} />
+                  </span>
+                  <span>
+                    <b>تهيئة النظام</b>
+                    <small>قاعدة البيانات والربط والنسخ الاحتياطي</small>
+                  </span>
+                  <ChevronLeft size={17} />
+                </button>
+                <button
+                  className="quick-link-card green"
+                  onClick={() => setLocation("/system-administration")}
+                >
+                  <span className="quick-link-icon">
+                    <ShieldCheck size={21} />
+                  </span>
+                  <span>
+                    <b>إدارة النظام</b>
+                    <small>المستخدمون والأدوار والصلاحيات</small>
+                  </span>
+                  <ChevronLeft size={17} />
+                </button>
+                <button
+                  className="quick-link-card pink"
+                  onClick={() => setLocation("/showcase")}
+                >
+                  <span className="quick-link-icon">
+                    <Sparkles size={21} />
+                  </span>
+                  <span>
+                    <b>معرض الواجهة</b>
+                    <small>اختبار المكونات والتجربة البصرية</small>
+                  </span>
+                  <ChevronLeft size={17} />
+                </button>
+              </div>
+            </section>
+            <section className="content-grid">
+              <Card className="panel wide">
+                <CardHeader>
+                  <div>
+                    <p className="panel-kicker">LEGACY WINDOW MAP</p>
+                    <CardTitle>مسار التحويل</CardTitle>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => changeSection("windows")}
+                  >
+                    فتح الدليل <ChevronLeft size={15} />
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  <div className="timeline">
+                    <div className="timeline-step done">
+                      <span>01</span>
+                      <div>
+                        <b>تحليل Forms</b>
+                        <p>1,490 نافذة · 6,077 أثر تتبع</p>
+                      </div>
+                    </div>
+                    <div className="timeline-line done" />
+                    <div className="timeline-step current">
+                      <span>02</span>
+                      <div>
+                        <b>نواة المعاملات</b>
+                        <p>ARST004 قيد الاختبار الآن</p>
+                      </div>
+                    </div>
+                    <div className="timeline-line" />
+                    <div className="timeline-step">
+                      <span>03</span>
+                      <div>
+                        <b>Oracle Test DB</b>
+                        <p>يمكن إضافة DATABASE_URL من إعدادات التشغيل</p>
+                      </div>
+                    </div>
+                    <div className="timeline-line" />
+                    <div className="timeline-step">
+                      <span>04</span>
+                      <div>
+                        <b>التشغيل المتوازي</b>
+                        <p>مقارنة القديم بالجديد</p>
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card className="panel">
+                <CardHeader>
+                  <div>
+                    <p className="panel-kicker">NEURAL OPERATIONS</p>
+                    <CardTitle>المساعد العصبي</CardTitle>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <AIChatBox
+                    height="300px"
+                    messages={aiMessages}
+                    isLoading={aiAssist.isPending}
+                    suggestedPrompts={[
+                      "ما الحقول المشتركة لهذه النافذة؟",
+                      "ما الذي يلزم قبل الترحيل؟",
+                      "اشرح مخاطر مصدر الشاشة",
+                    ]}
+                    onSendMessage={question => {
+                      const next = [
+                        ...aiMessages,
+                        { role: "user" as const, content: question },
+                      ];
+                      setAiMessages(next);
+                      aiAssist.mutate(
+                        {
+                          question,
+                          window: selectedWindow?.formName || "لوحة التحكم",
+                          context:
+                            selectedWindow?.capability || "النواة العامة",
+                        },
+                        {
+                          onSuccess: result =>
+                            setAiMessages(messages => [
+                              ...messages,
+                              { role: "assistant", content: result.answer },
+                            ]),
+                        }
+                      );
+                    }}
+                  />
+                </CardContent>
+              </Card>
+            </section>
+          </>
+        )}
+        {section === "windows" && (
+          <section className="window-explorer">
+            <div className="explorer-toolbar">
+              <div>
+                <p className="panel-kicker">REAL LEGACY SYSTEM TREE</p>
+                <h2>شجرة النظام الفعلية</h2>
+                <p>
+                  جميع الفروع والمجموعات والنوافذ محملة من Catalog وملفات Git،
+                  وكل صف قابل للفتح لعرض عقده وحقوله وروابطه.
+                </p>
+              </div>
+              <div className="catalog-count">
+                <strong>1,490</strong>
+                <span>شاشة مفهرسة ومفتوحة</span>
+              </div>
+            </div>
+            <div className="tree-toolbar">
+              <div className="search-field">
+                <Search size={16} />
+                <Input
+                  placeholder="ابحث برقم الشاشة أو اسم الـForm أو المجال..."
+                  value={windowSearch}
+                  onChange={e => setWindowSearch(e.target.value)}
+                />
+              </div>
+              <div className="tree-legend">
+                <span>
+                  <i className="tree-dot built" />
+                  قيد البناء
+                </span>
+                <span>
+                  <i className="tree-dot indexed" />
+                  مفهرسة
+                </span>
+                <span>
+                  <i className="tree-dot spec" />
+                  مواصفة
+                </span>
+              </div>
+            </div>
+            <div className="module-tabs">
+              <div className="module-tabs-title">اختبارات الوحدات والتشغيل</div>
+              <div className="module-tabs-list">
+                <Button
+                  size="sm"
+                  variant={moduleTab === "all" ? "default" : "outline"}
+                  onClick={() => {
+                    setModuleTab("all");
+                    setWindowSearch("");
+                  }}
+                >
+                  الكل · 1,490
+                </Button>
+                {moduleTabs.map(tab => (
+                  <Button
+                    key={tab.id}
+                    size="sm"
+                    variant={moduleTab === tab.id ? "default" : "outline"}
+                    onClick={() => {
+                      setModuleTab(tab.id);
+                      setWindowSearch(tab.prefix);
+                    }}
+                  >
+                    {tab.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+            <div className="tree-layout">
+              <div className="system-tree">
+                <div className="tree-root">
+                  <Boxes size={16} />
+                  <div>
+                    <b>ONEX / ERP</b>
+                    <span>النظام الرئيسي · 12 مجالًا · 1,490 شاشة</span>
+                  </div>
+                  <span className="root-badge">ROOT</span>
+                </div>
+                {(systemTree.data ?? [])
+                  .filter(
+                    (branch: any) =>
+                      domain === "ALL" ||
+                      branch.domain === domain ||
+                      branch.domain.startsWith(domain + "/")
+                  )
+                  .map((branch: any) => {
+                    const branchOpen = expandedBranches[branch.id] ?? true;
+                    return (
+                      <div className="tree-branch" key={branch.id}>
+                        <button
+                          className="tree-branch-row"
+                          onClick={() =>
+                            setExpandedBranches(prev => ({
+                              ...prev,
+                              [branch.id]: !branchOpen,
+                            }))
+                          }
+                        >
+                          <span
+                            className={`chevron ${branchOpen ? "open" : ""}`}
+                          >
+                            ‹
+                          </span>
+                          <span className="branch-icon">
+                            <Boxes size={15} />
+                          </span>
+                          <span className="branch-label">
+                            <b>{branch.label}</b>
+                            <small>{branch.domain}</small>
+                          </span>
+                          <strong>{branch.windows}</strong>
+                        </button>
+                        {branchOpen && (
+                          <div className="tree-children">
+                            {branch.groups.map((group: any) => {
+                              const groupOpen =
+                                expandedGroups[group.id] ?? true;
+                              return (
+                                <div className="tree-group" key={group.id}>
+                                  <button
+                                    className="tree-group-row"
+                                    onClick={() =>
+                                      setExpandedGroups(prev => ({
+                                        ...prev,
+                                        [group.id]: !groupOpen,
+                                      }))
+                                    }
+                                  >
+                                    <span
+                                      className={`chevron ${groupOpen ? "open" : ""}`}
+                                    >
+                                      ‹
+                                    </span>
+                                    <span className="folder-icon">
+                                      <Package size={13} />
+                                    </span>
+                                    <span>{group.label}</span>
+                                    <em>{group.count}</em>
+                                  </button>
+                                  {groupOpen && (
+                                    <div className="tree-windows">
+                                      {group.windows
+                                        .filter(
+                                          (win: any) =>
+                                            !windowSearch ||
+                                            `${win.screenNo} ${win.screenName} ${win.formName} ${win.capability}`
+                                              .toLowerCase()
+                                              .includes(
+                                                windowSearch.toLowerCase()
+                                              )
+                                        )
+                                        .map((win: any) => (
+                                          <button
+                                            key={win.legacyForm}
+                                            className={`tree-window-row ${selectedWindow?.legacyForm === win.legacyForm ? "selected" : ""}`}
+                                            onClick={() => {
+                                              setSelectedWindow(win);
+                                              setContractTab("overview");
+                                            }}
+                                          >
+                                            <span
+                                              className={`tree-status ${win.buildState === "قيد البناء" ? "building" : win.buildState === "متحقق" ? "verified" : win.buildState === "مواصفة" ? "spec" : "indexed"}`}
+                                            />
+                                            <span className="tree-window-name">
+                                              <b>{win.screenName}</b>
+                                              <small>{win.formName}</small>
+                                            </span>
+                                            <span className="tree-screen-no">
+                                              {win.screenNo}
+                                            </span>
+                                            <ChevronLeft size={13} />
+                                          </button>
+                                        ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+              <div className="window-detail">
+                <div className="detail-header">
+                  <div>
+                    <p className="panel-kicker">SCREEN CONTRACT</p>
+                    <h3>
+                      {selectedWindow?.screenName ?? "اختر شاشة من الشجرة"}
+                    </h3>
+                    <p>
+                      {selectedWindow?.formName ??
+                        "تظهر هنا هوية الشاشة وعلاقاتها وصلاحياتها"}
+                    </p>
+                    <p className="detail-source-note">
+                      مصدر الحالة: Catalog + Runtime + Field/Trigger catalogs +
+                      nodes_catalog_links
+                    </p>
+                  </div>
+                  <StatusPill
+                    status={
+                      selectedWindow?.rebuildLevel ??
+                      selectedWindow?.buildState ??
+                      "مفهرسة"
+                    }
+                  />
+                </div>
+                {selectedWindow ? (
+                  <>
+                    <div className="detail-code">
+                      {selectedWindow.screenNo}
+                      <span>{selectedWindow.systemNo}</span>
+                    </div>
+                    <div className="detail-grid">
+                      <div>
+                        <span>رقم الشاشة</span>
+                        <b>{selectedWindow.screenNo}</b>
+                      </div>
+                      <div>
+                        <span>اسم الشاشة</span>
+                        <b>{selectedWindow.screenName}</b>
+                      </div>
+                      <div>
+                        <span>الأب Parent</span>
+                        <b>{selectedWindow.parentId}</b>
+                      </div>
+                      <div>
+                        <span>رقم النظام</span>
+                        <b>{selectedWindow.systemNo}</b>
+                      </div>
+                      <div>
+                        <span>نوع العنصر</span>
+                        <b>{selectedWindow.itemType}</b>
+                      </div>
+                      <div>
+                        <span>اسم الـForm</span>
+                        <b>{selectedWindow.formName}</b>
+                      </div>
+                      <div>
+                        <span>ترتيب العرض</span>
+                        <b>{selectedWindow.displayOrder}</b>
+                      </div>
+                      <div>
+                        <span>حالة البناء</span>
+                        <b>{selectedWindow.buildState}</b>
+                      </div>
+                      <div>
+                        <span>صلاحية المستخدم</span>
+                        <b>{selectedWindow.userPermission}</b>
+                      </div>
+                      <div>
+                        <span>صلاحية الشركة أو الفرع</span>
+                        <b>{selectedWindow.companyBranchPermission}</b>
+                      </div>
+                      <div>
+                        <span>مستوى إعادة البناء</span>
+                        <b>
+                          {selectedWindow.rebuildLevel ??
+                            "catalog_specification"}
+                        </b>
+                      </div>
+                      <div>
+                        <span>حالة المصدر</span>
+                        <b>
+                          {selectedWindow.sourceStatus ?? "FMB_PLL_not_found"}
+                        </b>
+                      </div>
+                      <div>
+                        <span>الإجراءات المرصودة</span>
+                        <b>{selectedWindow.observedProcedures ?? 0}</b>
+                      </div>
+                      <div>
+                        <span>الـTriggers المرصودة</span>
+                        <b>{selectedWindow.observedTriggers ?? 0}</b>
+                      </div>
+                      <div>
+                        <span>مؤشرات الجداول</span>
+                        <b>{selectedWindow.observedTableIndicators ?? 0}</b>
+                      </div>
+                      <div>
+                        <span>الأدلة المطلوبة التالية</span>
+                        <b>
+                          {selectedWindow.nextRequiredEvidence ??
+                            "FMB/PLL/PKS/PKB/DDL/Forms Builder"}
+                        </b>
+                      </div>
+                    </div>
+                    <div className="detail-actions">
+                      <Button
+                        onClick={() =>
+                          toast.success(
+                            `تم فتح عقد الشاشة ${selectedWindow.formName}`
+                          )
+                        }
+                      >
+                        <FileText size={15} />
+                        فتح عقد الشاشة
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() =>
+                          toast.info("عقد الشاشة محمل من ملفات Git")
+                        }
+                      >
+                        عرض ملف المصدر
+                      </Button>
+                    </div>
+                    <div className="contract-tabs">
+                      <div className="contract-tab-buttons">
+                        <Button
+                          size="sm"
+                          variant={
+                            contractTab === "overview" ? "default" : "outline"
+                          }
+                          onClick={() => setContractTab("overview")}
+                        >
+                          ملخص العقد
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={
+                            contractTab === "fields" ? "default" : "outline"
+                          }
+                          onClick={() => setContractTab("fields")}
+                        >
+                          الحقول ({windowContract.data?.counts.fields ?? 0})
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={
+                            contractTab === "triggers" ? "default" : "outline"
+                          }
+                          onClick={() => setContractTab("triggers")}
+                        >
+                          Triggers ({windowContract.data?.counts.triggers ?? 0})
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={
+                            contractTab === "actions" ? "default" : "outline"
+                          }
+                          onClick={() => setContractTab("actions")}
+                        >
+                          الإجراءات ({windowContract.data?.actions.length ?? 0})
+                        </Button>
+                      </div>
+                      {contractTab === "overview" && (
+                        <div className="detail-grid contract-runtime">
+                          <div>
+                            <span>حقول العقد</span>
+                            <b>{windowContract.data?.counts.fields ?? "—"}</b>
+                          </div>
+                          <div>
+                            <span>الإجراءات الذرية</span>
+                            <b>{windowContract.data?.actions.length ?? "—"}</b>
+                          </div>
+                          <div>
+                            <span>Triggers</span>
+                            <b>{windowContract.data?.counts.triggers ?? "—"}</b>
+                          </div>
+                          <div>
+                            <span>جداول التشغيل</span>
+                            <b>{windowContract.data?.counts.tables ?? "—"}</b>
+                          </div>
+                          <div>
+                            <span>واجهة النواة</span>
+                            <b>{windowContract.data?.coreApi ?? "—"}</b>
+                          </div>
+                          <div>
+                            <span>وحدات Mido</span>
+                            <b>
+                              {windowContract.data?.midoModules.join(" · ") ??
+                                "—"}
+                            </b>
+                          </div>
+                        </div>
+                      )}
+                      {contractTab === "fields" && (
+                        <div className="evidence-list">
+                          {(windowContract.data?.evidence.fields ?? []).map(
+                            (item: string) => (
+                              <span key={item}>{item}</span>
+                            )
+                          )}
+                          {!windowContract.data?.evidence.fields?.length && (
+                            <p>
+                              لا توجد أسماء حقول نصية؛ العدد مستخرج من الأدلة.
+                            </p>
+                          )}
+                        </div>
+                      )}
+                      {contractTab === "triggers" && (
+                        <div className="evidence-list">
+                          {(windowContract.data?.evidence.triggers ?? []).map(
+                            (item: string) => (
+                              <span key={item}>{item}</span>
+                            )
+                          )}
+                          {!windowContract.data?.evidence.triggers?.length && (
+                            <p>لا توجد Triggers نصية.</p>
+                          )}
+                        </div>
+                      )}
+                      {contractTab === "actions" && (
+                        <div className="action-grid">
+                          {(windowContract.data?.actions ?? []).map(
+                            (action: string) => (
+                              <Button
+                                key={action}
+                                variant="outline"
+                                disabled={executeWindowAction.isPending}
+                                onClick={() =>
+                                  executeWindowAction.mutate(
+                                    {
+                                      legacyForm: selectedWindow.legacyForm,
+                                      action,
+                                    },
+                                    {
+                                      onSuccess: result =>
+                                        toast.success(result.message),
+                                      onError: error =>
+                                        toast.error(error.message),
+                                    }
+                                  )
+                                }
+                              >
+                                {action}
+                              </Button>
+                            )
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="empty-detail">
+                    <PanelLeft size={28} />
+                    <p>
+                      اضغط على أي شاشة في الشجرة لفتحها وعرض عقدها التفصيلي.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
+        {section === "ar" && <SalesInvoiceForm />}
+      </main>
+    </div>
+  );
 }

@@ -6,7 +6,8 @@ import { trpc } from "@/lib/trpc";
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 export type ErpMasterData = RouterOutputs["masterData"];
 export type ErpControlData = RouterOutputs["controlData"];
-export type ErpFiscalPeriod = RouterOutputs["erpWorkspace"]["fiscalPeriods"][number];
+export type ErpFiscalPeriod =
+  RouterOutputs["erpWorkspace"]["fiscalPeriods"][number];
 
 type List = Array<Record<string, any>>;
 
@@ -37,12 +38,22 @@ function asList(value: unknown): List {
 }
 
 export function useErpWorkspaceData(companyId = 1) {
-  const masterQuery = trpc.masterData.useQuery(undefined, { refetchOnWindowFocus: false });
-  const controlQuery = trpc.controlData.useQuery(undefined, { refetchOnWindowFocus: false });
-  const periodsQuery = trpc.erpWorkspace.fiscalPeriods.useQuery({ companyId }, { refetchOnWindowFocus: false });
+  const sharedQueryOptions = {
+    refetchOnWindowFocus: false,
+    staleTime: 60_000,
+  } as const;
+  const masterQuery = trpc.masterData.useQuery(undefined, sharedQueryOptions);
+  const controlQuery = trpc.controlData.useQuery(undefined, sharedQueryOptions);
+  const periodsQuery = trpc.erpWorkspace.fiscalPeriods.useQuery(
+    { companyId },
+    sharedQueryOptions
+  );
 
   const masterData = useMemo(() => {
-    const value = (masterQuery.data ?? emptyMasterData) as Record<string, unknown>;
+    const value = (masterQuery.data ?? emptyMasterData) as Record<
+      string,
+      unknown
+    >;
     return {
       ...emptyMasterData,
       ...value,
@@ -63,7 +74,10 @@ export function useErpWorkspaceData(companyId = 1) {
   }, [masterQuery.data]);
 
   const controlData = useMemo(() => {
-    const value = (controlQuery.data ?? emptyControlData) as Record<string, unknown>;
+    const value = (controlQuery.data ?? emptyControlData) as Record<
+      string,
+      unknown
+    >;
     return {
       ...emptyControlData,
       ...value,
@@ -74,12 +88,16 @@ export function useErpWorkspaceData(companyId = 1) {
   }, [controlQuery.data]);
 
   const fiscalPeriods = useMemo(
-    () => (asList(periodsQuery.data) as ErpFiscalPeriod[]),
-    [periodsQuery.data],
+    () => asList(periodsQuery.data) as ErpFiscalPeriod[],
+    [periodsQuery.data]
   );
 
   const refresh = useCallback(async () => {
-    await Promise.all([masterQuery.refetch(), controlQuery.refetch(), periodsQuery.refetch()]);
+    await Promise.all([
+      masterQuery.refetch(),
+      controlQuery.refetch(),
+      periodsQuery.refetch(),
+    ]);
   }, [controlQuery, masterQuery, periodsQuery]);
 
   return {
@@ -88,9 +106,14 @@ export function useErpWorkspaceData(companyId = 1) {
     accounts: controlData.accounts,
     branches: controlData.branches,
     fiscalPeriods,
-    isLoading: masterQuery.isLoading || controlQuery.isLoading || periodsQuery.isLoading,
-    isFetching: masterQuery.isFetching || controlQuery.isFetching || periodsQuery.isFetching,
-    isError: masterQuery.isError || controlQuery.isError || periodsQuery.isError,
+    isLoading:
+      masterQuery.isLoading || controlQuery.isLoading || periodsQuery.isLoading,
+    isFetching:
+      masterQuery.isFetching ||
+      controlQuery.isFetching ||
+      periodsQuery.isFetching,
+    isError:
+      masterQuery.isError || controlQuery.isError || periodsQuery.isError,
     error: masterQuery.error ?? controlQuery.error ?? periodsQuery.error,
     refresh,
   };
